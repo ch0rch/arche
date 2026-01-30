@@ -1,6 +1,6 @@
 # Centro de ayuda
 
-Bienvenido al centro de ayuda de {{PRODUCT_NAME}}.
+Bienvenido al centro de ayuda de Arche.
 
 ## Secciones
 

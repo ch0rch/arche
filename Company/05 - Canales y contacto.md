@@ -11,9 +11,9 @@ Objetivo: fuente única para CTAs y firmas. Evitar duplicar URLs en copys/soport
 
 ## Organización
 
-- {{ROLE_1}}: [[Company/People/{{PERSON_1_FILE}}|{{PERSON_1_NAME}}]]
-- {{ROLE_2}}: [[Company/People/{{PERSON_2_FILE}}|{{PERSON_2_NAME}}]]
-- {{ROLE_3}}: [[Company/People/{{PERSON_3_FILE}}|{{PERSON_3_NAME}}]]
+- Infraestructura y despliegue: [[Company/People/Alberto Perdomo|Alberto Perdomo]]
+- Back-end: [[Company/People/Jose Miguel Hernandez|José Miguel Hernández]]
+- UI y front-end (generalista): [[Company/People/Inaki Tajes|Iñaki Tajes]]
 
 ## CTAs recomendados (copiar/pegar)
 

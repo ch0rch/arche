@@ -264,3 +264,7 @@ Notas de implementacion:
 - Infra: Traefik/TLS, Docker hardening, networking, backups (definicion)
 - Generalista: BFF backend, Prisma/Postgres, spawner, Git KB
 - Web/UI: UI Next.js (user experience + operaciones), streaming y estados
+
+Ver también:
+
+- [[Arche/Tasks/00 - Indice|Tasks]]

@@ -1,6 +1,6 @@
 # Identidad de marca
 
-Contexto: {{COMPANY_CONTEXT}}
+Contexto: Peaberry Studio es un estudio que desarrolla Arche.
 
 ## Misión
 

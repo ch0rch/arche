@@ -1,6 +1,6 @@
 # Changelog de la app
 
-Registro de versiones y cambios de {{PRODUCT_NAME}}.
+Registro de versiones y cambios de Arche.
 
 ## Formato
 

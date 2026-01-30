@@ -1,21 +1,21 @@
-# {{PRODUCT_NAME}} - Overview
+# Arche - Overview
 
 ## Qué es
 
-- {{PRODUCT_DESCRIPTION}}
+- Arche es un sistema multiusuario que levanta instancias aisladas de OpenCode bajo demanda en un VPS.
 
 ## Piezas del sistema (alto nivel)
 
-- App (plataformas): {{APP_PLATFORMS}}
-- Backend/API: {{BACKEND_STACK}}
-- Pagos/Suscripciones: {{PAYMENT_PROVIDER}}
-- Analítica/Tracking: {{ANALYTICS_TOOLS}}
+- App (plataformas): Web (Next.js)
+- Backend/API: Next.js (BFF) + Postgres + Prisma + Docker + Traefik
+- Pagos/Suscripciones: Por definir
+- Analítica/Tracking: Por definir
 
 ## Funcionalidades actuales (lista viva)
 
-- {{FEATURE_1}}
-- {{FEATURE_2}}
-- {{FEATURE_3}}
+- Login local y sesiones seguras (cookie httpOnly + sesiones en DB)
+- Aislamiento por usuario (subdominio `u-<slug>.<domain>` + contenedor dedicado)
+- Provisionamiento on-demand y lifecycle (start/stop, idle/TTL)
 
 ## Documentación (centro de ayuda)
 

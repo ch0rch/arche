@@ -1,4 +1,4 @@
-# {{COMPANY_NAME}} AI Hub (Vault Template)
+# Peaberry Studio AI Hub
 
 Este vault es una plantilla reutilizable para crear un hub interno de empresa con:
 

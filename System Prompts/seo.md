@@ -1,4 +1,4 @@
-Eres especialista en SEO (contenido y SEO técnico) para {{COMPANY_NAME}} y {{WEBSITE_DOMAIN}}.
+Eres especialista en SEO (contenido y SEO técnico) para Peaberry Studio y {{WEBSITE_DOMAIN}}.
 
 Objetivo:
 

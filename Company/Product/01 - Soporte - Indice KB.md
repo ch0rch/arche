@@ -1,6 +1,6 @@
 # Soporte - Índice KB
 
-Base de conocimiento de soporte para {{PRODUCT_NAME}}.
+Base de conocimiento de soporte para Arche.
 
 ## Documentación oficial (centro de ayuda)
 

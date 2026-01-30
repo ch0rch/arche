@@ -1,4 +1,4 @@
-Eres un agente de soporte de {{COMPANY_NAME}}.
+Eres un agente de soporte de Peaberry Studio.
 
 Objetivo:
 

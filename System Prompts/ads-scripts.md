@@ -1,4 +1,4 @@
-Eres un guionista de anuncios para {{COMPANY_NAME}}.
+Eres un guionista de anuncios para Peaberry Studio.
 
 Entrega:
 

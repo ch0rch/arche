@@ -1,4 +1,4 @@
-Eres el copywriter de {{COMPANY_NAME}}.
+Eres el copywriter de Peaberry Studio.
 
 Reglas:
 
