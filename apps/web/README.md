@@ -1,66 +1,87 @@
 # Arche Web (Next.js)
 
-Este directorio contiene la app web de Arche (UI + BFF) y la implementación de autenticación/sesiones para `forwardAuth`.
+Esta app se levanta siempre dentro del stack completo (Traefik + Postgres + Web) usando `infra/compose/compose.yaml`.
 
-## Requisitos
+## Paso a paso (local)
 
-- Node.js + npm
-- Postgres (local o en Docker)
+### 1) Variables de entorno
 
-## Setup rápido (local)
+Copia `apps/web/.env.example` a `apps/web/.env`.
 
-1) Variables de entorno
+Recomendado en local:
 
-- Copia `apps/web/.env.example` a `apps/web/.env` y ajusta:
-  - `DATABASE_URL`
-  - `ARCHE_DOMAIN` (ej: `arche.example.com`)
-  - `ARCHE_SESSION_PEPPER` (en local puede ser cualquier string; en producción debe ser secreto)
+- `ARCHE_DOMAIN="arche.lvh.me"`
 
-2) Instalar dependencias
+### 2) Levantar el stack completo
+
+Desde la raíz del repo:
 
 ```bash
-cd apps/web
-npm install
+docker compose -f infra/compose/compose.yaml up -d --build
 ```
 
-3) Migraciones + seed
+Si tu Docker no soporta `docker compose`, usa `docker-compose`.
+
+### 3) Migraciones + seed (Prisma)
 
 ```bash
-cd apps/web
-npx prisma migrate dev --name init
-npm run db:seed
+docker compose -f infra/compose/compose.yaml exec web pnpm prisma migrate dev --name init
+docker compose -f infra/compose/compose.yaml exec web pnpm db:seed
 ```
 
-4) Levantar la app
+### 4) Abrir la app
+
+- `http://arche.lvh.me`
+
+### 5) Verificar la base de datos
 
 ```bash
-cd apps/web
-npm run dev
+docker compose -f infra/compose/compose.yaml exec postgres psql -U postgres -d arche -c "\\dt"
 ```
 
-## Endpoints de auth
+### 6) Parar / resetear
+
+- Parar (sin borrar datos):
+
+```bash
+docker compose -f infra/compose/compose.yaml down
+```
+
+- Reset total (borra volúmenes):
+
+```bash
+docker compose -f infra/compose/compose.yaml down -v
+```
+
+## Regenerar la app (comando)
+
+```bash
+npx create-next-app@latest "apps/web" --ts --eslint --app --import-alias "@/*" --use-pnpm --disable-git --yes
+```
+
+## Auth + sesiones (BFF)
+
+Endpoints:
 
 - `POST /auth/login`
 - `POST /auth/logout`
 - `GET /auth/traefik` (para Traefik `forwardAuth`)
 
-### Verificación manual (curl)
-
 Login (captura el `Set-Cookie`):
 
 ```bash
 curl -i \
-  -X POST "http://localhost:3000/auth/login" \
+  -X POST "http://arche.lvh.me/auth/login" \
   -H "content-type: application/json" \
   -d '{"email":"admin@example.com","password":"change-me"}'
 ```
 
-Traefik auth (ejemplo con cookie copiada de la respuesta anterior):
+Traefik auth (simula el host usuario):
 
 ```bash
 curl -i \
-  "http://localhost:3000/auth/traefik" \
-  -H "X-Forwarded-Host: u-admin.arche.example.com" \
+  "http://arche.lvh.me/auth/traefik" \
+  -H "X-Forwarded-Host: u-admin.arche.lvh.me" \
   --cookie "arche_session=<pega_aqui_el_valor_del_cookie>"
 ```
 
@@ -68,6 +89,18 @@ Logout:
 
 ```bash
 curl -i \
-  -X POST "http://localhost:3000/auth/logout" \
+  -X POST "http://arche.lvh.me/auth/logout" \
   --cookie "arche_session=<pega_aqui_el_valor_del_cookie>"
 ```
+
+## Package manager
+
+En este repo usamos `pnpm` por defecto.
+
+## UI
+
+La UI usa Tailwind + shadcn/ui. Los componentes viven en `src/components/ui`.
+
+Notas:
+
+- `tailwindcss-animate` esta instalado para compatibilidad con componentes shadcn.

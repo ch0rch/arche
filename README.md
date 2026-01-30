@@ -18,6 +18,8 @@ Este vault es una plantilla reutilizable para crear un hub interno de empresa co
 3. Crear `me.txt` (no se versiona) con tu nombre en la primera línea (puedes copiar `me.example.txt`).
    Esto permite que los agentes sepan quién está usando el vault.
 
+4. Para apps Node/Next, usar `pnpm` por defecto (ver `apps/*/README.md`).
+
 ## Placeholders a reemplazar
 
 ### Identidad de marca (`Company/01 - Identidad de marca.md`)

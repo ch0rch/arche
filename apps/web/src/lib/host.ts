@@ -1,4 +1,4 @@
-import { firstHeaderValue, stripPort } from './http'
+import { firstHeaderValue, stripPort } from '@/lib/http'
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

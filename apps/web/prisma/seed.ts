@@ -1,7 +1,17 @@
 import argon2 from 'argon2'
 import { PrismaClient, UserRole } from '@prisma/client'
+import { PrismaPg } from '@prisma/adapter-pg'
+import { Pool } from 'pg'
 
-const prisma = new PrismaClient()
+const connectionString = process.env.DATABASE_URL
+if (!connectionString) {
+  throw new Error('DATABASE_URL is required')
+}
+
+const pool = new Pool({ connectionString })
+const adapter = new PrismaPg(pool)
+
+const prisma = new PrismaClient({ adapter })
 
 async function main() {
   const email = (process.env.ARCHE_SEED_ADMIN_EMAIL || '').trim().toLowerCase()
@@ -37,9 +47,11 @@ async function main() {
 
 main()
   .then(async () => {
+    await pool.end()
     await prisma.$disconnect()
   })
   .catch(async (e) => {
+    await pool.end().catch(() => {})
     await prisma.$disconnect()
     throw e
   })

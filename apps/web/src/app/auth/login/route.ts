@@ -26,7 +26,10 @@ export async function POST(request: Request) {
   const { token, expiresAt } = await createSession({ userId: user.id, headers: request.headers })
   await auditEvent({ actorUserId: user.id, action: 'auth.login.succeeded' })
 
-  const res = NextResponse.json({ ok: true, user: { id: user.id, email: user.email, slug: user.slug, role: user.role } })
+  const res = NextResponse.json({
+    ok: true,
+    user: { id: user.id, email: user.email, slug: user.slug, role: user.role }
+  })
   res.cookies.set({
     name: SESSION_COOKIE_NAME,
     value: token,

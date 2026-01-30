@@ -1,7 +1,7 @@
 import argon2 from 'argon2'
-import { prisma } from './prisma'
-import { getClientIp } from './http'
-import { hashSessionToken, newSessionToken } from './security'
+import { prisma } from '@/lib/prisma'
+import { getClientIp } from '@/lib/http'
+import { hashSessionToken, newSessionToken } from '@/lib/security'
 
 export const SESSION_COOKIE_NAME = 'arche_session'
 
@@ -46,7 +46,7 @@ export async function verifyPassword(password: string, passwordHash: string): Pr
 export async function createSession(params: {
   userId: string
   headers: Headers
-}): Promise<{ token: string; expiresAt: Date } > {
+}): Promise<{ token: string; expiresAt: Date }> {
   const token = newSessionToken()
   const tokenHash = hashSessionToken(token)
   const ttlDays = getSessionTtlDays()

@@ -17,3 +17,16 @@ apps/web/npm-debug.log*
 apps/web/yarn-debug.log*
 apps/web/yarn-error.log*
 apps/web/pnpm-debug.log*
+
+# Node / Next.js (apps/*)
+apps/**/node_modules/
+apps/**/.next/
+apps/**/out/
+apps/**/.pnpm-store/
+apps/**/.env
+apps/**/.env.local
+apps/**/.env.*.local
+apps/**/npm-debug.log*
+apps/**/yarn-debug.log*
+apps/**/yarn-error.log*
+apps/**/pnpm-debug.log*

@@ -23,9 +23,9 @@ Implementar autenticación local y sesiones seguras en el BFF, incluyendo el end
 - DB/ORM (Prisma): `apps/web/prisma/schema.prisma`
 - Seed: `apps/web/prisma/seed.ts`
 - Endpoints:
-  - `POST /auth/login`: `apps/web/app/auth/login/route.ts`
-  - `POST /auth/logout`: `apps/web/app/auth/logout/route.ts`
-  - `GET /auth/traefik`: `apps/web/app/auth/traefik/route.ts`
+  - `POST /auth/login`: `apps/web/src/app/auth/login/route.ts`
+  - `POST /auth/logout`: `apps/web/src/app/auth/logout/route.ts`
+  - `GET /auth/traefik`: `apps/web/src/app/auth/traefik/route.ts`
 
 ## Contrato aplicado (decisiones v0)
 
