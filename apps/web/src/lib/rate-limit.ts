@@ -1,3 +1,4 @@
+// TODO: For multi-instance production deployments, migrate to Redis or database storage
 type RateLimitEntry = { count: number; resetAt: number }
 const store = new Map<string, RateLimitEntry>()
 

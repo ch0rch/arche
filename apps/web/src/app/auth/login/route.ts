@@ -4,6 +4,7 @@ import { auditEvent, createSession, getCookieDomain, SESSION_COOKIE_NAME, verify
 import { hashSessionToken, newSessionToken } from '@/lib/security'
 
 // Pending 2FA challenges: hashedToken -> { userId, expiresAt }
+// TODO: For multi-instance production deployments, migrate to Redis or database storage
 export const pending2FAMap = new Map<string, { userId: string; expiresAt: number }>()
 
 // Clean up expired challenges every 5 minutes
