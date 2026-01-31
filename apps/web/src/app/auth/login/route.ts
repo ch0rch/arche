@@ -6,6 +6,14 @@ import { hashSessionToken, newSessionToken } from '@/lib/security'
 // Pending 2FA challenges: hashedToken -> { userId, expiresAt }
 export const pending2FAMap = new Map<string, { userId: string; expiresAt: number }>()
 
+// Clean up expired challenges every 5 minutes
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, entry] of pending2FAMap) {
+    if (entry.expiresAt <= now) pending2FAMap.delete(key)
+  }
+}, 5 * 60 * 1000).unref()
+
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null)
   const email = typeof body?.email === 'string' ? body.email.trim().toLowerCase() : ''
@@ -15,7 +23,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, error: 'invalid_request' }, { status: 400 })
   }
 
-  const user = await prisma.user.findUnique({ where: { email } })
+  const user = await prisma.user.findUnique({
+    where: { email },
+    select: { id: true, email: true, slug: true, role: true, passwordHash: true, totpEnabled: true },
+  })
   if (!user) {
     await auditEvent({ action: 'auth.login.failed', metadata: { email } })
     return NextResponse.json({ ok: false, error: 'invalid_credentials' }, { status: 401 })

@@ -24,6 +24,7 @@ const errorMessages: Record<string, string> = {
   invalid_code: 'Código incorrecto',
   challenge_expired: 'Tiempo expirado. Inicia sesión de nuevo.',
   invalid_request: 'Solicitud inválida.',
+  rate_limited: 'Demasiados intentos. Intenta de nuevo en unos minutos.',
   unknown: 'Algo salió mal. Intenta de nuevo.',
 }
 

@@ -25,3 +25,11 @@ export function checkRateLimit(
 export function resetRateLimit(key: string): void {
   store.delete(key)
 }
+
+// Clean up expired entries every 5 minutes
+setInterval(() => {
+  const now = Date.now()
+  for (const [key, entry] of store) {
+    if (entry.resetAt <= now) store.delete(key)
+  }
+}, 5 * 60 * 1000).unref()
