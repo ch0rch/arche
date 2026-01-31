@@ -4,10 +4,10 @@ import { useMemo, useState } from "react";
 import { CaretRight, File, Folder, FolderOpen } from "@phosphor-icons/react";
 
 import { cn } from "@/lib/utils";
-import type { WorkspaceNode } from "@/types/workspace";
+import type { WorkspaceFileNode } from "@/lib/opencode/types";
 
 type FileTreeProps = {
-  nodes: WorkspaceNode[];
+  nodes: WorkspaceFileNode[];
   activePath?: string | null;
   onSelect: (path: string) => void;
 };
@@ -18,7 +18,7 @@ export function FileTree({ nodes, activePath, onSelect }: FileTreeProps) {
   const initialExpanded = useMemo<TreeState>(() => {
     const state: TreeState = {};
     nodes.forEach((node) => {
-      if (node.type === "folder") state[node.path] = true;
+      if (node.type === "directory") state[node.path] = true;
     });
     return state;
   }, [nodes]);
@@ -29,8 +29,8 @@ export function FileTree({ nodes, activePath, onSelect }: FileTreeProps) {
     setExpanded((prev) => ({ ...prev, [path]: !prev[path] }));
   };
 
-  const renderNode = (node: WorkspaceNode, depth: number) => {
-    const isFolder = node.type === "folder";
+  const renderNode = (node: WorkspaceFileNode, depth: number) => {
+    const isFolder = node.type === "directory";
     const isOpen = expanded[node.path];
     const isActive = activePath === node.path && !isFolder;
     const paddingLeft = 8 + depth * 12;

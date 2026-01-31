@@ -1,7 +1,8 @@
 "use client";
 
-import { useRef, useState, useEffect, useMemo } from "react";
+import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import {
+  CaretDown,
   CaretLeft,
   CaretRight,
   ChatCircle,
@@ -11,6 +12,7 @@ import {
   PaperPlaneTilt,
   PencilSimple,
   Plus,
+  SpinnerGap,
   X
 } from "@phosphor-icons/react";
 
@@ -23,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import type { ChatMessage, ChatSession } from "@/types/workspace";
+import type { AvailableModel } from "@/lib/opencode/types";
 
 type ChatPanelProps = {
   sessions: ChatSession[];
@@ -35,6 +38,12 @@ type ChatPanelProps = {
   onRenameSession: (id: string, newTitle: string) => void;
   onOpenFile: (path: string) => void;
   onShowContext?: () => void;
+  // New props for real functionality
+  onSendMessage?: (text: string, model?: { providerId: string; modelId: string }) => Promise<void>;
+  isSending?: boolean;
+  models?: AvailableModel[];
+  selectedModel?: AvailableModel | null;
+  onSelectModel?: (model: AvailableModel | null) => void;
 };
 
 export function ChatPanel({
@@ -47,7 +56,12 @@ export function ChatPanel({
   onCloseSession,
   onRenameSession,
   onOpenFile,
-  onShowContext
+  onShowContext,
+  onSendMessage,
+  isSending = false,
+  models = [],
+  selectedModel,
+  onSelectModel
 }: ChatPanelProps) {
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId),
@@ -55,8 +69,11 @@ export function ChatPanel({
   );
 
   const tabsRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
+  const [inputValue, setInputValue] = useState("");
 
   const updateScrollState = () => {
     const el = tabsRef.current;
@@ -78,6 +95,11 @@ export function ChatPanel({
     };
   }, [sessions]);
 
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
   const scrollTabs = (direction: "left" | "right") => {
     const el = tabsRef.current;
     if (!el) return;
@@ -88,8 +110,37 @@ export function ChatPanel({
     });
   };
 
+  const handleSend = useCallback(async () => {
+    const text = inputValue.trim();
+    if (!text || !onSendMessage || isSending) return;
+    
+    setInputValue("");
+    
+    const model = selectedModel 
+      ? { providerId: selectedModel.providerId, modelId: selectedModel.modelId }
+      : undefined;
+    
+    await onSendMessage(text, model);
+  }, [inputValue, onSendMessage, isSending, selectedModel]);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
+  }, [handleSend]);
+
+  // Auto-resize textarea
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setInputValue(e.target.value);
+    const textarea = e.target;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
+  }, []);
+
   return (
     <div className="flex h-full flex-col bg-background">
+      {/* Session tabs */}
       <div className="flex h-12 items-center gap-1 border-b border-border/60 px-2">
         {canScrollLeft && (
           <Button
@@ -201,6 +252,7 @@ export function ChatPanel({
         </Button>
       </div>
 
+      {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-5 py-5">
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
@@ -229,7 +281,7 @@ export function ChatPanel({
                         : "bg-muted/40 text-muted-foreground italic"
                   )}
                 >
-                  <p>{message.content}</p>
+                  <p className="whitespace-pre-wrap">{message.content}</p>
                   {message.attachments && message.attachments.length > 0 ? (
                     <div className="mt-2 flex flex-wrap gap-1.5">
                       {message.attachments.map((attachment) => (
@@ -253,12 +305,14 @@ export function ChatPanel({
                 </span>
               </div>
             ))}
+            <div ref={messagesEndRef} />
           </div>
         )}
       </div>
 
+      {/* Input area */}
       <div className="border-t border-border/60">
-        {openFilesCount > 0 ? (
+        {openFilesCount > 0 && (
           <div className="flex items-center gap-2.5 px-4 py-2.5">
             <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
               Contexto
@@ -272,28 +326,83 @@ export function ChatPanel({
               <span>{openFilesCount} {openFilesCount === 1 ? "archivo" : "archivos"}</span>
             </button>
           </div>
-        ) : null}
+        )}
+        
         <div className={cn("p-4", openFilesCount > 0 && "pt-2")}>
+          {/* Model selector */}
+          {models.length > 0 && (
+            <div className="mb-3 flex items-center gap-2">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Modelo
+              </span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1.5 rounded-md bg-muted/50 px-2.5 py-1.5 text-xs text-foreground transition-colors hover:bg-muted"
+                  >
+                    <span className="max-w-[200px] truncate">
+                      {selectedModel 
+                        ? `${selectedModel.providerName} / ${selectedModel.modelName}`
+                        : 'Seleccionar modelo'}
+                    </span>
+                    <CaretDown size={12} weight="bold" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" className="max-h-64 overflow-y-auto">
+                  {models.map((model) => (
+                    <DropdownMenuItem
+                      key={`${model.providerId}-${model.modelId}`}
+                      onClick={() => onSelectModel?.(model)}
+                      className={cn(
+                        selectedModel?.modelId === model.modelId && 
+                        selectedModel?.providerId === model.providerId && 
+                        "bg-primary/10"
+                      )}
+                    >
+                      <div className="flex flex-col">
+                        <span className="font-medium">{model.modelName}</span>
+                        <span className="text-xs text-muted-foreground">{model.providerName}</span>
+                      </div>
+                      {model.isDefault && (
+                        <span className="ml-auto text-[10px] text-primary">Por defecto</span>
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
+          
           <div className="flex items-end gap-2.5 rounded-xl border border-border/60 bg-card/60 p-2.5">
             <textarea
-              className="min-h-[64px] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground/60"
+              ref={textareaRef}
+              value={inputValue}
+              onChange={handleInputChange}
+              onKeyDown={handleKeyDown}
+              className="min-h-[64px] max-h-[200px] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm text-foreground outline-none placeholder:text-muted-foreground/60"
               placeholder="Escribe un mensaje..."
-              disabled
+              disabled={isSending || !onSendMessage}
             />
             <Button
               size="icon"
               className="h-9 w-9 shrink-0 rounded-lg"
-              disabled
+              disabled={isSending || !inputValue.trim() || !onSendMessage}
+              onClick={handleSend}
               aria-label="Enviar mensaje"
             >
-              <PaperPlaneTilt size={16} weight="fill" />
+              {isSending ? (
+                <SpinnerGap size={16} className="animate-spin" />
+              ) : (
+                <PaperPlaneTilt size={16} weight="fill" />
+              )}
             </Button>
           </div>
-          {activeSession?.updatedAt ? (
+          {activeSession?.updatedAt && (
             <p className="mt-2 px-1 text-[10px] text-muted-foreground/60">
               Última actualización: {activeSession.updatedAt}
             </p>
-          ) : null}
+          )}
         </div>
       </div>
     </div>

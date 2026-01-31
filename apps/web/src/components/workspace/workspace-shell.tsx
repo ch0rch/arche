@@ -1,17 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ensureInstanceRunningAction } from "@/actions/spawner";
-import {
-  chatMessages as initialMessages,
-  chatSessions as initialSessions,
-  defaultFilePath,
-  workspaceDiffs,
-  workspaceFiles,
-  workspaceTree
-} from "@/data/workspace-mock";
-import type { ChatMessage, ChatSession } from "@/types/workspace";
+import { useWorkspace } from "@/hooks/use-workspace";
+import type { WorkspaceFileNode } from "@/lib/opencode/types";
 
 import { ChatPanel } from "./chat-panel";
 import { FileTreePanel } from "./file-tree-panel";
@@ -25,16 +18,9 @@ type WorkspaceShellProps = {
   initialFilePath?: string | null;
 };
 
-type StoredState = {
-  activeFilePath?: string;
-  openFilePaths?: string[];
-  activeSessionId?: string;
-  sessions?: ChatSession[];
-  messages?: ChatMessage[];
+type StoredLayoutState = {
   leftWidth?: number;
   rightWidth?: number;
-  leftRatio?: number;
-  rightRatio?: number;
   leftCollapsed?: boolean;
   rightCollapsed?: boolean;
 };
@@ -42,7 +28,7 @@ type StoredState = {
 const MIN_LEFT_PX = 200;
 const MIN_RIGHT_PX = 320;
 const MIN_CENTER_PX = 360;
-const DEFAULT_LEFT_RATIO = 0.1;
+const DEFAULT_LEFT_RATIO = 0.15;
 const DEFAULT_RIGHT_RATIO = 0.3;
 
 const clamp = (value: number, min: number, max: number) =>
@@ -84,42 +70,30 @@ const getContainerWidth = (container: HTMLDivElement | null) => {
   return MIN_LEFT_PX + MIN_RIGHT_PX + MIN_CENTER_PX;
 };
 
-const loadStoredState = (key: string): StoredState | null => {
+const loadStoredLayout = (key: string): StoredLayoutState | null => {
   if (typeof window === "undefined") return null;
   const raw = window.localStorage.getItem(key);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as StoredState;
+    return JSON.parse(raw) as StoredLayoutState;
   } catch {
     return null;
   }
 };
 
-const persistState = (key: string, state: StoredState) => {
+const persistLayout = (key: string, state: StoredLayoutState) => {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(key, JSON.stringify(state));
 };
 
-const createSession = (title: string): ChatSession => ({
-  id: `session-${Date.now()}`,
-  title,
-  status: "active",
-  updatedAt: "Ahora",
-  agent: "Agente principal"
-});
-
-const createSystemMessage = (sessionId: string, content: string): ChatMessage => ({
-  id: `msg-${Date.now()}`,
-  sessionId,
-  role: "system",
-  content,
-  timestamp: "Ahora"
-});
+// File content cache for preview panel
+type FileContentCache = Record<string, { content: string; type: 'raw' | 'patch'; title: string; updatedAt: string; size: string }>;
 
 export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
-  const storageKey = `arche.workspace.${slug}.mock-state`;
-  const [hasHydrated, setHasHydrated] = useState(false);
+  const layoutStorageKey = `arche.workspace.${slug}.layout`;
+  
+  // Instance startup state
   const [instanceStatus, setInstanceStatus] = useState<'starting' | 'running' | 'error' | null>(null);
   const [instanceError, setInstanceError] = useState<string | null>(null);
 
@@ -139,7 +113,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       
       setInstanceStatus(result.status);
       
-      // Si está iniciando, poll hasta que esté running
       if (result.status === 'starting') {
         const poll = setInterval(async () => {
           const check = await ensureInstanceRunningAction(slug);
@@ -163,217 +136,170 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     return () => { cancelled = true; };
   }, [slug]);
 
+  // Use workspace hook only when instance is running
+  const workspace = useWorkspace({ slug, pollInterval: 5000 });
+  
+  // Layout state
   const [leftWidth, setLeftWidth] = useState(MIN_LEFT_PX);
   const [rightWidth, setRightWidth] = useState(MIN_RIGHT_PX);
   const [minCenterWidth, setMinCenterWidth] = useState(MIN_CENTER_PX);
   const [leftCollapsed, setLeftCollapsed] = useState(false);
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [rightTab, setRightTab] = useState<"preview" | "review">("preview");
+  const [hasHydrated, setHasHydrated] = useState(false);
 
-  const [sessions, setSessions] = useState<ChatSession[]>(initialSessions);
-  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
-
-  const [activeSessionId, setActiveSessionId] = useState(
-    initialSessions[0]?.id ?? "session-01"
-  );
-
+  // File viewing state
   const [openFilePaths, setOpenFilePaths] = useState<string[]>(
-    initialFilePath ? [initialFilePath] : defaultFilePath ? [defaultFilePath] : []
+    initialFilePath ? [initialFilePath] : []
   );
   const [activeFilePath, setActiveFilePath] = useState<string | null>(
-    initialFilePath ?? defaultFilePath ?? null
+    initialFilePath ?? null
   );
+  const [fileCache, setFileCache] = useState<FileContentCache>({});
 
+  // Load layout from localStorage
   useEffect(() => {
-    const storedState = loadStoredState(storageKey);
+    const stored = loadStoredLayout(layoutStorageKey);
     const containerWidth = getContainerWidth(containerRef.current);
     let leftCandidate = containerWidth * DEFAULT_LEFT_RATIO;
     let rightCandidate = containerWidth * DEFAULT_RIGHT_RATIO;
 
-    if (storedState?.leftWidth) {
-      leftCandidate = storedState.leftWidth;
-    } else if (typeof storedState?.leftRatio === "number") {
-      leftCandidate = containerWidth * storedState.leftRatio;
-    }
-
-    if (storedState?.rightWidth) {
-      rightCandidate = storedState.rightWidth;
-    } else if (typeof storedState?.rightRatio === "number") {
-      rightCandidate = containerWidth * storedState.rightRatio;
-    }
+    if (stored?.leftWidth) leftCandidate = stored.leftWidth;
+    if (stored?.rightWidth) rightCandidate = stored.rightWidth;
 
     const fitted = fitWidths(containerWidth, leftCandidate, rightCandidate);
     setLeftWidth(fitted.left);
     setRightWidth(fitted.right);
     setMinCenterWidth(fitted.minCenter);
 
-    if (storedState) {
-      if (storedState.sessions?.length) {
-        setSessions(storedState.sessions);
-      }
-      if (storedState.messages?.length) {
-        setMessages(storedState.messages);
-      }
-      if (storedState.activeSessionId) {
-        setActiveSessionId(storedState.activeSessionId);
-      }
-      if (storedState.openFilePaths?.length) {
-        setOpenFilePaths(storedState.openFilePaths);
-      }
-      if (!initialFilePath && storedState.activeFilePath) {
-        setActiveFilePath(storedState.activeFilePath);
-      }
-      if (typeof storedState.leftCollapsed === "boolean") {
-        setLeftCollapsed(storedState.leftCollapsed);
-      }
-      if (typeof storedState.rightCollapsed === "boolean") {
-        setRightCollapsed(storedState.rightCollapsed);
-      }
-    }
+    if (typeof stored?.leftCollapsed === "boolean") setLeftCollapsed(stored.leftCollapsed);
+    if (typeof stored?.rightCollapsed === "boolean") setRightCollapsed(stored.rightCollapsed);
+    
     setHasHydrated(true);
-  }, [storageKey, initialFilePath]);
+  }, [layoutStorageKey]);
 
-  useEffect(() => {
-    if (!sessions.length) {
-      const newSession = createSession("Nueva sesión");
-      setSessions([newSession]);
-      setMessages((prev) => [
-        createSystemMessage(newSession.id, "Sesión creada automáticamente."),
-        ...prev
-      ]);
-      setActiveSessionId(newSession.id);
-    }
-  }, [sessions.length]);
-
-  useEffect(() => {
-    if (sessions.length && !sessions.find((session) => session.id === activeSessionId)) {
-      setActiveSessionId(sessions[0].id);
-    }
-  }, [sessions, activeSessionId]);
-
+  // Persist layout
   useEffect(() => {
     if (!hasHydrated) return;
-    persistState(storageKey, {
-      sessions,
-      messages,
-      activeSessionId,
-      activeFilePath: activeFilePath ?? undefined,
-      openFilePaths,
+    persistLayout(layoutStorageKey, {
       leftWidth,
       rightWidth,
       leftCollapsed,
       rightCollapsed
     });
-  }, [
-    storageKey,
-    sessions,
-    messages,
-    activeSessionId,
-    activeFilePath,
-    openFilePaths,
-    leftWidth,
-    rightWidth,
-    leftCollapsed,
-    rightCollapsed,
-    hasHydrated
-  ]);
+  }, [layoutStorageKey, leftWidth, rightWidth, leftCollapsed, rightCollapsed, hasHydrated]);
 
-  const activeSession = useMemo(
-    () => sessions.find((session) => session.id === activeSessionId),
-    [sessions, activeSessionId]
-  );
+  // Map workspace sessions to UI format
+  const uiSessions = useMemo(() => {
+    return workspace.sessions.map(s => ({
+      id: s.id,
+      title: s.title,
+      status: s.status === 'busy' ? 'active' as const : s.status === 'idle' ? 'idle' as const : 'archived' as const,
+      updatedAt: s.updatedAt,
+      agent: 'OpenCode'
+    }));
+  }, [workspace.sessions]);
 
-  const activeMessages = useMemo(
-    () => messages.filter((message) => message.sessionId === activeSessionId),
-    [messages, activeSessionId]
-  );
+  // Map workspace messages to UI format
+  const uiMessages = useMemo(() => {
+    return workspace.messages.map(m => ({
+      id: m.id,
+      sessionId: m.sessionId,
+      role: m.role as 'user' | 'assistant' | 'system',
+      content: m.content,
+      timestamp: m.timestamp,
+      attachments: m.parts
+        .filter(p => p.type === 'file')
+        .map(p => ({
+          type: 'file' as const,
+          label: (p as { path: string }).path.split('/').pop() ?? '',
+          path: (p as { path: string }).path
+        }))
+    }));
+  }, [workspace.messages]);
 
-  const openFiles = useMemo(
-    () => openFilePaths
-      .map((path) => workspaceFiles[path])
-      .filter((file): file is NonNullable<typeof file> => file != null),
-    [openFilePaths]
-  );
-
-  const activeFile = useMemo(
-    () => (activeFilePath ? workspaceFiles[activeFilePath] ?? null : null),
-    [activeFilePath]
-  );
-
-  const handleSelectSession = (sessionId: string) => {
-    setSessions((prev) =>
-      prev.map((session) => {
-        if (session.id === sessionId) return { ...session, status: "active" };
-        if (session.status === "archived") return session;
-        return { ...session, status: "idle" };
+  // Open files from cache for preview
+  const openFiles = useMemo(() => {
+    return openFilePaths
+      .map(path => {
+        const cached = fileCache[path];
+        if (!cached) return null;
+        return {
+          path,
+          title: path.split('/').pop() ?? path,
+          content: cached.content,
+          updatedAt: cached.updatedAt,
+          size: cached.size,
+          kind: path.endsWith('.md') ? 'markdown' as const : 'text' as const
+        };
       })
-    );
-    setActiveSessionId(sessionId);
-  };
+      .filter((f): f is NonNullable<typeof f> => f != null);
+  }, [openFilePaths, fileCache]);
 
-  const handleCreateSession = () => {
-    const newSession = createSession(`Sesión ${sessions.length + 1}`);
-    setSessions((prev) => [newSession, ...prev.map((session) => ({
-      ...session,
-      status: session.status === "archived" ? session.status : "idle"
-    }))]);
-    setMessages((prev) => [
-      createSystemMessage(newSession.id, "Sesión creada automáticamente."),
-      ...prev
-    ]);
-    setActiveSessionId(newSession.id);
-  };
+  const activeFile = useMemo(() => {
+    return openFiles.find(f => f.path === activeFilePath) ?? null;
+  }, [openFiles, activeFilePath]);
 
-  const handleCloseSession = (sessionId: string) => {
-    setSessions((prev) => {
-      const filtered = prev.filter((session) => session.id !== sessionId);
-      if (filtered.length === 0) {
-        const newSession = createSession("Nueva sesión");
-        setActiveSessionId(newSession.id);
-        return [newSession];
-      }
-      if (sessionId === activeSessionId) {
-        setActiveSessionId(filtered[0].id);
-      }
-      return filtered;
-    });
-    setMessages((prev) => prev.filter((msg) => msg.sessionId !== sessionId));
-  };
-
-  const handleRenameSession = (sessionId: string, newTitle: string) => {
-    setSessions((prev) =>
-      prev.map((session) =>
-        session.id === sessionId ? { ...session, title: newTitle } : session
-      )
-    );
-  };
-
-  const handleOpenFile = (path: string) => {
-    setOpenFilePaths((prev) => 
-      prev.includes(path) ? prev : [...prev, path]
-    );
+  // File handlers
+  const handleOpenFile = useCallback(async (path: string) => {
+    // Add to open files if not already open
+    setOpenFilePaths(prev => prev.includes(path) ? prev : [...prev, path]);
     setActiveFilePath(path);
     setRightTab("preview");
     setRightCollapsed(false);
-  };
 
-  const handleSelectFile = (path: string) => {
+    // Load file content if not cached
+    if (!fileCache[path]) {
+      const result = await workspace.readFile(path);
+      if (result) {
+        setFileCache(prev => ({
+          ...prev,
+          [path]: {
+            content: result.content,
+            type: result.type,
+            title: path.split('/').pop() ?? path,
+            updatedAt: 'Ahora',
+            size: `${(result.content.length / 1024).toFixed(1)} KB`
+          }
+        }));
+      }
+    }
+  }, [fileCache, workspace]);
+
+  const handleSelectFile = useCallback((path: string) => {
     setActiveFilePath(path);
     setRightTab("preview");
-  };
+  }, []);
 
-  const handleCloseFile = (path: string) => {
-    setOpenFilePaths((prev) => {
-      const filtered = prev.filter((p) => p !== path);
+  const handleCloseFile = useCallback((path: string) => {
+    setOpenFilePaths(prev => {
+      const filtered = prev.filter(p => p !== path);
       if (path === activeFilePath) {
-        const newActive = filtered.length > 0 ? filtered[filtered.length - 1] : null;
-        setActiveFilePath(newActive);
+        setActiveFilePath(filtered.length > 0 ? filtered[filtered.length - 1] : null);
       }
       return filtered;
     });
-  };
+  }, [activeFilePath]);
 
-  const handleResizeLeft = (event: React.PointerEvent<HTMLDivElement>) => {
+  // Session handlers
+  const handleSelectSession = useCallback((sessionId: string) => {
+    workspace.selectSession(sessionId);
+  }, [workspace]);
+
+  const handleCreateSession = useCallback(async () => {
+    await workspace.createSession(`Sesión ${workspace.sessions.length + 1}`);
+  }, [workspace]);
+
+  const handleCloseSession = useCallback(async (sessionId: string) => {
+    await workspace.deleteSession(sessionId);
+  }, [workspace]);
+
+  const handleRenameSession = useCallback(async (sessionId: string, newTitle: string) => {
+    await workspace.renameSession(sessionId, newTitle);
+  }, [workspace]);
+
+  // Resize handlers
+  const handleResizeLeft = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     const container = containerRef.current;
     if (!container) return;
@@ -403,9 +329,9 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
-  };
+  }, [rightCollapsed, rightWidth]);
 
-  const handleResizeRight = (event: React.PointerEvent<HTMLDivElement>) => {
+  const handleResizeRight = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     const container = containerRef.current;
     if (!container) return;
@@ -435,7 +361,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
-  };
+  }, [leftCollapsed, leftWidth]);
 
   // Loading screen while instance is starting
   if (instanceStatus !== 'running') {
@@ -498,19 +424,43 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     );
   }
 
+  // Connecting to OpenCode screen
+  if (!workspace.isConnected) {
+    return (
+      <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
+        <div className="pointer-events-none absolute inset-0 organic-background" />
+        
+        <WorkspaceHeader slug={slug} status="provisioning" />
+        
+        <div className="relative z-10 flex flex-1 items-center justify-center">
+          <div className="flex flex-col items-center gap-6 text-center">
+            <div className="relative">
+              <div className="h-16 w-16 animate-spin rounded-full border-4 border-muted border-t-primary" />
+            </div>
+            <div className="space-y-2">
+              <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
+                Conectando con OpenCode
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                {workspace.connection.status === 'error' 
+                  ? `Error: ${workspace.connection.error}`
+                  : 'Estableciendo conexión...'}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
       <div className="pointer-events-none absolute inset-0 organic-background" />
 
-      <WorkspaceHeader
-        slug={slug}
-        status="active"
-      />
+      <WorkspaceHeader slug={slug} status="active" />
 
-      <div
-        ref={containerRef}
-        className="relative z-10 flex min-h-0 flex-1"
-      >
+      <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1">
+        {/* Left panel - File tree */}
         <div
           className="shrink-0 overflow-hidden"
           style={{
@@ -518,13 +468,13 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             minWidth: leftCollapsed ? 0 : MIN_LEFT_PX
           }}
         >
-          {!leftCollapsed ? (
+          {!leftCollapsed && (
             <FileTreePanel
-              nodes={workspaceTree}
+              nodes={workspace.fileTree}
               activePath={activeFilePath}
               onSelect={handleOpenFile}
             />
-          ) : null}
+          )}
         </div>
 
         <PanelResizeHandle
@@ -533,11 +483,12 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
           hidden={leftCollapsed}
         />
 
+        {/* Center panel - Chat */}
         <div className="flex min-w-0 flex-1 flex-col" style={{ minWidth: minCenterWidth }}>
           <ChatPanel
-            sessions={sessions}
-            messages={activeMessages}
-            activeSessionId={activeSessionId}
+            sessions={uiSessions}
+            messages={uiMessages}
+            activeSessionId={workspace.activeSessionId ?? ''}
             openFilesCount={openFilePaths.length}
             onSelectSession={handleSelectSession}
             onCreateSession={handleCreateSession}
@@ -548,6 +499,11 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               setRightCollapsed(false);
               setRightTab("preview");
             }}
+            onSendMessage={workspace.sendMessage}
+            isSending={workspace.isSending}
+            models={workspace.models}
+            selectedModel={workspace.selectedModel}
+            onSelectModel={workspace.setSelectedModel}
           />
         </div>
 
@@ -557,6 +513,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
           hidden={rightCollapsed}
         />
 
+        {/* Right panel - Inspector */}
         <div
           className="shrink-0 overflow-hidden"
           style={{
@@ -564,7 +521,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             minWidth: rightCollapsed ? 0 : MIN_RIGHT_PX
           }}
         >
-          {!rightCollapsed ? (
+          {!rightCollapsed && (
             <InspectorPanel
               activeTab={rightTab}
               onTabChange={setRightTab}
@@ -572,18 +529,18 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               activeFilePath={activeFilePath}
               onSelectFile={handleSelectFile}
               onCloseFile={handleCloseFile}
-              diffs={workspaceDiffs}
+              diffs={workspace.diffs}
               onOpenFile={handleOpenFile}
             />
-          ) : null}
+          )}
         </div>
       </div>
 
       <WorkspaceFooter
         leftCollapsed={leftCollapsed}
         rightCollapsed={rightCollapsed}
-        onToggleLeft={() => setLeftCollapsed((prev) => !prev)}
-        onToggleRight={() => setRightCollapsed((prev) => !prev)}
+        onToggleLeft={() => setLeftCollapsed(prev => !prev)}
+        onToggleRight={() => setRightCollapsed(prev => !prev)}
       />
     </div>
   );

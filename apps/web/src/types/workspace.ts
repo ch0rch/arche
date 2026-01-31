@@ -1,19 +1,7 @@
-export type WorkspaceNode = {
-  id: string;
-  name: string;
-  path: string;
-  type: "file" | "folder";
-  children?: WorkspaceNode[];
-};
-
-export type WorkspaceFile = {
-  path: string;
-  title: string;
-  content: string;
-  updatedAt: string;
-  size: string;
-  kind: "markdown" | "text";
-};
+/**
+ * UI types for workspace components.
+ * These are the shapes expected by UI components, independent of the OpenCode SDK types.
+ */
 
 export type ChatSession = {
   id: string;
@@ -34,12 +22,4 @@ export type ChatMessage = {
     label: string;
     path?: string;
   }>;
-};
-
-export type WorkspaceDiff = {
-  path: string;
-  status: "modified" | "added" | "deleted";
-  additions: number;
-  deletions: number;
-  diff: string;
 };

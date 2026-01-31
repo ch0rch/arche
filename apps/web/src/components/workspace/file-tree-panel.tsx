@@ -5,19 +5,19 @@ import { File, MagnifyingGlass, Plus } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { WorkspaceNode } from "@/types/workspace";
+import type { WorkspaceFileNode } from "@/lib/opencode/types";
 
 import { FileTree } from "./file-tree";
 
 type FileTreePanelProps = {
-  nodes: WorkspaceNode[];
+  nodes: WorkspaceFileNode[];
   activePath?: string | null;
   onSelect: (path: string) => void;
 };
 
 type FlatFile = { name: string; path: string };
 
-function flattenFiles(nodes: WorkspaceNode[]): FlatFile[] {
+function flattenFiles(nodes: WorkspaceFileNode[]): FlatFile[] {
   const result: FlatFile[] = [];
   nodes.forEach((node) => {
     if (node.type === "file") {

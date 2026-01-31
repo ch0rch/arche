@@ -5,7 +5,7 @@ import { Check, File, GitDiff, Minus, Plus } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { WorkspaceDiff } from "@/types/workspace";
+import type { WorkspaceDiff } from "@/hooks/use-workspace";
 
 type ReviewPanelProps = {
   diffs: WorkspaceDiff[];

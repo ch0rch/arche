@@ -5,10 +5,19 @@ import { CaretLeft, CaretRight, Eye, File, GitDiff, X } from "@phosphor-icons/re
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { WorkspaceDiff, WorkspaceFile } from "@/types/workspace";
+import type { WorkspaceDiff } from "@/hooks/use-workspace";
 
 import { MarkdownPreview } from "./markdown-preview";
 import { ReviewPanel } from "./review-panel";
+
+type WorkspaceFile = {
+  path: string;
+  title: string;
+  content: string;
+  updatedAt: string;
+  size: string;
+  kind: 'markdown' | 'text';
+};
 
 type InspectorPanelProps = {
   activeTab: "preview" | "review";
