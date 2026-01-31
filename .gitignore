@@ -13,6 +13,18 @@ me.txt
 # Test coverage
 coverage/
 
+# Node / Next.js (apps/web)
+apps/web/node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/.env
+apps/web/.env.local
+apps/web/.env.*.local
+apps/web/npm-debug.log*
+apps/web/yarn-debug.log*
+apps/web/yarn-error.log*
+apps/web/pnpm-debug.log*
+
 # Node / Next.js (apps/*)
 apps/**/node_modules/
 apps/**/.next/
