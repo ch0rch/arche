@@ -2,6 +2,7 @@ import Link from "next/link";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { InstanceControls } from "@/components/instance-controls";
 
 const navigation = [
   { label: "Resumen", href: "#", active: true },
@@ -114,6 +115,11 @@ export default async function WorkspacePage({
             <Button variant="outline">Agregar conector</Button>
           </div>
         </div>
+
+        {/* Instance controls */}
+        <section className="mb-10">
+          <InstanceControls slug={slug} />
+        </section>
 
         {/* Stats */}
         <section className="mb-10 grid gap-4 sm:grid-cols-3">

@@ -24,8 +24,36 @@ model User {
 
   sessions     Session[]
   auditEvents  AuditEvent[] @relation("AuditActor")
+  instance     Instance?
 
   @@map("users")
+}
+
+enum InstanceStatus {
+  starting
+  running
+  stopped
+  error
+}
+
+model Instance {
+  id              String         @id @default(cuid())
+  slug            String         @unique
+
+  status          InstanceStatus @default(stopped)
+
+  createdAt       DateTime       @default(now()) @map("created_at")
+  startedAt       DateTime?      @map("started_at")
+  stoppedAt       DateTime?      @map("stopped_at")
+  lastActivityAt  DateTime?      @map("last_activity_at")
+
+  containerId     String?        @map("container_id")
+  serverPassword  String         @map("server_password")
+
+  user            User           @relation(fields: [slug], references: [slug])
+
+  @@index([status])
+  @@map("instances")
 }
 
 model Session {
