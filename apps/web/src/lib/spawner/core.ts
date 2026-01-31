@@ -39,8 +39,11 @@ export async function startInstance(slug: string, userId: string): Promise<Start
     },
   })
 
+  let containerId: string | null = null
+
   try {
     const container = await docker.createContainer(slug, password)
+    containerId = container.id
     await docker.startContainer(container.id)
 
     await prisma.instance.update({
@@ -53,6 +56,7 @@ export async function startInstance(slug: string, userId: string): Promise<Start
     if (!healthy) {
       await docker.stopContainer(container.id).catch(() => {})
       await docker.removeContainer(container.id).catch(() => {})
+      containerId = null
       await prisma.instance.update({
         where: { slug },
         data: { status: 'error', containerId: null },
@@ -73,9 +77,15 @@ export async function startInstance(slug: string, userId: string): Promise<Start
 
     return { ok: true, status: 'running' }
   } catch {
+    // Clean up container if it was created to avoid orphans and name conflicts
+    if (containerId) {
+      await docker.stopContainer(containerId).catch(() => {})
+      await docker.removeContainer(containerId).catch(() => {})
+    }
+
     await prisma.instance.update({
       where: { slug },
-      data: { status: 'error' },
+      data: { status: 'error', containerId: null },
     }).catch(() => {})
 
     return { ok: false, error: 'start_failed' }
