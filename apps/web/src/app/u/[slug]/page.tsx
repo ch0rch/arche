@@ -1,5 +1,8 @@
+import { cookies } from 'next/headers'
+import { redirect } from 'next/navigation'
 import Link from "next/link";
 
+import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 
@@ -60,6 +63,24 @@ export default async function WorkspacePage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
+
+  // Verificar autenticación
+  const cookieStore = await cookies()
+  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value
+  
+  if (!token) {
+    redirect('/login')
+  }
+
+  const session = await getSessionFromToken(token)
+  if (!session) {
+    redirect('/login')
+  }
+
+  // Verificar autorización
+  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
+    redirect(`/u/${session.user.slug}`)
+  }
 
   return (
     <div className="relative min-h-screen bg-background text-foreground">

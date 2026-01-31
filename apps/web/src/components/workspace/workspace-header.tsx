@@ -2,6 +2,7 @@ import { Circle, Gear } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { SyncKbButton } from "./sync-kb-button";
 
 type WorkspaceHeaderProps = {
   slug: string;
@@ -39,14 +40,20 @@ export function WorkspaceHeader({
           />
         </div>
 
-        <Button
-          size="icon"
-          variant="ghost"
-          className="h-7 w-7"
-          aria-label="Ajustes"
-        >
-          <Gear size={16} weight="bold" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <SyncKbButton
+            slug={slug}
+            disabled={status !== "active"}
+          />
+          <Button
+            size="icon"
+            variant="ghost"
+            className="h-7 w-7"
+            aria-label="Ajustes"
+          >
+            <Gear size={16} weight="bold" />
+          </Button>
+        </div>
       </div>
     </header>
   );

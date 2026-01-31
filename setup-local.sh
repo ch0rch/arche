@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 COMPOSE_FILE="$ROOT_DIR/infra/compose/compose.yaml"
 ENV_FILE="$ROOT_DIR/apps/web/.env"
 ENV_EXAMPLE="$ROOT_DIR/apps/web/.env.example"
+WORKSPACE_IMAGE_DIR="$ROOT_DIR/infra/workspace-image"
+KB_SOURCE="$ROOT_DIR/kb"
+KB_DEST="${KB_HOST_PATH:-$HOME/.arche/kb}"
 
 if [ ! -f "$COMPOSE_FILE" ]; then
   printf "Missing compose file: %s\n" "$COMPOSE_FILE"
@@ -29,13 +32,29 @@ else
   exit 1
 fi
 
-# Pull OpenCode runtime image (required for workspace spawning)
-OPENCODE_IMAGE="${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode:1.1.45}"
-printf "Pulling OpenCode image: %s\n" "$OPENCODE_IMAGE"
-docker pull "$OPENCODE_IMAGE"
+# Build workspace image (OpenCode + git + init scripts)
+printf "Building workspace image: arche-workspace:latest\n"
+docker build -t arche-workspace:latest "$WORKSPACE_IMAGE_DIR"
+
+# Deploy Knowledge Base
+printf "Deploying Knowledge Base to: %s\n" "$KB_DEST"
+"$ROOT_DIR/scripts/deploy-kb.sh" "$KB_DEST"
+
+# Export KB_HOST_PATH for compose (used in compose.yaml)
+export KB_HOST_PATH="$KB_DEST"
 
 $COMPOSE -f "$COMPOSE_FILE" up -d --build
-$COMPOSE -f "$COMPOSE_FILE" exec web pnpm prisma migrate dev --name init
+
+# Wait for web service to be ready (pnpm install + prisma generate)
+printf "Waiting for web service to be ready (this may take a minute)...\n"
+until $COMPOSE -f "$COMPOSE_FILE" exec web pnpm prisma --version >/dev/null 2>&1; do
+  sleep 5
+  printf "."
+done
+printf " ready!\n"
+
+$COMPOSE -f "$COMPOSE_FILE" exec web pnpm prisma migrate deploy
 $COMPOSE -f "$COMPOSE_FILE" exec web pnpm db:seed
 
-printf "Done. Open http://arche.lvh.me\n"
+printf "\nDone. Open http://arche.lvh.me\n"
+printf "Login: admin@example.com / change-me\n"

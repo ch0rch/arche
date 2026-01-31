@@ -65,8 +65,13 @@ services:
       # Spawner
       DOCKER_PROXY_HOST: docker-socket-proxy
       DOCKER_PROXY_PORT: "2375"
-      OPENCODE_IMAGE: ghcr.io/anomalyco/opencode:1.1.45
+      # Usar imagen personalizada con git (build con: docker build -t arche-workspace infra/workspace-image)
+      OPENCODE_IMAGE: arche-workspace:latest
       OPENCODE_NETWORK: arche-internal
+      # Path al KB en el host (debe existir antes de crear workspaces)
+      # Configurar via: export KB_HOST_PATH=/path/to/kb
+      # O ejecutar: ./setup-local.sh (configura automáticamente)
+      KB_HOST_PATH: ${KB_HOST_PATH:-}
     networks:
       - default
       - arche-internal
@@ -89,3 +94,4 @@ networks:
 volumes:
   arche_postgres:
   arche_web_node_modules:
+  arche_kb:
