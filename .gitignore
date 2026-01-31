@@ -6,6 +6,13 @@ me.txt
 # Obsidian (local app state)
 .obsidian/
 
+# IDE
+.vscode/
+.idea/
+
+# Test coverage
+coverage/
+
 # Node / Next.js (apps/web)
 apps/web/node_modules/
 apps/web/.next/
