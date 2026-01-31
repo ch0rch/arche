@@ -68,7 +68,8 @@ export async function verify2FASetup(
   if (!user.totpSecret) return { ok: false, error: '2FA setup not initiated' }
 
   const secret = decryptSecret(user.totpSecret)
-  if (!verifyTotp(secret, code)) {
+  const result = verifyTotp(secret, code)
+  if (!result.valid) {
     await auditEvent({
       actorUserId: user.id,
       action: '2fa.setup_verification_failed',

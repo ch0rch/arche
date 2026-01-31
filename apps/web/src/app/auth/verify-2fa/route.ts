@@ -36,7 +36,7 @@ export async function POST(request: Request) {
   const user = await prisma.user.findUnique({
     where: { id: challenge.userId },
     select: {
-      id: true, email: true, slug: true, role: true, totpSecret: true,
+      id: true, email: true, slug: true, role: true, totpSecret: true, totpLastUsedAt: true,
       twoFactorRecovery: { where: { usedAt: null }, select: { id: true, codeHash: true } },
     },
   })
@@ -47,6 +47,7 @@ export async function POST(request: Request) {
   }
 
   let verified = false
+  let totpWindowStart: Date | undefined
 
   if (isRecoveryCode) {
     for (const recovery of user.twoFactorRecovery) {
@@ -63,12 +64,22 @@ export async function POST(request: Request) {
     }
   } else {
     const secret = decryptSecret(user.totpSecret)
-    verified = verifyTotp(secret, code)
+    const result = verifyTotp(secret, code, user.totpLastUsedAt)
+    verified = result.valid
+    totpWindowStart = result.windowStart
   }
 
   if (!verified) {
     await auditEvent({ actorUserId: user.id, action: 'auth.2fa.verification_failed', metadata: { isRecoveryCode } })
     return NextResponse.json({ ok: false, error: 'invalid_code' }, { status: 401 })
+  }
+
+  // Update last used timestamp for replay protection (only for TOTP, not recovery codes)
+  if (totpWindowStart) {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { totpLastUsedAt: totpWindowStart },
+    })
   }
 
   pending2FAMap.delete(hashedToken)

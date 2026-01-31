@@ -44,10 +44,35 @@ export function generateTotpUri(params: { secret: string; email: string; issuer:
   return totp.toString()
 }
 
-export function verifyTotp(secret: string, code: string): boolean {
-  if (!code || !/^\d{6}$/.test(code)) return false
+/**
+ * Verify a TOTP code with optional replay protection.
+ * @param secret - The TOTP secret (base32)
+ * @param code - The 6-digit code to verify
+ * @param lastUsedAt - Optional timestamp of last successful verification (for replay protection)
+ * @returns Object with valid flag and current window timestamp if valid
+ */
+export function verifyTotp(
+  secret: string,
+  code: string,
+  lastUsedAt?: Date | null
+): { valid: boolean; windowStart?: Date } {
+  if (!code || !/^\d{6}$/.test(code)) return { valid: false }
+
   const totp = new TOTP({ algorithm: 'SHA1', digits: TOTP_DIGITS, period: TOTP_PERIOD, secret })
-  return totp.validate({ token: code, window: TOTP_WINDOW }) !== null
+  const delta = totp.validate({ token: code, window: TOTP_WINDOW })
+
+  if (delta === null) return { valid: false }
+
+  // Calculate the window start time for this code
+  const now = Math.floor(Date.now() / 1000)
+  const windowStart = new Date((now - (now % TOTP_PERIOD) + delta * TOTP_PERIOD) * 1000)
+
+  // Replay protection: reject if code from same or earlier window was already used
+  if (lastUsedAt && windowStart <= lastUsedAt) {
+    return { valid: false }
+  }
+
+  return { valid: true, windowStart }
 }
 
 export function generateCurrentCode(secret: string): string {

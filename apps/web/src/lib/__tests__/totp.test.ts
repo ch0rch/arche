@@ -47,20 +47,42 @@ describe('totp', () => {
   })
 
   describe('verifyTotp', () => {
-    it('returns true for valid code', () => {
+    it('returns valid: true for valid code', () => {
       const secret = 'JBSWY3DPEHPK3PXP'
       const code = totp.generateCurrentCode(secret)
-      expect(totp.verifyTotp(secret, code)).toBe(true)
+      const result = totp.verifyTotp(secret, code)
+      expect(result.valid).toBe(true)
+      expect(result.windowStart).toBeInstanceOf(Date)
     })
 
-    it('returns false for invalid code', () => {
-      expect(totp.verifyTotp('JBSWY3DPEHPK3PXP', '000000')).toBe(false)
+    it('returns valid: false for invalid code', () => {
+      expect(totp.verifyTotp('JBSWY3DPEHPK3PXP', '000000').valid).toBe(false)
     })
 
-    it('returns false for malformed codes', () => {
-      expect(totp.verifyTotp('JBSWY3DPEHPK3PXP', '')).toBe(false)
-      expect(totp.verifyTotp('JBSWY3DPEHPK3PXP', '12345')).toBe(false)
-      expect(totp.verifyTotp('JBSWY3DPEHPK3PXP', 'abcdef')).toBe(false)
+    it('returns valid: false for malformed codes', () => {
+      expect(totp.verifyTotp('JBSWY3DPEHPK3PXP', '').valid).toBe(false)
+      expect(totp.verifyTotp('JBSWY3DPEHPK3PXP', '12345').valid).toBe(false)
+      expect(totp.verifyTotp('JBSWY3DPEHPK3PXP', 'abcdef').valid).toBe(false)
+    })
+
+    it('rejects replayed code (same window)', () => {
+      const secret = 'JBSWY3DPEHPK3PXP'
+      const code = totp.generateCurrentCode(secret)
+      const result1 = totp.verifyTotp(secret, code)
+      expect(result1.valid).toBe(true)
+
+      // Try to replay the same code
+      const result2 = totp.verifyTotp(secret, code, result1.windowStart)
+      expect(result2.valid).toBe(false)
+    })
+
+    it('accepts code when lastUsedAt is from earlier window', () => {
+      const secret = 'JBSWY3DPEHPK3PXP'
+      const code = totp.generateCurrentCode(secret)
+      // Set lastUsedAt to 2 minutes ago (4 windows back)
+      const oldTimestamp = new Date(Date.now() - 2 * 60 * 1000)
+      const result = totp.verifyTotp(secret, code, oldTimestamp)
+      expect(result.valid).toBe(true)
     })
   })
 

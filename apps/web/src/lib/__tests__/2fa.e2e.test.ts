@@ -52,8 +52,22 @@ describe.runIf(!SKIP)('2FA e2e', () => {
   it('generates and verifies TOTP code', () => {
     const secret = totpModule.generateSecret()
     const code = totpModule.generateCurrentCode(secret)
-    expect(totpModule.verifyTotp(secret, code)).toBe(true)
-    expect(totpModule.verifyTotp(secret, '000000')).toBe(false)
+    expect(totpModule.verifyTotp(secret, code).valid).toBe(true)
+    expect(totpModule.verifyTotp(secret, '000000').valid).toBe(false)
+  })
+
+  it('rejects replayed TOTP code', () => {
+    const secret = totpModule.generateSecret()
+    const code = totpModule.generateCurrentCode(secret)
+
+    // First use should succeed
+    const result1 = totpModule.verifyTotp(secret, code)
+    expect(result1.valid).toBe(true)
+    expect(result1.windowStart).toBeInstanceOf(Date)
+
+    // Replay with same windowStart should fail
+    const result2 = totpModule.verifyTotp(secret, code, result1.windowStart)
+    expect(result2.valid).toBe(false)
   })
 
   it('full 2FA lifecycle: setup → verify → use recovery → disable', async () => {
@@ -70,7 +84,7 @@ describe.runIf(!SKIP)('2FA e2e', () => {
 
     // 2. Verify TOTP code works
     const code = totpModule.generateCurrentCode(secret)
-    expect(totpModule.verifyTotp(secret, code)).toBe(true)
+    expect(totpModule.verifyTotp(secret, code).valid).toBe(true)
 
     // 3. Enable 2FA and store recovery codes
     const recoveryCodes = totpModule.generateRecoveryCodes(3)
