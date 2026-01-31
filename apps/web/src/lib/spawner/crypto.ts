@@ -16,6 +16,10 @@ export function encryptPassword(plaintext: string): string {
   return `${iv.toString('base64')}:${authTag.toString('base64')}:${encrypted.toString('base64')}`
 }
 
+/**
+ * Decrypts a password encrypted with encryptPassword().
+ * Used by OCPROXY to authenticate with OpenCode instances.
+ */
 export function decryptPassword(encoded: string): string {
   const key = getEncryptionKey()
   const [ivB64, authTagB64, encryptedB64] = encoded.split(':')
