@@ -1,9 +1,10 @@
 # Auth + sesiones + forwardAuth (BFF)
 
 - Asignado a: [[Company/People/Inaki Tajes|Iñaki Tajes]]
-- Estado: En progreso
+- Estado: Hecha
 
 - Issue: https://github.com/peaberry-studio/arche/issues/2
+- PR: https://github.com/peaberry-studio/arche/pull/5
 
 ## Objetivo
 

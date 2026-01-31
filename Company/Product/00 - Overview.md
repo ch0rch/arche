@@ -30,3 +30,5 @@
 - [[Company/Product/01 - Soporte - Indice KB]]
 - [[Company/Product/02 - Changelog de la app|Changelog de la app]]
 - [[Outputs/Comunicaciones/00 - Comunicaciones - Indice|Comunicaciones (blog/newsletter/Discord)]]
+- [[Arche/Architecture|Arquitectura (Arche)]]
+- [[Arche/Tasks/00 - Indice|Tareas (Arche)]]

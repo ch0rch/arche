@@ -17,7 +17,7 @@ Base de conocimiento de soporte para Arche.
 
 ## Procedimientos
 
-- (Añadir procedimientos conforme se documenten)
+- [[Company/Product/Soporte - Procedimientos|Soporte - Procedimientos]]
 
 ## Plantilla
 

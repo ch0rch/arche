@@ -17,6 +17,18 @@ Decisiones clave (v1):
 - 2FA se implementa con TOTP (apps tipo Google Authenticator) + recovery codes.
 - OpenCode no se expone a Internet; el navegador habla solo con Arche.
 
+## Estado actual (repositorio)
+
+- Auth + sesiones + `forwardAuth` (BFF): hecho (issue #2, PR #5).
+- Spawner + runtime OpenCode (Docker): hecho (issue #3, PR #10).
+- Infra/edge (Traefik + routing subdominios + `forwardAuth`): en progreso (issue #4).
+- Workspace web (visor + chat + sesiones múltiples): en progreso (issue #9).
+- 2FA (TOTP): en progreso (issue #7, PR #11).
+
+Ver también:
+
+- [[Arche/KB - Contratos de dominios, cookies y routing|Contratos de dominios, cookies y routing (v0)]]
+
 ## Requisitos
 
 ### Requisitos externos (minimos)
