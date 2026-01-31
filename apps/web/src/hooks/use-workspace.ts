@@ -218,7 +218,11 @@ export function useWorkspace({ slug, pollInterval = 5000 }: UseWorkspaceOptions)
   
   // Send message
   const sendMessage = useCallback(async (text: string, model?: { providerId: string; modelId: string }) => {
-    if (!activeSessionId) return
+    console.log('[useWorkspace] sendMessage called', { text, model, activeSessionId })
+    if (!activeSessionId) {
+      console.log('[useWorkspace] No activeSessionId, returning')
+      return
+    }
     
     // Add optimistic user message
     const tempUserMsg: WorkspaceMessage = {
@@ -234,7 +238,9 @@ export function useWorkspace({ slug, pollInterval = 5000 }: UseWorkspaceOptions)
     
     setIsSending(true)
     try {
+      console.log('[useWorkspace] Calling sendMessageAction...')
       const result = await sendMessageAction(slug, activeSessionId, text, model)
+      console.log('[useWorkspace] sendMessageAction result:', result)
       if (result.ok && result.message) {
         // Replace temp message and add assistant response
         setMessages(prev => {

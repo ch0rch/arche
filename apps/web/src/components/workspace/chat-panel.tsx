@@ -262,7 +262,7 @@ export function ChatPanel({
             </p>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-5">
             {messages.map((message) => (
               <div
                 key={message.id}
@@ -271,36 +271,62 @@ export function ChatPanel({
                   message.role === "user" ? "items-end" : "items-start"
                 )}
               >
-                <div
-                  className={cn(
-                    "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
-                    message.role === "assistant"
-                      ? "bg-muted/60 text-foreground"
-                      : message.role === "user"
-                        ? "bg-primary/15 text-foreground"
+                {message.role === "assistant" ? (
+                  // Assistant messages: no bubble, full width
+                  <div className="w-full text-sm leading-relaxed text-foreground">
+                    <p className="whitespace-pre-wrap">{message.content}</p>
+                    {message.attachments && message.attachments.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {message.attachments.map((attachment) => (
+                          <button
+                            key={`${message.id}-${attachment.label}`}
+                            type="button"
+                            onClick={() =>
+                              attachment.path ? onOpenFile(attachment.path) : undefined
+                            }
+                            className="flex items-center gap-1 rounded bg-muted/60 px-2 py-0.5 text-xs text-foreground/80 hover:bg-muted"
+                          >
+                            <File size={10} weight="bold" />
+                            {attachment.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  // User messages: gray bubble
+                  <div
+                    className={cn(
+                      "max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-relaxed",
+                      message.role === "user"
+                        ? "bg-muted/60 text-foreground"
                         : "bg-muted/40 text-muted-foreground italic"
-                  )}
-                >
-                  <p className="whitespace-pre-wrap">{message.content}</p>
-                  {message.attachments && message.attachments.length > 0 ? (
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {message.attachments.map((attachment) => (
-                        <button
-                          key={`${message.id}-${attachment.label}`}
-                          type="button"
-                          onClick={() =>
-                            attachment.path ? onOpenFile(attachment.path) : undefined
-                          }
-                          className="flex items-center gap-1 rounded bg-background/60 px-2 py-0.5 text-xs text-foreground/80 hover:bg-background"
-                        >
-                          <File size={10} weight="bold" />
-                          {attachment.label}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
-                </div>
-                <span className="px-1 text-[10px] text-muted-foreground/60">
+                    )}
+                  >
+                    <p className="whitespace-pre-wrap">{message.content}</p>
+                    {message.attachments && message.attachments.length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {message.attachments.map((attachment) => (
+                          <button
+                            key={`${message.id}-${attachment.label}`}
+                            type="button"
+                            onClick={() =>
+                              attachment.path ? onOpenFile(attachment.path) : undefined
+                            }
+                            className="flex items-center gap-1 rounded bg-background/60 px-2 py-0.5 text-xs text-foreground/80 hover:bg-background"
+                          >
+                            <File size={10} weight="bold" />
+                            {attachment.label}
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                )}
+                <span className={cn(
+                  "text-[10px] text-muted-foreground/60",
+                  message.role === "user" ? "px-1" : ""
+                )}>
                   {message.timestamp}
                 </span>
               </div>

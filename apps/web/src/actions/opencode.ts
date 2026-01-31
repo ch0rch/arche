@@ -3,6 +3,8 @@
 import { cookies } from 'next/headers'
 import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
 import { createInstanceClient } from '@/lib/opencode/client'
+import { prisma } from '@/lib/prisma'
+import { decryptPassword } from '@/lib/spawner/crypto'
 import type {
   WorkspaceFileNode,
   WorkspaceFileContent,
@@ -428,18 +430,119 @@ export async function sendMessageAction(
   message?: WorkspaceMessage
   error?: string
 }> {
-  const { error, client } = await getAuthorizedClient(slug)
-  if (error) return { ok: false, error }
+  console.log('[sendMessageAction] Called with:', { slug, sessionId, text: text.substring(0, 50), model })
+  
+  // Verify user is authorized
+  const session = await getAuthenticatedUser()
+  if (!session) {
+    return { ok: false, error: 'unauthorized' }
+  }
+  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
+    return { ok: false, error: 'forbidden' }
+  }
   
   try {
-    const result = await client!.session.prompt({
-      sessionID: sessionId,
-      parts: [{ type: 'text', text }],
-      model: model ? { providerID: model.providerId, modelID: model.modelId } : undefined
+    // Get credentials for direct fetch (bypassing SDK due to streaming issues)
+    const instance = await prisma.instance.findUnique({
+      where: { slug },
+      select: { serverPassword: true, status: true }
     })
     
+    if (!instance || !instance.serverPassword || instance.status !== 'running') {
+      console.log('[sendMessageAction] Instance unavailable:', { 
+        hasInstance: !!instance, 
+        hasPassword: !!instance?.serverPassword, 
+        status: instance?.status 
+      })
+      return { ok: false, error: 'instance_unavailable' }
+    }
+    
+    const password = decryptPassword(instance.serverPassword)
+    const authHeader = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
+    const baseUrl = `http://opencode-${slug}:4096`
+    
+    console.log('[sendMessageAction] Sending to:', `${baseUrl}/session/${sessionId}/message`)
+    
+    const body = {
+      parts: [{ type: 'text', text }],
+      model: model ? { providerID: model.providerId, modelID: model.modelId } : undefined
+    }
+    
+    const response = await fetch(`${baseUrl}/session/${sessionId}/message`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': authHeader
+      },
+      body: JSON.stringify(body)
+    })
+    
+    if (!response.ok) {
+      const errorText = await response.text()
+      return { ok: false, error: `HTTP ${response.status}: ${errorText}` }
+    }
+    
+    // Response is JSON with { info, parts } structure
+    const responseText = await response.text()
+    
+    let messageId = ''
+    let textContent = ''
+    
+    try {
+      const data = JSON.parse(responseText)
+      messageId = data.info?.id || `msg-${Date.now()}`
+      
+      // Extract text from parts array
+      if (Array.isArray(data.parts)) {
+        for (const part of data.parts) {
+          if (part.type === 'text' && part.text) {
+            textContent += part.text
+          }
+        }
+      }
+      
+      console.log('[sendMessageAction] Extracted text:', textContent.substring(0, 100))
+    } catch (e) {
+      // If not valid JSON, maybe it's streaming format (NDJSON)
+      console.log('[sendMessageAction] JSON parse failed, trying NDJSON')
+      const lines = responseText.split('\n')
+      
+      for (const line of lines) {
+        if (line.trim().startsWith('{')) {
+          try {
+            const event = JSON.parse(line)
+            if (event.messageID && !messageId) {
+              messageId = event.messageID
+            }
+            if (event.type === 'text' && event.text) {
+              textContent += event.text
+            }
+          } catch {
+            // Not JSON, might be plain text
+            if (line.trim()) textContent += line + '\n'
+          }
+        } else if (line.trim()) {
+          textContent += line + '\n'
+        }
+      }
+      textContent = textContent.trim()
+    }
+    
+    const result = {
+      data: {
+        info: {
+          id: messageId,
+          role: 'assistant' as const,
+          time: { created: Date.now() }
+        },
+        parts: [{ type: 'text', text: textContent }]
+      }
+    }
+
     if (!result.data) {
-      return { ok: false, error: 'send_failed' }
+      const errorMsg = result.error ? JSON.stringify(result.error) : 'send_failed'
+      console.log('[sendMessageAction] Error:', errorMsg)
+      return { ok: false, error: errorMsg }
     }
     
     const m = result.data

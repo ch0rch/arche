@@ -63,18 +63,30 @@ async function getInstanceCredentials(slug: string): Promise<{ username: string;
 export async function createInstanceClient(slug: string): Promise<OpencodeClient | null> {
   const credentials = await getInstanceCredentials(slug)
   if (!credentials) {
+    console.log(`[opencode/client] No credentials for ${slug}`)
     return null
   }
   
   const baseUrl = getInstanceUrl(slug)
+  console.log(`[opencode/client] Creating client for ${slug} at ${baseUrl}`)
+  
   const authHeader = `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64')}`
   
   const client = createOpencodeClient({
     baseUrl,
-    fetch: (input, init) => {
+    fetch: async (input, init) => {
       const headers = new Headers(init?.headers)
       headers.set('Authorization', authHeader)
-      return fetch(input, { ...init, headers })
+      const url = typeof input === 'string' ? input : input.url
+      console.log(`[opencode/client] ${init?.method ?? 'GET'} ${url}`)
+      try {
+        const response = await fetch(input, { ...init, headers })
+        console.log(`[opencode/client] Response: ${response.status}`)
+        return response
+      } catch (err) {
+        console.error(`[opencode/client] Fetch error:`, err)
+        throw err
+      }
     }
   })
   
