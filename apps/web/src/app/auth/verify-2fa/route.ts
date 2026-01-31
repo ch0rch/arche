@@ -4,6 +4,7 @@ import { prisma } from '@/lib/prisma'
 import { auditEvent, createSession, getCookieDomain, SESSION_COOKIE_NAME } from '@/lib/auth'
 import { hashSessionToken } from '@/lib/security'
 import { decryptSecret, verifyTotp } from '@/lib/totp'
+import { checkRateLimit, resetRateLimit } from '@/lib/rate-limit'
 import { pending2FAMap } from '../login/route'
 
 export async function POST(request: Request) {
@@ -22,6 +23,14 @@ export async function POST(request: Request) {
   if (!challenge || challenge.expiresAt < Date.now()) {
     pending2FAMap.delete(hashedToken)
     return NextResponse.json({ ok: false, error: 'challenge_expired' }, { status: 401 })
+  }
+
+  const limit = checkRateLimit(`2fa:${challenge.userId}`, 5, 15 * 60 * 1000)
+  if (!limit.allowed) {
+    return NextResponse.json(
+      { ok: false, error: 'rate_limited', retryAfter: Math.ceil((limit.resetAt - Date.now()) / 1000) },
+      { status: 429 }
+    )
   }
 
   const user = await prisma.user.findUnique({
@@ -63,6 +72,7 @@ export async function POST(request: Request) {
   }
 
   pending2FAMap.delete(hashedToken)
+  resetRateLimit(`2fa:${user.id}`)
 
   const { token, expiresAt } = await createSession({ userId: user.id, headers: request.headers })
   await auditEvent({ actorUserId: user.id, action: 'auth.login.succeeded', metadata: { via: '2fa' } })
