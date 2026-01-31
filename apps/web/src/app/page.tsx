@@ -1,186 +1,389 @@
 "use client";
 
-import { useState } from "react";
+import Image from "next/image";
+import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 
-type Result = {
-  action: string;
-  status: number;
-  body?: string;
-};
+const features = [
+  {
+    title: "Se adapta a tu empresa",
+    description:
+      "Aprende tu contexto, lenguaje y prioridades. Los procesos internos se interiorizan automáticamente.",
+  },
+  {
+    title: "Subagentes especializados",
+    description:
+      "Ventas, soporte, operaciones, finanzas. Cada área recibe un agente entrenado con sus procesos.",
+  },
+  {
+    title: "Especialización compartida",
+    description:
+      "Cada ajuste se replica a todo el equipo. El conocimiento se distribuye sin fricción.",
+  },
+  {
+    title: "Multiproveedor sin lock-in",
+    description:
+      "AWS, GCP, Azure u on-premise. Despliega donde quieras con un clic.",
+  },
+];
+
+const capabilities = [
+  "Multiusuario con roles",
+  "Conectores MCP",
+  "One-click deployment",
+  "Auditoría completa",
+];
+
+const words = ["aprende", "se adapta", "evoluciona", "conecta"];
 
 export default function Home() {
-  const [email, setEmail] = useState("admin@example.com");
-  const [password, setPassword] = useState("change-me");
-  const [host, setHost] = useState("u-admin.arche.lvh.me");
-  const [result, setResult] = useState<Result | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
+  const [wordIndex, setWordIndex] = useState(0);
+  const [isVisible, setIsVisible] = useState(true);
+  const [scrollY, setScrollY] = useState(0);
+  const secondarySectionRef = useRef<HTMLDivElement>(null);
+  const [secondaryVisible, setSecondaryVisible] = useState(false);
 
-  const handleLogin = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setBusy("login");
-    try {
-      const response = await fetch("/auth/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, password }),
-        credentials: "include",
-      });
-      const text = await response.text();
-      let body = text;
-      try {
-        body = JSON.stringify(JSON.parse(text), null, 2);
-      } catch {
-        // keep raw text
-      }
-      setResult({ action: "login", status: response.status, body });
-    } catch (error) {
-      setResult({ action: "login", status: 0, body: String(error) });
-    } finally {
-      setBusy(null);
-    }
-  };
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setIsVisible(false);
+      setTimeout(() => {
+        setWordIndex((prev) => (prev + 1) % words.length);
+        setIsVisible(true);
+      }, 300);
+    }, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
-  const handleLogout = async () => {
-    setBusy("logout");
-    try {
-      const response = await fetch("/auth/logout", {
-        method: "POST",
-        credentials: "include",
-      });
-      const text = await response.text();
-      setResult({ action: "logout", status: response.status, body: text || "(empty)" });
-    } catch (error) {
-      setResult({ action: "logout", status: 0, body: String(error) });
-    } finally {
-      setBusy(null);
-    }
-  };
+  useEffect(() => {
+    const handleScroll = () => {
+      setScrollY(window.scrollY);
+    };
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => window.removeEventListener("scroll", handleScroll);
+  }, []);
 
-  const handleForwardAuth = async () => {
-    setBusy("forwardauth");
-    try {
-      const response = await fetch("/auth/traefik", {
-        headers: { "X-Forwarded-Host": host },
-        credentials: "include",
-      });
-      setResult({ action: "forwardAuth", status: response.status, body: "(no body)" });
-    } catch (error) {
-      setResult({ action: "forwardAuth", status: 0, body: String(error) });
-    } finally {
-      setBusy(null);
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            setSecondaryVisible(true);
+          }
+        });
+      },
+      { threshold: 0.2 }
+    );
+
+    if (secondarySectionRef.current) {
+      observer.observe(secondarySectionRef.current);
     }
-  };
+
+    return () => observer.disconnect();
+  }, []);
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-background text-foreground">
-      <div className="pointer-events-none absolute inset-0 organic-background opacity-70" />
-      <div className="pointer-events-none absolute -left-24 top-[-6rem] h-[18rem] w-[18rem] rounded-full bg-[hsl(32_85%_90%_/_0.55)] blur-3xl" />
-      <div className="pointer-events-none absolute right-[-10rem] top-[4rem] h-[22rem] w-[22rem] rounded-full bg-[hsl(24_90%_85%_/_0.5)] blur-3xl" />
-      <div className="pointer-events-none absolute bottom-[-14rem] left-[10%] h-[26rem] w-[26rem] rounded-full bg-[hsl(40_70%_92%_/_0.6)] blur-3xl" />
+    <div className="relative min-h-screen bg-background text-foreground overflow-hidden">
+      <main className="relative">
+        {/* Hero with full background image */}
+        <section className="relative min-h-screen flex items-end justify-center overflow-hidden pb-32">
+          {/* Background Image */}
+          <div className="absolute inset-0">
+            <Image
+              src="/landing-background.jpeg"
+              alt="La conexión entre humanidad y tecnología"
+              fill
+              className="object-cover"
+              priority
+              quality={90}
+              style={{ objectPosition: 'center 30%' }}
+            />
+            {/* Gradient overlay - starts from top with subtle tint, solid before image edge */}
+            <div 
+              className="absolute inset-0"
+              style={{
+                background: `linear-gradient(to bottom,
+                  rgba(120, 53, 15, 0.05) 0%,
+                  rgba(120, 53, 15, 0.1) 15%,
+                  rgba(120, 53, 15, 0.2) 30%,
+                  rgba(120, 53, 15, 0.35) 45%,
+                  rgba(120, 53, 15, 0.55) 55%,
+                  rgba(120, 53, 15, 0.75) 65%,
+                  rgba(120, 53, 15, 0.9) 75%,
+                  #78350f 85%,
+                  #78350f 100%
+                )`
+              }}
+            />
+          </div>
 
-      <main className="relative mx-auto flex min-h-screen max-w-6xl flex-col gap-12 px-6 py-16 lg:gap-14">
-        <header className="space-y-6 animate-in fade-in-0 slide-in-from-bottom-4 duration-700">
-          <div className="flex flex-wrap items-center gap-3">
-            <Badge className="rounded-full border border-primary/30 bg-primary/10 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.35em] text-primary shadow-none">
-              Arche Control Room
-            </Badge>
-            <Badge
-              variant="outline"
-              className="rounded-full border border-border/70 bg-card/80 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.35em] text-foreground/70 shadow-none"
-            >
-              Stack: Traefik + Postgres + Web
+          {/* Logo top center with beta badge */}
+          <div className="absolute top-12 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-3">
+            <p className="font-[family-name:var(--font-display)] text-5xl sm:text-6xl lg:text-7xl font-black text-amber-800 tracking-normal">
+              Archē
+            </p>
+            <Badge className="bg-amber-800/80 text-amber-100 border-amber-700/50">
+              BETA
             </Badge>
           </div>
-          <h1 className="max-w-3xl font-[family:var(--font-fraunces)] text-4xl font-semibold tracking-tight sm:text-5xl lg:text-6xl">
-            Sesiones, routing y verificacion de{" "}
-            <span className="text-primary">acceso</span> en un solo panel.
-          </h1>
-          <p className="max-w-2xl text-base text-muted-foreground sm:text-lg">
-            Este entorno esta pensado para validar auth local, cookies httpOnly y el
-            flujo de forwardAuth antes de integrar UI completa. Usa el formulario
-            para iniciar sesion y comprobar hosts con aislamiento por slug.
-          </p>
-          <div className="flex flex-wrap gap-3">
-            <Button
-              asChild
-              variant="outline"
-              className="h-11 rounded-full border border-primary/30 bg-primary/15 px-8 text-[11px] font-semibold uppercase tracking-[0.35em] text-primary shadow-none hover:bg-primary/20 hover:text-primary"
-            >
-              <a href="#auth-console">Probar login</a>
-            </Button>
-            <Button
-              asChild
-              className="h-11 rounded-full bg-primary px-8 text-[11px] font-semibold uppercase tracking-[0.35em] text-primary-foreground shadow-none hover:bg-primary/90"
-            >
-              <a href="#latest-response">Ver ultima respuesta</a>
-            </Button>
-          </div>
-        </header>
 
-        <section className="space-y-6">
-          <div className="flex flex-wrap items-end justify-between gap-3">
-            <div>
-              <p className="text-xs uppercase tracking-[0.35em] text-primary/70">
-                Checks
-              </p>
-              <h2 className="text-2xl font-semibold font-[family:var(--font-fraunces)]">
-                Quick checks
+          {/* Content */}
+          <div className="relative z-10 mx-auto max-w-5xl px-6 text-center">
+
+            <h1 className="font-[family-name:var(--font-display)] text-5xl font-semibold tracking-tight sm:text-6xl lg:text-7xl xl:text-8xl">
+              <span className="text-amber-50 drop-shadow-[0_2px_10px_rgba(0,0,0,0.3)]">La IA que</span>{" "}
+              <span
+                className={`inline-block text-orange-200 transition-all duration-300 drop-shadow-[0_0_30px_rgba(251,146,60,0.5)] ${
+                  isVisible
+                    ? "opacity-100 translate-y-0"
+                    : "opacity-0 -translate-y-2"
+                }`}
+              >
+                {words[wordIndex]}
+              </span>
+              <br />
+              <span className="text-amber-50 drop-shadow-[0_2px_10px_rgba(0,0,0,0.3)]">con tu empresa</span>
+            </h1>
+
+            <div className="mt-12 flex flex-wrap items-center justify-center gap-4">
+              <Button asChild size="lg" className="text-lg px-8 py-6 bg-primary text-primary-foreground hover:bg-primary/90">
+                <Link href="/signup">Solicitar acceso</Link>
+              </Button>
+              <Button
+                asChild
+                variant="outline"
+                size="lg"
+                className="text-lg px-8 py-6 bg-white/10 border-white/30 text-white hover:bg-white/20 backdrop-blur-sm"
+              >
+                <Link href="/login">Entrar</Link>
+              </Button>
+            </div>
+
+          </div>
+
+          {/* Scroll indicator - positioned at bottom of section */}
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 animate-bounce">
+            <div className="flex flex-col items-center gap-2 text-orange-100/70">
+              <span className="text-sm">Descubre más</span>
+              <svg
+                className="h-6 w-6"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 14l-7 7m0 0l-7-7m7 7V3"
+                />
+              </svg>
+            </div>
+          </div>
+        </section>
+
+        {/* Secondary Hero Section - Warm amber background, animated on scroll */}
+        <section
+          ref={secondarySectionRef}
+          className="relative min-h-screen flex items-center justify-center py-32"
+          style={{
+            background: `linear-gradient(to bottom,
+              #78350f 0%,
+              #92400e 20%,
+              #b45309 40%,
+              #d97706 60%,
+              #f59e0b 80%,
+              #fbbf24 100%
+            )`
+          }}
+        >
+          <div className="mx-auto max-w-6xl px-6 text-center">
+            <div
+              className={`transition-all duration-1000 ease-out ${
+                secondaryVisible
+                  ? "opacity-100 translate-y-0"
+                  : "opacity-0 translate-y-16"
+              }`}
+            >
+              <h2 className="font-[family-name:var(--font-display)] text-4xl font-semibold tracking-tight text-orange-50 sm:text-5xl lg:text-6xl xl:text-7xl">
+                Donde la{" "}
+                <span className="text-orange-200">sabiduría ancestral</span>
+                <br />
+                se encuentra con la{" "}
+                <span className="text-orange-200">inteligencia del mañana</span>
               </h2>
             </div>
-            <Badge
-              variant="secondary"
-              className="rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-[10px] font-medium uppercase tracking-[0.35em] text-primary/80 shadow-none"
-            >
-              Local only
-            </Badge>
+
           </div>
-          <div className="overflow-hidden rounded-none border border-dashed border-border/70 bg-card/50">
-            <div className="flex flex-col divide-y divide-dashed divide-border/70 lg:flex-row lg:divide-y-0 lg:divide-x">
+        </section>
+
+        {/* Transition: from yellow to white */}
+        <div 
+          className="h-64 sm:h-80 lg:h-96"
+          style={{
+            background: `linear-gradient(to bottom,
+              #fbbf24 0%,
+              #fcd34d 15%,
+              #fde68a 30%,
+              #fef3c7 50%,
+              #fefce8 70%,
+              #ffffff 100%
+            )`
+          }}
+        />
+
+        {/* Value Proposition Section - Main Claims - White background */}
+        <section className="relative pt-16 pb-32 bg-white">
+          <div className="mx-auto max-w-5xl px-6 text-center">
+            <p className="text-sm font-medium text-primary uppercase tracking-wider mb-6">
+              Qué es Arche
+            </p>
+            <h2 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight text-gray-900 sm:text-4xl lg:text-5xl leading-tight">
+              Arche interioriza tus procesos, crea subagentes especializados
+              por área y comparte el conocimiento entre todo tu equipo.
+            </h2>
+
+            {/* Main Claims */}
+            <div className="mt-20 grid gap-8 sm:grid-cols-3">
+              <div className="space-y-4">
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+                  <svg className="h-8 w-8 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                  </svg>
+                </div>
+                <h3 className="font-[family-name:var(--font-display)] text-xl font-semibold text-gray-900">
+                  Procesos interiorizados
+                </h3>
+                <p className="text-gray-600">
+                  Aprende tu contexto, lenguaje y prioridades de forma automática.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+                  <svg className="h-8 w-8 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                </div>
+                <h3 className="font-[family-name:var(--font-display)] text-xl font-semibold text-gray-900">
+                  Especialización compartida
+                </h3>
+                <p className="text-gray-600">
+                  Cada ajuste se replica a todo el equipo sin fricción.
+                </p>
+              </div>
+
+              <div className="space-y-4">
+                <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">
+                  <svg className="h-8 w-8 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                </div>
+                <h3 className="font-[family-name:var(--font-display)] text-xl font-semibold text-gray-900">
+                  Sin vendor lock-in
+                </h3>
+                <p className="text-gray-600">
+                  AWS, GCP, Azure u on-premise. Despliega donde quieras.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-16">
+              <Button asChild size="lg" className="text-lg px-10 py-7">
+                <Link href="/signup">Comienza tu transformación</Link>
+              </Button>
+            </div>
+          </div>
+        </section>
+
+        {/* Automagicamente Section */}
+        <section className="bg-white py-24 lg:py-32">
+          <div className="mx-auto max-w-4xl px-6 text-center">
+            <p className="text-xl sm:text-2xl text-gray-600 mb-4">
+              Simplemente funciona.
+            </p>
+            <h2 className="font-[family-name:var(--font-display)] text-5xl sm:text-6xl lg:text-7xl font-bold text-primary">
+              Automágicamente.
+            </h2>
+          </div>
+        </section>
+
+        {/* Features - White background continues */}
+        <section className="bg-white py-20 lg:py-28">
+          <div className="mx-auto max-w-6xl px-6">
+            <div className="mb-12 max-w-2xl">
+              <p className="text-sm font-medium text-primary">Capacidades</p>
+              <h2 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight text-gray-900 sm:text-4xl">
+                IA corporativa sin fricción
+              </h2>
+              <p className="mt-4 text-gray-600">
+                Donde la inteligencia artificial se encuentra con el conocimiento
+                humano de tu empresa.
+              </p>
+            </div>
+
+            <div className="grid gap-6 sm:grid-cols-2">
+              {features.map((feature, i) => (
+                <div
+                  key={feature.title}
+                  className="group relative rounded-2xl border border-gray-200 bg-gray-50 p-6 transition-all hover:border-primary/30 hover:bg-primary/5"
+                >
+                  <div className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-sm font-semibold text-primary">
+                    {i + 1}
+                  </div>
+                  <h3 className="font-[family-name:var(--font-display)] text-lg font-semibold text-gray-900">
+                    {feature.title}
+                  </h3>
+                  <p className="mt-2 text-sm leading-relaxed text-gray-600">
+                    {feature.description}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* How it works - Slight gray for contrast */}
+        <section className="bg-gray-50 border-y border-gray-200">
+          <div className="mx-auto max-w-6xl px-6 py-20 lg:py-28">
+            <div className="mb-12 text-center">
+              <p className="text-sm font-medium text-primary">Cómo funciona</p>
+              <h2 className="mt-2 font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight text-gray-900 sm:text-4xl">
+                Tres pasos para empezar
+              </h2>
+            </div>
+
+            <div className="grid gap-8 sm:grid-cols-3">
               {[
                 {
-                  title: "Login local",
-                  description: "Email + password con sesion persistida en Postgres.",
+                  step: "01",
+                  title: "Conecta tus sistemas",
+                  description:
+                    "Integra CRM, tickets, docs y data interna con conectores MCP.",
                 },
                 {
-                  title: "Cookies",
-                  description: "Cookie httpOnly y TTL configurable por entorno.",
+                  step: "02",
+                  title: "Entrena y especializa",
+                  description:
+                    "El agente aprende tus procesos y crea subagentes por área.",
                 },
                 {
-                  title: "ForwardAuth",
-                  description: "Validacion de host y slug para u-<slug>.",
+                  step: "03",
+                  title: "Despliega en un clic",
+                  description:
+                    "Multiproveedor con aislamiento, auditoría y control total.",
                 },
-                {
-                  title: "Auditoria",
-                  description: "Eventos de auth registrados como audit_events.",
-                },
-              ].map((item, index) => (
-                <div key={item.title} className="flex-1 space-y-4 p-6">
-                  <div className="flex items-center justify-between text-[10px] uppercase tracking-[0.35em] text-primary/70">
-                    <span>Check</span>
-                    {index === 1 ? (
-                      <span className="rounded-full border border-primary/30 bg-primary/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.25em] text-primary">
-                        Popular
-                      </span>
-                    ) : (
-                      <span className="h-2 w-2 rounded-full bg-primary/70" />
-                    )}
+              ].map((item) => (
+                <div key={item.step} className="text-center sm:text-left">
+                  <div className="inline-block font-[family-name:var(--font-display)] text-5xl font-bold text-primary/20">
+                    {item.step}
                   </div>
-                  <h3 className="text-lg font-semibold font-[family:var(--font-fraunces)] text-foreground">
+                  <h3 className="mt-4 font-[family-name:var(--font-display)] text-lg font-semibold text-gray-900">
                     {item.title}
                   </h3>
-                  <p className="text-sm text-muted-foreground">
+                  <p className="mt-2 text-sm leading-relaxed text-gray-600">
                     {item.description}
                   </p>
                 </div>
@@ -189,134 +392,50 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
-          <Card
-            id="latest-response"
-            className="rounded-lg border border-border/70 bg-card/70 shadow-sm animate-in fade-in-0 slide-in-from-bottom-4 duration-700 [animation-delay:120ms]"
-          >
-            <CardHeader className="space-y-3 border-b border-border/60 pb-4">
-              <CardTitle className="text-sm font-semibold uppercase tracking-[0.2em]">
-                Ultima respuesta
-              </CardTitle>
-              <CardDescription>
-                Resumen del ultimo request ejecutado.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="pt-6">
-              <div className="rounded-md border border-border/60 bg-card/80 p-4">
-                {result ? (
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Badge className="rounded-full border border-primary/30 bg-primary/10 text-primary">
-                        {result.action}
-                      </Badge>
-                      <Badge
-                        variant="secondary"
-                        className="rounded-full border border-border/60 bg-card/80 text-muted-foreground"
-                      >
-                        status {result.status}
-                      </Badge>
-                    </div>
-                    <pre className="whitespace-pre-wrap break-words rounded-md border border-border/60 bg-muted/30 p-3 text-xs text-muted-foreground">
-                      {result.body || "(empty)"}
-                    </pre>
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No requests yet.</p>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+        {/* CTA */}
+        <section className="bg-white py-20 lg:py-28">
+          <div className="mx-auto max-w-6xl px-6">
+            <div className="relative overflow-hidden rounded-3xl border border-primary/20 bg-gradient-to-br from-primary/10 via-primary/5 to-white p-8 lg:p-12">
+              {/* Decorative elements */}
+              <div className="pointer-events-none absolute -right-20 -top-20 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
+              <div className="pointer-events-none absolute -bottom-20 -left-20 h-48 w-48 rounded-full bg-primary/10 blur-3xl" />
 
-          <Card
-            id="auth-console"
-            className="rounded-lg border border-primary/20 bg-accent/40 shadow-sm animate-in fade-in-0 slide-in-from-bottom-4 duration-700 [animation-delay:220ms]"
-          >
-            <CardHeader className="space-y-3 border-b border-primary/20 pb-4">
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle className="text-xl font-[family:var(--font-fraunces)]">
-                  Auth console
-                </CardTitle>
-                <Badge className="rounded-full border border-primary/30 bg-primary/10 text-primary">
-                  Popular
-                </Badge>
-              </div>
-              <CardDescription>
-                Usa las credenciales seed para iniciar sesion y revisar el estado
-                del endpoint de Traefik.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-6 pt-6">
-              <form onSubmit={handleLogin} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    className="rounded-md border border-border/60 bg-card/90 shadow-none"
-                    required
-                  />
+              <div className="relative flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
+                <div className="space-y-4 max-w-xl">
+                  <h2 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight text-gray-900 sm:text-4xl">
+                    Convierte tu IA en el Arche de tu empresa
+                  </h2>
+                  <p className="text-gray-600">
+                    Haz que tus procesos se interioricen automáticamente y comparte
+                    la especialización entre todos los equipos.
+                  </p>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="password">Password</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    className="rounded-md border border-border/60 bg-card/90 shadow-none"
-                    required
-                  />
-                </div>
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <Button
-                    type="submit"
-                    disabled={busy !== null}
-                    className="flex-1 rounded-full shadow-none"
-                  >
-                    {busy === "login" ? "Logging in..." : "Login"}
+                <div className="flex flex-wrap gap-3">
+                  <Button asChild size="lg">
+                    <Link href="/signup">Solicitar acceso</Link>
                   </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={busy !== null}
-                    onClick={handleLogout}
-                    className="flex-1 rounded-full border border-primary/30 bg-primary/15 text-primary shadow-none hover:bg-primary/20 hover:text-primary"
-                  >
-                    {busy === "logout" ? "Logging out..." : "Logout"}
+                  <Button asChild variant="outline" size="lg">
+                    <Link href="/login">Entrar</Link>
                   </Button>
                 </div>
-              </form>
-
-              <div className="space-y-3">
-                <div className="space-y-2">
-                  <Label htmlFor="forward-host">ForwardAuth host</Label>
-                  <Input
-                    id="forward-host"
-                    value={host}
-                    onChange={(event) => setHost(event.target.value)}
-                    placeholder="u-admin.arche.lvh.me"
-                    className="rounded-md border border-border/60 bg-card/90 shadow-none"
-                  />
-                </div>
-                <Button
-                  type="button"
-                  onClick={handleForwardAuth}
-                  disabled={busy !== null}
-                  className="w-full rounded-full shadow-none"
-                >
-                  {busy === "forwardauth" ? "Checking..." : "Check forwardAuth"}
-                </Button>
-                <p className="text-xs text-muted-foreground">
-                  Tip: abre <span className="font-semibold">arche.lvh.me</span> para usar
-                  la cookie del dominio y probar el routing con Traefik.
-                </p>
               </div>
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </section>
+
+        {/* Footer */}
+        <footer className="bg-white border-t border-gray-200">
+          <div className="mx-auto max-w-6xl px-6 py-8">
+            <div className="flex flex-col items-center justify-between gap-4 sm:flex-row">
+              <p className="font-[family-name:var(--font-display)] text-lg font-semibold text-gray-900">
+                Arche
+              </p>
+              <p className="text-sm text-gray-500">
+                IA corporativa que aprende y se especializa.
+              </p>
+            </div>
+          </div>
+        </footer>
       </main>
     </div>
   );
