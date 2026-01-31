@@ -9,6 +9,7 @@ Bienvenido al centro de ayuda de Arche.
 - [[Company/Product/docs/manage-subscription|Gestionar suscripción]]
 - [[Company/Product/docs/delete-account|Eliminar cuenta]]
 - [[Company/Product/docs/contact|Contacto]]
+- [[Company/Product/docs/design-guidelines|Guía de estilo UI]]
 
 ## Más información
 
