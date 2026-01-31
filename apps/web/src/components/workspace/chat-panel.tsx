@@ -30,6 +30,9 @@ import {
   XCircle
 } from "@phosphor-icons/react";
 
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -226,7 +229,13 @@ function MessagePartRenderer({
 }) {
   switch (part.type) {
     case 'text':
-      return <p className="whitespace-pre-wrap">{part.text}</p>;
+      return (
+        <div className="markdown-content">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            {part.text}
+          </ReactMarkdown>
+        </div>
+      );
     
     case 'reasoning':
       return (
@@ -408,8 +417,12 @@ export function ChatPanel({
   }, [sessions]);
 
   // Auto-scroll to bottom when new messages arrive
+  const prevMessagesLengthRef = useRef(0);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const isInitialLoad = prevMessagesLengthRef.current === 0 && messages.length > 0;
+    const behavior = isInitialLoad ? "instant" : "smooth";
+    messagesEndRef.current?.scrollIntoView({ behavior });
+    prevMessagesLengthRef.current = messages.length;
   }, [messages]);
 
   const scrollTabs = (direction: "left" | "right") => {
@@ -654,7 +667,11 @@ export function ChatPanel({
                         ))}
                       </div>
                     ) : message.content ? (
-                      <p className="whitespace-pre-wrap">{message.content}</p>
+                      <div className="markdown-content">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {message.content}
+                        </ReactMarkdown>
+                      </div>
                     ) : null}
                     {/* Don't show anything for empty pending messages - status indicator is at the bottom */}
                     

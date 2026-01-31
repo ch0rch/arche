@@ -213,7 +213,7 @@ export function InspectorPanel({
                     </div>
                   </div>
                   <div className="border-t border-border/60" />
-                  <div className="flex-1 overflow-y-auto px-4 py-4">
+                  <div className="flex-1 overflow-y-auto px-8 py-6">
                     <MarkdownPreview content={activeFile.content} />
                   </div>
                 </>
