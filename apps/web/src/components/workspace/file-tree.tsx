@@ -45,7 +45,7 @@ export function FileTree({ nodes, activePath, onSelect }: FileTreeProps) {
             "transition-colors hover:bg-muted/60",
             isActive
               ? "bg-primary/10 text-primary"
-              : "text-muted-foreground hover:text-foreground"
+              : "text-foreground/80 hover:text-foreground"
           )}
           style={{ paddingLeft }}
         >
@@ -60,7 +60,7 @@ export function FileTree({ nodes, activePath, onSelect }: FileTreeProps) {
                 )}
               />
               {isOpen ? (
-                <FolderOpen size={16} weight="bold" className="shrink-0 text-muted-foreground" />
+                <FolderOpen size={16} weight="bold" className="shrink-0 text-primary/70" />
               ) : (
                 <Folder size={16} weight="bold" className="shrink-0 text-muted-foreground" />
               )}

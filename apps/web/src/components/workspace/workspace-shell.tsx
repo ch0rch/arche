@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import {
   chatMessages as initialMessages,
@@ -26,7 +27,6 @@ type WorkspaceShellProps = {
 
 type StoredState = {
   activeFilePath?: string;
-  openFilePaths?: string[];
   activeSessionId?: string;
   sessions?: ChatSession[];
   messages?: ChatMessage[];
@@ -116,6 +116,8 @@ const createSystemMessage = (sessionId: string, content: string): ChatMessage =>
 });
 
 export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
   const containerRef = useRef<HTMLDivElement>(null);
   const storageKey = `arche.workspace.${slug}.mock-state`;
   const [hasHydrated, setHasHydrated] = useState(false);
@@ -134,11 +136,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     initialSessions[0]?.id ?? "session-01"
   );
 
-  const [openFilePaths, setOpenFilePaths] = useState<string[]>(
-    initialFilePath ? [initialFilePath] : defaultFilePath ? [defaultFilePath] : []
-  );
-  const [activeFilePath, setActiveFilePath] = useState<string | null>(
-    initialFilePath ?? defaultFilePath ?? null
+  const [activeFilePath, setActiveFilePath] = useState(
+    initialFilePath ?? defaultFilePath
   );
 
   useEffect(() => {
@@ -173,9 +172,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       }
       if (storedState.activeSessionId) {
         setActiveSessionId(storedState.activeSessionId);
-      }
-      if (storedState.openFilePaths?.length) {
-        setOpenFilePaths(storedState.openFilePaths);
       }
       if (!initialFilePath && storedState.activeFilePath) {
         setActiveFilePath(storedState.activeFilePath);
@@ -214,8 +210,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       sessions,
       messages,
       activeSessionId,
-      activeFilePath: activeFilePath ?? undefined,
-      openFilePaths,
+      activeFilePath,
       leftWidth,
       rightWidth,
       leftCollapsed,
@@ -227,13 +222,29 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     messages,
     activeSessionId,
     activeFilePath,
-    openFilePaths,
     leftWidth,
     rightWidth,
     leftCollapsed,
     rightCollapsed,
     hasHydrated
   ]);
+
+  useEffect(() => {
+    const pathParam = searchParams.get("path");
+    if (pathParam && pathParam !== activeFilePath) {
+      setActiveFilePath(pathParam);
+      setRightCollapsed(false);
+      setRightTab("preview");
+    }
+  }, [searchParams, activeFilePath]);
+
+  const updateUrlPath = (path: string) => {
+    const current = searchParams.get("path");
+    if (current === path) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.set("path", path);
+    router.replace(`?${params.toString()}`, { scroll: false });
+  };
 
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId),
@@ -243,13 +254,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   const activeMessages = useMemo(
     () => messages.filter((message) => message.sessionId === activeSessionId),
     [messages, activeSessionId]
-  );
-
-  const openFiles = useMemo(
-    () => openFilePaths
-      .map((path) => workspaceFiles[path])
-      .filter((file): file is NonNullable<typeof file> => file != null),
-    [openFilePaths]
   );
 
   const activeFile = useMemo(
@@ -297,37 +301,11 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     setMessages((prev) => prev.filter((msg) => msg.sessionId !== sessionId));
   };
 
-  const handleRenameSession = (sessionId: string, newTitle: string) => {
-    setSessions((prev) =>
-      prev.map((session) =>
-        session.id === sessionId ? { ...session, title: newTitle } : session
-      )
-    );
-  };
-
   const handleOpenFile = (path: string) => {
-    setOpenFilePaths((prev) => 
-      prev.includes(path) ? prev : [...prev, path]
-    );
     setActiveFilePath(path);
     setRightTab("preview");
     setRightCollapsed(false);
-  };
-
-  const handleSelectFile = (path: string) => {
-    setActiveFilePath(path);
-    setRightTab("preview");
-  };
-
-  const handleCloseFile = (path: string) => {
-    setOpenFilePaths((prev) => {
-      const filtered = prev.filter((p) => p !== path);
-      if (path === activeFilePath) {
-        const newActive = filtered.length > 0 ? filtered[filtered.length - 1] : null;
-        setActiveFilePath(newActive);
-      }
-      return filtered;
-    });
+    updateUrlPath(path);
   };
 
   const handleResizeLeft = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -434,16 +412,11 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             sessions={sessions}
             messages={activeMessages}
             activeSessionId={activeSessionId}
-            openFilesCount={openFilePaths.length}
+            activeFilePath={activeFilePath}
             onSelectSession={handleSelectSession}
             onCreateSession={handleCreateSession}
             onCloseSession={handleCloseSession}
-            onRenameSession={handleRenameSession}
             onOpenFile={handleOpenFile}
-            onShowContext={() => {
-              setRightCollapsed(false);
-              setRightTab("preview");
-            }}
           />
         </div>
 
@@ -464,10 +437,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             <InspectorPanel
               activeTab={rightTab}
               onTabChange={setRightTab}
-              openFiles={openFiles}
-              activeFilePath={activeFilePath}
-              onSelectFile={handleSelectFile}
-              onCloseFile={handleCloseFile}
+              activeFile={activeFile}
               diffs={workspaceDiffs}
               onOpenFile={handleOpenFile}
             />
