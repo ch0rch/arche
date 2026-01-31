@@ -1,5 +1,5 @@
 {
-  "name": "web",
+  "name": "@arche/web",
   "version": "0.1.0",
   "private": true,
   "packageManager": "pnpm@10.14.0",
@@ -8,6 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prisma:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed"
@@ -20,6 +22,7 @@
     "argon2": "^0.31.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "dockerode": "^4.0.9",
     "lucide-react": "^0.563.0",
     "next": "16.1.6",
     "pg": "^8.16.3",
@@ -30,6 +33,7 @@
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/dockerode": "^4.0.1",
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
@@ -38,7 +42,8 @@
     "prisma": "^7.3.0",
     "tailwindcss": "^4",
     "tsx": "^4.19.2",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.0.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
