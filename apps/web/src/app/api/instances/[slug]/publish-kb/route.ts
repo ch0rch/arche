@@ -92,11 +92,19 @@ export async function POST(
     }
 
     // 3. Stage all changes
-    await execInContainer(
+    const addResult = await execInContainer(
       instance.containerId,
       ['git', 'add', '-A'],
       { timeout: 10000 }
     )
+
+    if (addResult.exitCode !== 0) {
+      return NextResponse.json({
+        ok: false,
+        status: 'error',
+        message: `git add failed: ${addResult.stderr}`,
+      })
+    }
 
     // 4. Get diff stat for commit message
     const statResult = await execInContainer(
@@ -108,11 +116,19 @@ export async function POST(
     const commitMessage = generateCommitMessage(statResult.stdout)
 
     // 5. Commit
-    await execInContainer(
+    const commitResult = await execInContainer(
       instance.containerId,
       ['git', 'commit', '-m', commitMessage],
       { timeout: 10000 }
     )
+
+    if (commitResult.exitCode !== 0) {
+      return NextResponse.json({
+        ok: false,
+        status: 'error',
+        message: `git commit failed: ${commitResult.stderr}`,
+      })
+    }
 
     // 6. Get commit hash
     const hashResult = await execInContainer(

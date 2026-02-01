@@ -213,6 +213,38 @@ describe('POST /api/instances/[slug]/publish-kb', () => {
     expect(msg).toBe('Update 4 files')
   })
 
+  it('returns error when git add fails', async () => {
+    mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
+    mockGetSessionFromToken.mockResolvedValue(session('alice'))
+    mockFindUnique.mockResolvedValue(instance())
+    mockExecInContainer
+      .mockResolvedValueOnce(exec(0, 'git@host:repo.git'))       // remote check
+      .mockResolvedValueOnce(exec(0, ' M file1.md\n'))           // git status
+      .mockResolvedValueOnce(exec(1, '', 'fatal: index locked')) // git add fails
+    const { status, body } = await callPOST('alice')
+    expect(status).toBe(200)
+    expect(body.ok).toBe(false)
+    expect(body.status).toBe('error')
+    expect(body.message).toContain('git add failed')
+  })
+
+  it('returns error when git commit fails', async () => {
+    mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
+    mockGetSessionFromToken.mockResolvedValue(session('alice'))
+    mockFindUnique.mockResolvedValue(instance())
+    mockExecInContainer
+      .mockResolvedValueOnce(exec(0, 'git@host:repo.git'))       // remote check
+      .mockResolvedValueOnce(exec(0, ' M file1.md\n'))           // git status
+      .mockResolvedValueOnce(exec(0))                             // git add ok
+      .mockResolvedValueOnce(exec(0, ' file1.md | 1 +\n 1 file changed')) // stat
+      .mockResolvedValueOnce(exec(1, '', 'error: hook failed'))  // git commit fails
+    const { status, body } = await callPOST('alice')
+    expect(status).toBe(200)
+    expect(body.ok).toBe(false)
+    expect(body.status).toBe('error')
+    expect(body.message).toContain('git commit failed')
+  })
+
   it('returns error when execInContainer throws', async () => {
     mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
     mockGetSessionFromToken.mockResolvedValue(session('alice'))
