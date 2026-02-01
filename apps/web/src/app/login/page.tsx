@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import type { FormEvent } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -30,6 +31,7 @@ const errorMessages: Record<string, string> = {
 };
 
 export default function LoginPage() {
+  const router = useRouter();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -39,6 +41,16 @@ export default function LoginPage() {
   } | null>(null);
   const [challengeToken, setChallengeToken] = useState("");
   const [show2FA, setShow2FA] = useState(false);
+
+  // Redirigir automáticamente al workspace después de login exitoso
+  useEffect(() => {
+    if (result?.data?.ok && result.data.user?.slug) {
+      const timeout = setTimeout(() => {
+        router.push(`/w/${result.data!.user!.slug}`);
+      }, 500);
+      return () => clearTimeout(timeout);
+    }
+  }, [result, router]);
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
