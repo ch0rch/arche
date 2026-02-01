@@ -72,7 +72,7 @@ done
 # Inicializar git en el workspace
 cd "$WORKSPACE_DIR"
 log "Initializing git repository"
-git init
+git init -b main
 
 # Configurar git (necesario para commits)
 git config user.email "workspace@arche.local"
