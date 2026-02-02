@@ -374,18 +374,18 @@ json.dump(vars, open(sys.argv[1], "w"))
   tasks:
     - name: Render compose template
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/ansible/roles/app/templates/compose.yml.j2"
-        dest: "{{ playbook_dir }}/.compose-local.yml"
+        src: "{{ deploy_dir }}/ansible/roles/app/templates/compose.yml.j2"
+        dest: "{{ deploy_dir }}/.compose-local.yml"
     - name: Render env template
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/ansible/roles/app/templates/.env.j2"
-        dest: "{{ playbook_dir }}/.env.local"
+        src: "{{ deploy_dir }}/ansible/roles/app/templates/.env.j2"
+        dest: "{{ deploy_dir }}/.env.local"
         mode: "0600"
 PLAYBOOK
 
     ANSIBLE_CONFIG="$SCRIPT_DIR/ansible.cfg" ansible-playbook \
       --extra-vars "@${EXTRA_VARS_FILE}" \
-      --extra-vars "playbook_dir=${SCRIPT_DIR}" \
+      --extra-vars "deploy_dir=${SCRIPT_DIR}" \
       "$TEMP_PLAYBOOK"
   else
     err "Ansible is required to render templates. Install with: pip install ansible"
@@ -533,18 +533,18 @@ json.dump(vars, open(sys.argv[1], "w"))
   tasks:
     - name: Render compose template
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/ansible/roles/app/templates/compose.yml.j2"
-        dest: "{{ playbook_dir }}/.compose-local-dev.yml"
+        src: "{{ deploy_dir }}/ansible/roles/app/templates/compose.yml.j2"
+        dest: "{{ deploy_dir }}/.compose-local-dev.yml"
     - name: Render env template
       ansible.builtin.template:
-        src: "{{ playbook_dir }}/ansible/roles/app/templates/.env.j2"
-        dest: "{{ playbook_dir }}/.env.local-dev"
+        src: "{{ deploy_dir }}/ansible/roles/app/templates/.env.j2"
+        dest: "{{ deploy_dir }}/.env.local-dev"
         mode: "0600"
 PLAYBOOK
 
   ANSIBLE_CONFIG="$SCRIPT_DIR/ansible.cfg" ansible-playbook \
     --extra-vars "@${EXTRA_VARS_FILE}" \
-    --extra-vars "playbook_dir=${SCRIPT_DIR}" \
+    --extra-vars "deploy_dir=${SCRIPT_DIR}" \
     "$TEMP_PLAYBOOK"
 
   # Ensure arche-internal network exists
