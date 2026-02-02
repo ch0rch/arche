@@ -66,7 +66,7 @@ LOCAL MODE:
 
   Runs the production stack locally with:
     - Domain: arche.lvh.me (resolves to 127.0.0.1)
-    - No TLS (HTTP only on port 80)
+    - No TLS (HTTP only on port 8080)
     - No SSH (Ansible still required to render templates)
 
 ENVIRONMENT VARIABLES (via .env or exported):
@@ -230,6 +230,9 @@ deploy_remote() {
 ${DEPLOY_IP} ansible_user=${SSH_USER} ansible_ssh_private_key_file=${SSH_KEY}
 EOF
 
+  # Export variables so python3 subprocess can read them
+  export DEPLOY_DOMAIN DNS_PROVIDER ACME_EMAIL IMAGE_PREFIX WEB_VERSION OPENCODE_IMAGE
+
   # Build extra vars as JSON (safe for secrets with special characters)
   python3 -c '
 import json, os, sys
@@ -318,43 +321,58 @@ deploy_local() {
     log "Rendering compose template via Ansible..."
 
     TEMP_PLAYBOOK=$(mktemp)
-    trap 'rm -f "$TEMP_PLAYBOOK"' EXIT
+    EXTRA_VARS_FILE=$(mktemp)
+    trap 'rm -f "$TEMP_PLAYBOOK" "$EXTRA_VARS_FILE"' EXIT
 
-    cat > "$TEMP_PLAYBOOK" <<PLAYBOOK
+    # Export variables so python3 subprocess can read them
+    export LOCAL_DOMAIN PODMAN_SOCKET_PATH IMAGE_PREFIX WEB_VERSION OPENCODE_IMAGE
+
+    # Build extra vars as JSON (safe for secrets with special characters)
+    python3 -c '
+import json, os, sys
+vars = {
+    "deploy_mode": "local",
+    "domain": os.environ["LOCAL_DOMAIN"],
+    "dns_provider": "",
+    "acme_email": "",
+    "env_file_name": ".env.local",
+    "podman_socket_path": os.environ["PODMAN_SOCKET_PATH"],
+    "image_prefix": os.environ["IMAGE_PREFIX"],
+    "web_version": os.environ["WEB_VERSION"],
+    "opencode_image": os.environ["OPENCODE_IMAGE"],
+    "postgres_password": os.environ["POSTGRES_PASSWORD"],
+    "arche_session_pepper": os.environ["ARCHE_SESSION_PEPPER"],
+    "arche_encryption_key": os.environ["ARCHE_ENCRYPTION_KEY"],
+    "arche_internal_token": os.environ["ARCHE_INTERNAL_TOKEN"],
+    "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
+    "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
+    "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
+}
+json.dump(vars, open(sys.argv[1], "w"))
+' "$EXTRA_VARS_FILE"
+
+    # Playbook only contains tasks — all vars come via extra-vars JSON
+    cat > "$TEMP_PLAYBOOK" <<'PLAYBOOK'
 ---
 - hosts: localhost
   connection: local
   gather_facts: false
-  vars:
-    deploy_mode: local
-    domain: "${LOCAL_DOMAIN}"
-    dns_provider: ""
-    acme_email: ""
-    env_file_name: ".env.local"
-    podman_socket_path: "${PODMAN_SOCKET_PATH}"
-    image_prefix: "${IMAGE_PREFIX}"
-    web_version: "${WEB_VERSION}"
-    opencode_image: "${OPENCODE_IMAGE}"
-    postgres_password: "${POSTGRES_PASSWORD}"
-    arche_session_pepper: "${ARCHE_SESSION_PEPPER}"
-    arche_encryption_key: "${ARCHE_ENCRYPTION_KEY}"
-    arche_internal_token: "${ARCHE_INTERNAL_TOKEN}"
-    arche_seed_admin_email: "${ARCHE_SEED_ADMIN_EMAIL}"
-    arche_seed_admin_password: "${ARCHE_SEED_ADMIN_PASSWORD}"
-    arche_seed_admin_slug: "${ARCHE_SEED_ADMIN_SLUG}"
   tasks:
     - name: Render compose template
       ansible.builtin.template:
-        src: "${SCRIPT_DIR}/ansible/roles/app/templates/compose.yml.j2"
-        dest: "${COMPOSE_OUT}"
+        src: "{{ playbook_dir }}/ansible/roles/app/templates/compose.yml.j2"
+        dest: "{{ playbook_dir }}/.compose-local.yml"
     - name: Render env template
       ansible.builtin.template:
-        src: "${SCRIPT_DIR}/ansible/roles/app/templates/.env.j2"
-        dest: "${SCRIPT_DIR}/.env.local"
+        src: "{{ playbook_dir }}/ansible/roles/app/templates/.env.j2"
+        dest: "{{ playbook_dir }}/.env.local"
         mode: "0600"
 PLAYBOOK
 
-    ANSIBLE_CONFIG="$SCRIPT_DIR/ansible.cfg" ansible-playbook "$TEMP_PLAYBOOK"
+    ANSIBLE_CONFIG="$SCRIPT_DIR/ansible.cfg" ansible-playbook \
+      --extra-vars "@${EXTRA_VARS_FILE}" \
+      --extra-vars "playbook_dir=${SCRIPT_DIR}" \
+      "$TEMP_PLAYBOOK"
   else
     err "Ansible is required to render templates. Install with: pip install ansible"
     exit 1

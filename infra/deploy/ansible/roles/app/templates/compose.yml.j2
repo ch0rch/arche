@@ -69,6 +69,7 @@ services:
       IMAGES: 1
       INFO: 1
       POST: 1
+      VOLUMES: 1
     volumes:
       - {{ podman_socket_path }}:/var/run/docker.sock:ro
     networks:
