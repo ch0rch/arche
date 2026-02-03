@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { cookies } from 'next/headers'
 import { prisma } from '@/lib/prisma'
-import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
+import { getAuthenticatedUser } from '@/lib/auth'
 import { execInContainer } from '@/lib/spawner/docker'
 
 export interface PublishKbResult {
@@ -10,13 +9,6 @@ export interface PublishKbResult {
   commitHash?: string
   files?: string[]
   message?: string
-}
-
-async function getAuthenticatedUser() {
-  const cookieStore = await cookies()
-  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value
-  if (!token) return null
-  return getSessionFromToken(token)
 }
 
 function generateCommitMessage(statOutput: string): string {
