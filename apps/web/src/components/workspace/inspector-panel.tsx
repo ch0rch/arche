@@ -20,6 +20,7 @@ type WorkspaceFile = {
 };
 
 type InspectorPanelProps = {
+  slug: string;
   activeTab: "preview" | "review";
   onTabChange: (tab: "preview" | "review") => void;
   openFiles: WorkspaceFile[];
@@ -28,6 +29,7 @@ type InspectorPanelProps = {
   onCloseFile: (path: string) => void;
   diffs: WorkspaceDiff[];
   onOpenFile: (path: string) => void;
+  onPublish?: () => void;
 };
 
 function getParentFolder(path: string): string | null {
@@ -37,6 +39,7 @@ function getParentFolder(path: string): string | null {
 }
 
 export function InspectorPanel({
+  slug,
   activeTab,
   onTabChange,
   openFiles,
@@ -44,7 +47,8 @@ export function InspectorPanel({
   onSelectFile,
   onCloseFile,
   diffs,
-  onOpenFile
+  onOpenFile,
+  onPublish
 }: InspectorPanelProps) {
   const pendingDiffs = diffs.length;
   const activeFile = openFiles.find((f) => f.path === activeFilePath) ?? null;
@@ -229,7 +233,12 @@ export function InspectorPanel({
           )
         ) : (
           <div className="p-4">
-            <ReviewPanel diffs={diffs} onOpenFile={onOpenFile} />
+            <ReviewPanel
+              slug={slug}
+              diffs={diffs}
+              onOpenFile={onOpenFile}
+              onPublish={onPublish}
+            />
           </div>
         )}
       </div>

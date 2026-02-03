@@ -11,7 +11,7 @@ import {
   abortSessionAction,
   loadFileTreeAction,
   readFileAction,
-  getSessionDiffsAction,
+  getWorkspaceDiffsAction,
   listModelsAction
 } from '@/actions/opencode'
 import type {
@@ -473,18 +473,16 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
   
   // Load diffs
   const refreshDiffs = useCallback(async () => {
-    if (!activeSessionId) return
-    
     setIsLoadingDiffs(true)
     try {
-      const result = await getSessionDiffsAction(slug, activeSessionId)
+      const result = await getWorkspaceDiffsAction(slug)
       if (result.ok && result.diffs) {
         setDiffs(result.diffs)
       }
     } finally {
       setIsLoadingDiffs(false)
     }
-  }, [slug, activeSessionId])
+  }, [slug])
   
   // Load models
   const loadModels = useCallback(async () => {
@@ -522,7 +520,8 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
         await Promise.all([
           refreshFiles(),
           loadSessions(),
-          loadModels()
+          loadModels(),
+          refreshDiffs(),
         ])
       } else if (retryCount < MAX_RETRIES) {
         // Retry with exponential backoff (1s, 2s, 4s, 8s... capped at 30s)
@@ -543,23 +542,23 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
       mounted = false
       if (retryTimeout) clearTimeout(retryTimeout)
     }
-  }, [checkConnection, refreshFiles, loadSessions, loadModels, enabled])
+  }, [checkConnection, refreshFiles, loadSessions, loadModels, refreshDiffs, enabled])
   
   // Load messages when active session changes
   useEffect(() => {
     console.log('[useWorkspace] activeSessionId changed:', activeSessionId, 'isConnected:', isConnected)
     if (activeSessionId && isConnected) {
       refreshMessages()
-      refreshDiffs()
     }
-  }, [activeSessionId, isConnected, refreshMessages, refreshDiffs])
+  }, [activeSessionId, isConnected, refreshMessages])
   
   // Refresh diffs when triggered by message completion
   useEffect(() => {
-    if (diffsRefreshTrigger > 0 && activeSessionId && isConnected) {
+    if (diffsRefreshTrigger > 0 && isConnected) {
       refreshDiffs()
     }
-  }, [diffsRefreshTrigger, activeSessionId, isConnected, refreshDiffs])
+  }, [diffsRefreshTrigger, isConnected, refreshDiffs])
+
   
   // Poll for session status updates
   useEffect(() => {

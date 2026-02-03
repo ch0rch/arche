@@ -1,18 +1,20 @@
 "use client";
 
 import { useMemo } from "react";
-import { Check, File, GitDiff, Minus, Plus } from "@phosphor-icons/react";
+import { File, GitDiff, Minus, Plus } from "@phosphor-icons/react";
 
-import { Button } from "@/components/ui/button";
+import { PublishKbButton } from "./publish-kb-button";
 import { cn } from "@/lib/utils";
 import type { WorkspaceDiff } from "@/hooks/use-workspace";
 
 type ReviewPanelProps = {
+  slug: string;
   diffs: WorkspaceDiff[];
   onOpenFile: (path: string) => void;
+  onPublish?: () => void;
 };
 
-export function ReviewPanel({ diffs, onOpenFile }: ReviewPanelProps) {
+export function ReviewPanel({ slug, diffs, onOpenFile, onPublish }: ReviewPanelProps) {
   const totals = useMemo(() => {
     return diffs.reduce(
       (acc, diff) => {
@@ -51,10 +53,7 @@ export function ReviewPanel({ diffs, onOpenFile }: ReviewPanelProps) {
             {totals.deletions}
           </span>
         </div>
-        <Button size="sm" className="h-7 gap-1.5 px-2.5 text-xs" disabled>
-          <Check size={12} weight="bold" />
-          Aprobar
-        </Button>
+        <PublishKbButton slug={slug} onComplete={onPublish} />
       </div>
 
       <div className="space-y-2">

@@ -5,6 +5,7 @@ import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
 import { createInstanceClient } from '@/lib/opencode/client'
 import { prisma } from '@/lib/prisma'
 import { decryptPassword } from '@/lib/spawner/crypto'
+import { execInContainer } from '@/lib/spawner/docker'
 import type {
   WorkspaceFileNode,
   WorkspaceFileContent,
@@ -723,6 +724,149 @@ export async function abortSessionAction(slug: string, sessionId: string): Promi
 // ============================================================================
 // Diffs
 // ============================================================================
+
+type GitDiffEntry = {
+  path: string
+  status: 'modified' | 'added' | 'deleted'
+  additions: number
+  deletions: number
+  diff: string
+}
+
+type GitStatusEntry = {
+  path: string
+  status: 'modified' | 'added' | 'deleted'
+  untracked: boolean
+}
+
+function parseGitStatus(output: string): GitStatusEntry[] {
+  const entries = output.split('\0').filter(Boolean)
+  const results: GitStatusEntry[] = []
+
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]
+    if (entry.length < 4) continue
+
+    const status = entry.slice(0, 2)
+    let path = entry.slice(3)
+
+    if (status.includes('R') || status.includes('C')) {
+      const nextPath = entries[i + 1]
+      if (nextPath) {
+        path = nextPath
+        i += 1
+      }
+    }
+
+    if (!path) continue
+
+    const untracked = status === '??'
+    let fileStatus: 'modified' | 'added' | 'deleted' = 'modified'
+
+    if (untracked || status.includes('A') || status.includes('C')) {
+      fileStatus = 'added'
+    } else if (status.includes('D')) {
+      fileStatus = 'deleted'
+    }
+
+    results.push({ path, status: fileStatus, untracked })
+  }
+
+  return results
+}
+
+function parseNumstat(output: string): { additions: number; deletions: number } {
+  const line = output.trim().split('\n').find(Boolean)
+  if (!line) return { additions: 0, deletions: 0 }
+
+  const [addRaw, delRaw] = line.split('\t')
+  const additions = Number.isFinite(Number(addRaw)) ? Number(addRaw) : 0
+  const deletions = Number.isFinite(Number(delRaw)) ? Number(delRaw) : 0
+
+  return { additions, deletions }
+}
+
+export async function getWorkspaceDiffsAction(slug: string): Promise<{
+  ok: boolean
+  diffs?: GitDiffEntry[]
+  error?: string
+}> {
+  const session = await getAuthenticatedUser()
+  if (!session) return { ok: false, error: 'unauthorized' }
+
+  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
+    return { ok: false, error: 'forbidden' }
+  }
+
+  const instance = await prisma.instance.findUnique({
+    where: { slug },
+    select: { containerId: true, status: true },
+  })
+
+  if (!instance) {
+    return { ok: false, error: 'not_found' }
+  }
+
+  if (instance.status !== 'running' || !instance.containerId) {
+    return { ok: false, error: 'instance_not_running' }
+  }
+
+  try {
+    const statusResult = await execInContainer(
+      instance.containerId,
+      ['git', 'status', '--porcelain=v1', '-z'],
+      { timeout: 5000 }
+    )
+
+    if (statusResult.exitCode !== 0) {
+      return { ok: false, error: statusResult.stderr || 'git_status_failed' }
+    }
+
+    if (!statusResult.stdout.trim()) {
+      return { ok: true, diffs: [] }
+    }
+
+    const files = parseGitStatus(statusResult.stdout)
+    const diffs: GitDiffEntry[] = []
+
+    for (const file of files) {
+      const diffArgs = file.untracked
+        ? ['git', 'diff', '--no-color', '--no-index', '--', '/dev/null', file.path]
+        : ['git', 'diff', '--no-color', 'HEAD', '--', file.path]
+
+      const numstatArgs = file.untracked
+        ? ['git', 'diff', '--numstat', '--no-index', '--', '/dev/null', file.path]
+        : ['git', 'diff', '--numstat', 'HEAD', '--', file.path]
+
+      const [diffResult, numstatResult] = await Promise.all([
+        execInContainer(instance.containerId, diffArgs, { timeout: 5000 }),
+        execInContainer(instance.containerId, numstatArgs, { timeout: 5000 }),
+      ])
+
+      if (diffResult.exitCode > 1) {
+        return { ok: false, error: diffResult.stderr || 'git_diff_failed' }
+      }
+
+      if (numstatResult.exitCode > 1) {
+        return { ok: false, error: numstatResult.stderr || 'git_numstat_failed' }
+      }
+
+      const { additions, deletions } = parseNumstat(numstatResult.stdout)
+
+      diffs.push({
+        path: file.path,
+        status: file.status,
+        additions,
+        deletions,
+        diff: diffResult.stdout.trim(),
+      })
+    }
+
+    return { ok: true, diffs }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'unknown' }
+  }
+}
 
 export async function getSessionDiffsAction(slug: string, sessionId: string): Promise<{
   ok: boolean

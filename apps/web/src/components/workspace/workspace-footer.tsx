@@ -9,14 +9,29 @@ type WorkspaceFooterProps = {
   rightCollapsed: boolean;
   onToggleLeft: () => void;
   onToggleRight: () => void;
+  pendingDiffs?: number;
+  onOpenReview?: () => void;
 };
 
 export function WorkspaceFooter({
   leftCollapsed,
   rightCollapsed,
   onToggleLeft,
-  onToggleRight
+  onToggleRight,
+  pendingDiffs = 0,
+  onOpenReview
 }: WorkspaceFooterProps) {
+  const showReviewBadge = pendingDiffs > 0 && rightCollapsed;
+  const badgeLabel = pendingDiffs > 99 ? "99+" : String(pendingDiffs);
+
+  const handleRightClick = () => {
+    if (showReviewBadge && onOpenReview) {
+      onOpenReview();
+      return;
+    }
+    onToggleRight();
+  };
+
   return (
     <footer className="relative z-20 border-t border-border/60 bg-card/80 backdrop-blur-sm">
       <div className="flex h-8 w-full items-center justify-between px-2">
@@ -36,9 +51,9 @@ export function WorkspaceFooter({
 
         <button
           type="button"
-          onClick={onToggleRight}
+          onClick={handleRightClick}
           className={cn(
-            "flex items-center justify-center rounded p-1.5 transition-colors hover:bg-muted/50",
+            "relative flex items-center justify-center rounded p-1.5 transition-colors hover:bg-muted/50",
             rightCollapsed
               ? "text-muted-foreground hover:text-foreground"
               : "text-foreground"
@@ -46,6 +61,11 @@ export function WorkspaceFooter({
           aria-label={rightCollapsed ? "Mostrar inspector" : "Ocultar inspector"}
         >
           <SquareHalf size={17} weight={rightCollapsed ? "regular" : "bold"} />
+          {showReviewBadge ? (
+            <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+              {badgeLabel}
+            </span>
+          ) : null}
         </button>
       </div>
     </footer>

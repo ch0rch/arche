@@ -10,6 +10,7 @@ import { SyncKbButton } from "./sync-kb-button";
 type WorkspaceHeaderProps = {
   slug: string;
   status: "active" | "provisioning" | "offline";
+  onSyncComplete?: () => void;
 };
 
 const statusConfig = {
@@ -20,7 +21,8 @@ const statusConfig = {
 
 export function WorkspaceHeader({
   slug,
-  status
+  status,
+  onSyncComplete
 }: WorkspaceHeaderProps) {
   const router = useRouter();
   const statusStyle = statusConfig[status];
@@ -48,6 +50,7 @@ export function WorkspaceHeader({
           <SyncKbButton
             slug={slug}
             disabled={status !== "active"}
+            onComplete={onSyncComplete}
           />
           <Button
             size="icon"
