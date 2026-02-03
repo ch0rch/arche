@@ -25,6 +25,12 @@ export function getOpencodeNetwork(): string {
   return process.env.OPENCODE_NETWORK || 'arche-internal'
 }
 
+export function getWorkspaceAgentPort(): number {
+  const raw = process.env.WORKSPACE_AGENT_PORT
+  const parsed = raw ? Number(raw) : NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 4097
+}
+
 export function getStartExpectedMs(): number {
   const raw = process.env.ARCHE_START_EXPECTED_MS
   const parsed = raw ? Number(raw) : NaN

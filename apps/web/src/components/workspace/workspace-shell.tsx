@@ -138,6 +138,16 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
   // Use workspace hook only when instance is running
   const workspace = useWorkspace({ slug, pollInterval: 5000, enabled: instanceStatus === 'running' });
+
+  const handleSyncComplete = useCallback(() => {
+    workspace.refreshDiffs();
+    workspace.refreshFiles();
+  }, [workspace.refreshDiffs, workspace.refreshFiles]);
+
+  const handlePublishComplete = useCallback(() => {
+    workspace.refreshDiffs();
+    workspace.refreshFiles();
+  }, [workspace.refreshDiffs, workspace.refreshFiles]);
   
   // Layout state
   const [leftWidth, setLeftWidth] = useState(MIN_LEFT_PX);
@@ -473,7 +483,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       <WorkspaceHeader
         slug={slug}
         status="active"
-        onSyncComplete={workspace.refreshDiffs}
+        onSyncComplete={handleSyncComplete}
       />
 
       <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1">
@@ -548,8 +558,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               onSelectFile={handleSelectFile}
               onCloseFile={handleCloseFile}
               diffs={workspace.diffs}
+              isLoadingDiffs={workspace.isLoadingDiffs}
+              diffsError={workspace.diffsError}
               onOpenFile={handleOpenFile}
-              onPublish={workspace.refreshDiffs}
+              onPublish={handlePublishComplete}
             />
           )}
         </div>

@@ -14,6 +14,12 @@ import {
   getWorkspaceDiffsAction,
   listModelsAction
 } from '@/actions/opencode'
+import {
+  readWorkspaceFileAction,
+  writeWorkspaceFileAction,
+  deleteWorkspaceFileAction,
+  applyWorkspacePatchAction
+} from '@/actions/workspace-agent'
 import type {
   WorkspaceFileNode,
   WorkspaceSession,
@@ -49,6 +55,9 @@ export type UseWorkspaceReturn = {
   isLoadingFiles: boolean
   refreshFiles: () => Promise<void>
   readFile: (path: string) => Promise<{ content: string; type: 'raw' | 'patch' } | null>
+  writeFile: (path: string, content: string, expectedHash?: string) => Promise<{ ok: boolean; hash?: string }>
+  deleteFile: (path: string) => Promise<boolean>
+  applyPatch: (patch: string) => Promise<boolean>
   
   // Sessions
   sessions: WorkspaceSession[]
@@ -71,6 +80,7 @@ export type UseWorkspaceReturn = {
   // Diffs
   diffs: WorkspaceDiff[]
   isLoadingDiffs: boolean
+  diffsError: string | null
   refreshDiffs: () => Promise<void>
   
   // Models
@@ -101,7 +111,9 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
   // Diffs
   const [diffs, setDiffs] = useState<WorkspaceDiff[]>([])
   const [isLoadingDiffs, setIsLoadingDiffs] = useState(false)
+  const [diffsError, setDiffsError] = useState<string | null>(null)
   const [diffsRefreshTrigger, setDiffsRefreshTrigger] = useState(0)
+  const isLoadingDiffsRef = useRef(false)
   
   // Models
   const [models, setModels] = useState<AvailableModel[]>([])
@@ -133,11 +145,35 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
   
   // Read single file
   const readFile = useCallback(async (path: string) => {
+    const agentResult = await readWorkspaceFileAction(slug, path)
+    if (agentResult.ok && agentResult.content) {
+      return { content: agentResult.content.content, type: agentResult.content.type }
+    }
+
     const result = await readFileAction(slug, path)
     if (result.ok && result.content) {
       return { content: result.content.content, type: result.content.type }
     }
+
     return null
+  }, [slug])
+
+  const writeFile = useCallback(async (path: string, content: string, expectedHash?: string) => {
+    const result = await writeWorkspaceFileAction(slug, path, content, expectedHash)
+    if (result.ok) {
+      return { ok: true, hash: result.hash }
+    }
+    return { ok: false }
+  }, [slug])
+
+  const deleteFile = useCallback(async (path: string) => {
+    const result = await deleteWorkspaceFileAction(slug, path)
+    return result.ok
+  }, [slug])
+
+  const applyPatch = useCallback(async (patch: string) => {
+    const result = await applyWorkspacePatchAction(slug, patch)
+    return result.ok
   }, [slug])
   
   // Load sessions
@@ -473,16 +509,31 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
   
   // Load diffs
   const refreshDiffs = useCallback(async () => {
+    if (!enabled) return
+    if (!isConnected) return
+
+    // Avoid overlapping refreshes (interval + manual triggers)
+    if (isLoadingDiffsRef.current) return
+
     setIsLoadingDiffs(true)
+    isLoadingDiffsRef.current = true
     try {
+      console.log('[useWorkspace] refreshDiffs: loading...')
       const result = await getWorkspaceDiffsAction(slug)
       if (result.ok && result.diffs) {
         setDiffs(result.diffs)
+        setDiffsError(null)
+        console.log('[useWorkspace] refreshDiffs result:', true, 'diffs:', result.diffs.length)
+      } else {
+        const err = result.error ?? 'unknown'
+        setDiffsError(err)
+        console.log('[useWorkspace] refreshDiffs result:', false, 'error:', err)
       }
     } finally {
       setIsLoadingDiffs(false)
+      isLoadingDiffsRef.current = false
     }
-  }, [slug])
+  }, [slug, enabled, isConnected])
   
   // Load models
   const loadModels = useCallback(async () => {
@@ -566,10 +617,11 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
     
     const interval = setInterval(() => {
       loadSessions()
+      refreshDiffs()
     }, pollInterval)
     
     return () => clearInterval(interval)
-  }, [isConnected, pollInterval, loadSessions])
+  }, [isConnected, pollInterval, loadSessions, refreshDiffs])
   
   return {
     connection,
@@ -578,6 +630,9 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
     isLoadingFiles,
     refreshFiles,
     readFile,
+    writeFile,
+    deleteFile,
+    applyPatch,
     sessions,
     activeSessionId,
     activeSession,
@@ -594,6 +649,7 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
     refreshMessages,
     diffs,
     isLoadingDiffs,
+    diffsError,
     refreshDiffs,
     models,
     selectedModel,

@@ -154,6 +154,7 @@ export async function getInstanceStatus(slug: string) {
       stoppedAt: true,
       lastActivityAt: true,
       containerId: true,
+      serverPassword: true,
     },
   })
 

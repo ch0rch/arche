@@ -14,9 +14,9 @@ Este directorio contiene el Knowledge Base compartido que se inyecta en cada wor
 
 ## Flujo de despliegue
 
-1. **Deploy inicial**: El script `scripts/deploy-kb.sh` copia este directorio a `/opt/arche/kb` en el VPS host e inicializa un repo Git.
+1. **Deploy inicial**: El script `scripts/deploy-kb.sh` sincroniza este directorio en un repo Git bare en `/opt/arche/kb`.
 
-2. **Creación de workspace**: Al crear un container para un usuario, se monta `/opt/arche/kb` como volumen readonly en `/kb`. El script de init copia el contenido al workspace del usuario.
+2. **Creación de workspace**: Al crear un container para un usuario, se monta `/opt/arche/kb` como repo bare en `/kb` (read-write). El script de init clona el repo al workspace del usuario.
 
 3. **Sincronización**: Los usuarios pueden actualizar su KB local ejecutando:
    ```bash
@@ -32,23 +32,22 @@ Para actualizar el KB en producción:
 2. Haz commit y push al repo principal
 3. Ejecuta `scripts/deploy-kb.sh` en el VPS (o deja que CI/CD lo haga)
 4. Los usuarios sincronizan manualmente o mediante el botón "Sync KB" en la UI
+5. Para cambios desde workspaces, usa el botón "Publish KB" (push al repo central)
 
 ## Estructura esperada en el host
 
 ```
 /opt/arche/
-└── kb/
-    ├── .git/              # Repo Git para versionado
-    ├── Company/
-    ├── Templates/
-    ├── System Prompts/
-    ├── opencode.json
-    └── AGENTS.md
+└── kb/                     # Repo Git bare (sin working tree)
+    ├── HEAD
+    ├── objects/
+    ├── refs/
+    └── config
 ```
 
 ## Notas
 
-- El KB es de **solo lectura** para los containers (montado como `:ro`)
+- El KB central es un repo bare y se actualiza con "Publish KB"
 - Cada usuario tiene una **copia independiente** en su workspace
-- Los cambios del usuario no afectan al KB central
-- El KB central se actualiza solo mediante deploy
+- Los cambios del usuario se empujan al repo central con git
+- `deploy-kb.sh` sirve para seedear o sincronizar desde este repo

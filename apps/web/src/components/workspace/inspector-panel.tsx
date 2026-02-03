@@ -28,6 +28,8 @@ type InspectorPanelProps = {
   onSelectFile: (path: string) => void;
   onCloseFile: (path: string) => void;
   diffs: WorkspaceDiff[];
+  isLoadingDiffs?: boolean;
+  diffsError?: string | null;
   onOpenFile: (path: string) => void;
   onPublish?: () => void;
 };
@@ -47,6 +49,8 @@ export function InspectorPanel({
   onSelectFile,
   onCloseFile,
   diffs,
+  isLoadingDiffs,
+  diffsError,
   onOpenFile,
   onPublish
 }: InspectorPanelProps) {
@@ -236,6 +240,8 @@ export function InspectorPanel({
             <ReviewPanel
               slug={slug}
               diffs={diffs}
+              isLoading={Boolean(isLoadingDiffs)}
+              error={diffsError ?? undefined}
               onOpenFile={onOpenFile}
               onPublish={onPublish}
             />

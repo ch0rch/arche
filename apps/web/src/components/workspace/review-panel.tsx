@@ -10,11 +10,13 @@ import type { WorkspaceDiff } from "@/hooks/use-workspace";
 type ReviewPanelProps = {
   slug: string;
   diffs: WorkspaceDiff[];
+  isLoading?: boolean;
+  error?: string;
   onOpenFile: (path: string) => void;
   onPublish?: () => void;
 };
 
-export function ReviewPanel({ slug, diffs, onOpenFile, onPublish }: ReviewPanelProps) {
+export function ReviewPanel({ slug, diffs, isLoading, error, onOpenFile, onPublish }: ReviewPanelProps) {
   const totals = useMemo(() => {
     return diffs.reduce(
       (acc, diff) => {
@@ -26,12 +28,26 @@ export function ReviewPanel({ slug, diffs, onOpenFile, onPublish }: ReviewPanelP
     );
   }, [diffs]);
 
+  if (error) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
+        <GitDiff size={28} className="text-muted-foreground/30" />
+        <p className="text-xs text-muted-foreground">
+          No se pudieron cargar los cambios
+        </p>
+        <p className="max-w-[320px] text-[11px] leading-relaxed text-muted-foreground/80">
+          {error}
+        </p>
+      </div>
+    );
+  }
+
   if (diffs.length === 0) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
         <GitDiff size={28} className="text-muted-foreground/30" />
         <p className="text-xs text-muted-foreground">
-          Sin cambios pendientes
+          {isLoading ? 'Cargando cambios…' : 'Sin cambios pendientes'}
         </p>
       </div>
     );
