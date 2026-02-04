@@ -7,6 +7,20 @@ Imagen derivada de OpenCode con soporte para Knowledge Base (KB) compartido.
 - Basada en `ghcr.io/anomalyco/opencode`
 - Incluye `git` para sincronización de KB
 - Script de inicialización automática del workspace
+- Workspace agent HTTP para diffs y operaciones de archivo
+
+## Workspace Agent
+
+Servicio interno que expone operaciones acotadas sobre el workspace:
+
+- `GET /git/diffs`
+- `POST /files/read`
+- `POST /files/write`
+- `POST /files/delete`
+- `POST /files/apply_patch`
+- `POST /kb/sync`
+- `GET /kb/status`
+- `POST /kb/publish`
 
 ## Build
 
@@ -23,12 +37,12 @@ podman build --build-arg OPENCODE_VERSION=1.1.45 -t arche-workspace:1.1.45 .
 El container espera dos volúmenes:
 
 1. `/workspace` - Volumen persistente del usuario (read-write)
-2. `/kb` - Knowledge Base compartido (read-only)
+2. `/kb` - Repo Git bare del Knowledge Base (read-write)
 
 ```bash
 podman run -d \
   -v workspace-user1:/workspace \
-  -v /opt/arche/kb:/kb:ro \
+  -v /opt/arche/kb:/kb \
   arche-workspace serve --hostname 0.0.0.0 --port 4096
 ```
 
@@ -36,14 +50,12 @@ podman run -d \
 
 Al iniciar, el script `init-workspace.sh` ejecuta:
 
-1. Si `/workspace` no tiene `.git`:
-   - Copia el contenido de `/kb` a `/workspace`
-   - Inicializa un repositorio git
-   - Crea commit inicial
-   - Añade remote `kb` apuntando a `/kb`
+1. Si `/workspace` no tiene `.git` y está vacío:
+   - Clona el repo bare de `/kb` a `/workspace`
+   - Configura el remote `kb` apuntando a `/kb`
 
 2. Si `/workspace` ya tiene `.git`:
-   - No copia nada (respeta el trabajo del usuario)
+   - No clona nada (respeta el trabajo del usuario)
    - Añade remote `kb` si no existe
 
 ## Sincronización de KB
@@ -63,5 +75,7 @@ Si hay conflictos, Git los marcará y el usuario puede resolverlos.
 | Variable | Default | Descripción |
 |----------|---------|-------------|
 | `WORKSPACE_DIR` | `/workspace` | Directorio del workspace |
-| `KB_DIR` | `/kb` | Directorio del KB montado |
+| `KB_DIR` | `/kb` | Repo bare del KB montado |
 | `KB_REMOTE_NAME` | `kb` | Nombre del remote Git para el KB |
+| `WORKSPACE_AGENT_PORT` | `4097` | Puerto del workspace agent |
+| `WORKSPACE_AGENT_ADDR` | `0.0.0.0:4097` | Dirección bind del workspace agent |

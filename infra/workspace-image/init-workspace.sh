@@ -3,7 +3,7 @@
 # Inicializa el workspace con el KB si está vacío o no tiene git inicializado.
 #
 # Comportamiento:
-# - Si /workspace está vacío o no tiene .git: copia KB, inicializa git, configura remote
+# - Si /workspace no tiene .git y está vacío: clona el repo KB y configura remote
 # - Si /workspace ya tiene .git: no hace nada (el usuario ya tiene su repo)
 #
 # Variables de entorno:
@@ -22,70 +22,61 @@ log() {
   echo "[init-workspace] $1"
 }
 
-# Verificar que el KB existe
-if [ ! -d "$KB_DIR" ]; then
-  log "KB directory not found at $KB_DIR, skipping initialization"
+is_bare_kb() {
+  git --git-dir="$KB_DIR" rev-parse --is-bare-repository >/dev/null 2>&1
+}
+
+is_worktree_kb() {
+  git -C "$KB_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1
+}
+
+kb_available=false
+if is_bare_kb || is_worktree_kb; then
+  kb_available=true
+fi
+
+if [ "$kb_available" = false ]; then
+  log "KB repository not found at $KB_DIR, skipping initialization"
   exit 0
 fi
 
 # Verificar si el workspace ya tiene git inicializado
 if [ -d "$WORKSPACE_DIR/.git" ]; then
-  log "Workspace already has git initialized, skipping KB copy"
+  log "Workspace already has git initialized, skipping KB clone"
   
   # Verificar si el remote del KB existe, si no, añadirlo
   cd "$WORKSPACE_DIR"
   if ! git remote get-url "$KB_REMOTE_NAME" > /dev/null 2>&1; then
-    if [ -d "$KB_DIR/.git" ]; then
-      log "Adding KB remote: $KB_DIR"
-      git remote add "$KB_REMOTE_NAME" "$KB_DIR"
-    fi
+    log "Adding KB remote: $KB_DIR"
+    git remote add "$KB_REMOTE_NAME" "$KB_DIR"
   fi
   exit 0
 fi
 
-log "Initializing workspace from KB..."
-
-# Copiar contenido del KB al workspace (excepto .git si existe)
-# Usamos cp -rn para no sobrescribir archivos existentes
-cd "$KB_DIR"
-for item in *; do
-  if [ "$item" != ".git" ] && [ -e "$item" ]; then
-    if [ ! -e "$WORKSPACE_DIR/$item" ]; then
-      log "Copying $item to workspace"
-      cp -r "$item" "$WORKSPACE_DIR/"
-    else
-      log "Skipping $item (already exists in workspace)"
-    fi
+if [ -n "$(ls -A "$WORKSPACE_DIR" 2>/dev/null)" ]; then
+  log "Workspace is not empty and has no git, initializing git without cloning"
+  cd "$WORKSPACE_DIR"
+  git init -b main
+  git config user.email "workspace@arche.local"
+  git config user.name "Arche Workspace"
+  if ! git remote get-url "$KB_REMOTE_NAME" > /dev/null 2>&1; then
+    log "Adding KB remote for future syncs"
+    git remote add "$KB_REMOTE_NAME" "$KB_DIR"
   fi
-done
+  exit 0
+fi
 
-# Copiar archivos ocultos (excepto .git)
-for item in .*; do
-  if [ "$item" != "." ] && [ "$item" != ".." ] && [ "$item" != ".git" ] && [ -e "$item" ]; then
-    if [ ! -e "$WORKSPACE_DIR/$item" ]; then
-      log "Copying $item to workspace"
-      cp -r "$item" "$WORKSPACE_DIR/"
-    fi
-  fi
-done
-
-# Inicializar git en el workspace
+log "Cloning KB into workspace..."
+git clone "$KB_DIR" "$WORKSPACE_DIR"
 cd "$WORKSPACE_DIR"
-log "Initializing git repository"
-git init -b main
-
-# Configurar git (necesario para commits)
-git config user.email "workspace@arche.local"
-git config user.name "Arche Workspace"
-
-# Crear commit inicial
-git add -A
-git commit -m "Initial workspace from KB" --allow-empty
-
-# Añadir remote del KB para futuros syncs
-if [ -d "$KB_DIR/.git" ]; then
-  log "Adding KB remote for future syncs"
+if git remote get-url origin > /dev/null 2>&1 && [ "$KB_REMOTE_NAME" != "origin" ]; then
+  git remote rename origin "$KB_REMOTE_NAME" 2>/dev/null || true
+fi
+if ! git remote get-url "$KB_REMOTE_NAME" > /dev/null 2>&1; then
   git remote add "$KB_REMOTE_NAME" "$KB_DIR"
 fi
+
+git config user.email "workspace@arche.local"
+git config user.name "Arche Workspace"
 
 log "Workspace initialization complete"

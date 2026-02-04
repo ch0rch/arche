@@ -17,32 +17,52 @@ async function main() {
   const email = (process.env.ARCHE_SEED_ADMIN_EMAIL || '').trim().toLowerCase()
   const password = process.env.ARCHE_SEED_ADMIN_PASSWORD || ''
   const slug = (process.env.ARCHE_SEED_ADMIN_SLUG || '').trim().toLowerCase()
+  const testEmail = (process.env.ARCHE_SEED_TEST_EMAIL || '').trim().toLowerCase()
+  const testSlug = (process.env.ARCHE_SEED_TEST_SLUG || '').trim().toLowerCase()
 
   if (!email || !password || !slug) {
     throw new Error('Missing seed env vars: ARCHE_SEED_ADMIN_EMAIL, ARCHE_SEED_ADMIN_PASSWORD, ARCHE_SEED_ADMIN_SLUG')
   }
 
-  const existing = await prisma.user.findFirst({
+  const passwordHash = await argon2.hash(password)
+
+  const existingAdmin = await prisma.user.findFirst({
     where: {
       OR: [{ email }, { slug }]
     }
   })
 
-  if (existing) {
-    return
+  if (!existingAdmin) {
+    await prisma.user.create({
+      data: {
+        email,
+        slug,
+        role: UserRole.ADMIN,
+        passwordHash,
+        totpEnabled: false
+      }
+    })
   }
 
-  const passwordHash = await argon2.hash(password)
+  if (testEmail && testSlug && testEmail !== email && testSlug !== slug) {
+    const existingTest = await prisma.user.findFirst({
+      where: {
+        OR: [{ email: testEmail }, { slug: testSlug }]
+      }
+    })
 
-  await prisma.user.create({
-    data: {
-      email,
-      slug,
-      role: UserRole.ADMIN,
-      passwordHash,
-      totpEnabled: false
+    if (!existingTest) {
+      await prisma.user.create({
+        data: {
+          email: testEmail,
+          slug: testSlug,
+          role: UserRole.USER,
+          passwordHash,
+          totpEnabled: false
+        }
+      })
     }
-  })
+  }
 }
 
 main()

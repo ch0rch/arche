@@ -5,6 +5,7 @@ import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
 import { createInstanceClient } from '@/lib/opencode/client'
 import { prisma } from '@/lib/prisma'
 import { decryptPassword } from '@/lib/spawner/crypto'
+import { createWorkspaceAgentClient } from '@/lib/workspace-agent/client'
 import type {
   WorkspaceFileNode,
   WorkspaceFileContent,
@@ -723,6 +724,54 @@ export async function abortSessionAction(slug: string, sessionId: string): Promi
 // ============================================================================
 // Diffs
 // ============================================================================
+
+type GitDiffEntry = {
+  path: string
+  status: 'modified' | 'added' | 'deleted'
+  additions: number
+  deletions: number
+  diff: string
+}
+
+export async function getWorkspaceDiffsAction(slug: string): Promise<{
+  ok: boolean
+  diffs?: GitDiffEntry[]
+  error?: string
+}> {
+  const session = await getAuthenticatedUser()
+  if (!session) return { ok: false, error: 'unauthorized' }
+
+  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
+    return { ok: false, error: 'forbidden' }
+  }
+
+  const agent = await createWorkspaceAgentClient(slug)
+  if (!agent) return { ok: false, error: 'instance_unavailable' }
+
+  try {
+    const response = await fetch(`${agent.baseUrl}/git/diffs`, {
+      headers: {
+        Authorization: agent.authHeader,
+        Accept: 'application/json'
+      },
+      cache: 'no-store'
+    })
+
+    if (!response.ok) {
+      const errorText = await response.text()
+      return { ok: false, error: `workspace_agent_http_${response.status}: ${errorText}` }
+    }
+
+    const data = await response.json() as { ok: boolean; diffs?: GitDiffEntry[]; error?: string }
+    if (!data.ok) {
+      return { ok: false, error: data.error ?? 'workspace_agent_error' }
+    }
+
+    return { ok: true, diffs: data.diffs ?? [] }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'workspace_agent_unreachable' }
+  }
+}
 
 export async function getSessionDiffsAction(slug: string, sessionId: string): Promise<{
   ok: boolean

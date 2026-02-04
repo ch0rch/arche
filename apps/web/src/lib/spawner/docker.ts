@@ -1,5 +1,5 @@
 import Docker from 'dockerode'
-import { getContainerSocketPath, getContainerProxyUrl, getOpencodeImage, getOpencodeNetwork, getKbHostPath } from './config'
+import { getContainerSocketPath, getContainerProxyUrl, getOpencodeImage, getOpencodeNetwork, getKbHostPath, getWorkspaceAgentPort } from './config'
 
 function getContainerClient(): Docker {
   const socketPath = getContainerSocketPath()
@@ -29,8 +29,8 @@ export async function createContainer(slug: string, password: string) {
   const binds = [`${volumeName}:/workspace`]
   const kbHostPath = getKbHostPath()
   if (kbHostPath) {
-    // Mount KB as read-only so init script can copy from it
-    binds.push(`${kbHostPath}:/kb:ro`)
+    // Mount KB repo so workspaces can pull/push via git
+    binds.push(`${kbHostPath}:/kb`)
   }
 
   return docker.createContainer({
@@ -42,6 +42,7 @@ export async function createContainer(slug: string, password: string) {
     Env: [
       `OPENCODE_SERVER_PASSWORD=${password}`,
       `OPENCODE_SERVER_USERNAME=opencode`,
+      `WORKSPACE_AGENT_PORT=${getWorkspaceAgentPort()}`,
     ],
     HostConfig: {
       NetworkMode: getOpencodeNetwork(),
@@ -154,28 +155,26 @@ export async function execInContainer(
       let stdout = ''
       let stderr = ''
 
-      // Container runtime multiplexes stdout/stderr in a single stream with headers
+      // Docker multiplexes stdout/stderr in a single stream with headers.
+      // Chunks may split frames, so we must buffer across 'data' events.
       // Format: [type (1 byte)][0][0][0][size (4 bytes big-endian)][payload]
       // type: 1 = stdout, 2 = stderr
+      let pending = Buffer.alloc(0)
       stream.on('data', (chunk: Buffer) => {
-        let offset = 0
-        while (offset < chunk.length) {
-          if (offset + 8 > chunk.length) break
+        pending = pending.length ? Buffer.concat([pending, chunk]) : chunk
 
-          const type = chunk[offset]
-          const size = chunk.readUInt32BE(offset + 4)
+        while (pending.length >= 8) {
+          const type = pending[0]
+          const size = pending.readUInt32BE(4)
+          const frameSize = 8 + size
 
-          if (offset + 8 + size > chunk.length) break
+          if (pending.length < frameSize) break
 
-          const payload = chunk.slice(offset + 8, offset + 8 + size).toString('utf8')
+          const payload = pending.subarray(8, frameSize).toString('utf8')
+          if (type === 1) stdout += payload
+          else if (type === 2) stderr += payload
 
-          if (type === 1) {
-            stdout += payload
-          } else if (type === 2) {
-            stderr += payload
-          }
-
-          offset += 8 + size
+          pending = pending.subarray(frameSize)
         }
       })
 

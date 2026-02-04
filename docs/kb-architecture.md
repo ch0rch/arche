@@ -46,9 +46,9 @@ Despliega el KB al host de producción:
 ```
 
 El script:
-1. Copia el contenido de `kb/` al destino
-2. Inicializa un repo Git si no existe
-3. Crea un commit con los cambios
+1. Inicializa un repo Git bare si no existe
+2. Sincroniza el contenido de `kb/` vía commit
+3. Empuja los cambios al repo bare
 
 ### 4. Spawner modificado
 
@@ -58,7 +58,7 @@ El spawner (`apps/web/src/lib/spawner/`) monta el KB en cada container:
 // docker.ts
 const binds = [`${volumeName}:/workspace`]
 if (kbHostPath) {
-  binds.push(`${kbHostPath}:/kb:ro`)  // readonly
+  binds.push(`${kbHostPath}:/kb`)  // bare repo (read-write)
 }
 ```
 
@@ -97,7 +97,7 @@ Botón "Sync KB" en el workspace header que:
 │  Container (workspace usuario)                          │
 │  ┌──────────────┐    init     ┌──────────────────────┐ │
 │  │  /kb         │ ──────────▶ │  /workspace          │ │
-│  │  (readonly)  │   copy      │  (read-write)        │ │
+│  │  (bare repo) │   clone     │  (read-write)        │ │
 │  └──────────────┘             │  ├── .git/           │ │
 │                               │  │   remote: kb=/kb  │ │
 │                               │  ├── Company/        │ │
@@ -111,10 +111,8 @@ Botón "Sync KB" en el workspace header que:
 Al crear un container nuevo (`init-workspace.sh`):
 
 1. Si `/workspace/.git` **no existe**:
-   - Copia todo el contenido de `/kb` a `/workspace`
-   - Ejecuta `git init`
-   - Crea commit inicial
-   - Añade remote `kb` apuntando a `/kb`
+   - Clona el repo bare de `/kb` a `/workspace`
+   - Configura el remote `kb` apuntando a `/kb`
 
 2. Si `/workspace/.git` **ya existe**:
    - No copia nada (respeta el trabajo del usuario)
@@ -150,15 +148,15 @@ Si el merge genera conflictos:
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `KB_HOST_PATH` | - | Path al KB en el host (ej: `/opt/arche/kb`) |
+| `KB_HOST_PATH` | - | Path al repo bare del KB en el host (ej: `/opt/arche/kb`) |
 | `OPENCODE_IMAGE` | `ghcr.io/anomalyco/opencode:1.1.45` | Imagen de workspace (usar `arche-workspace:latest`) |
 
 ## Consideraciones de seguridad
 
-- El KB se monta como **readonly** (`:ro`) en los containers
-- Los usuarios no pueden modificar el KB central
+- El KB se monta como repo bare **read-write** en los containers
 - Los cambios locales quedan en el volumen del usuario
 - El endpoint de sync requiere autenticación
+- Los cambios se empujan al repo central con "Publish KB"
 
 ## Actualización del KB
 
@@ -168,6 +166,7 @@ Para actualizar el KB en producción:
 2. Haz commit y push al monorepo
 3. En el servidor, ejecuta `deploy-kb.sh`
 4. Los usuarios sincronizan manualmente (botón "Sync KB")
+5. Para cambios desde workspaces, usa "Publish KB"
 
 ## Troubleshooting
 

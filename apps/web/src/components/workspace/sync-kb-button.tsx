@@ -10,11 +10,12 @@ import type { SyncKbResult } from '@/app/api/instances/[slug]/sync-kb/route'
 type SyncKbButtonProps = {
   slug: string
   disabled?: boolean
+  onComplete?: () => void
 }
 
 type SyncState = 'idle' | 'syncing' | 'synced' | 'conflicts' | 'error'
 
-export function SyncKbButton({ slug, disabled }: SyncKbButtonProps) {
+export function SyncKbButton({ slug, disabled, onComplete }: SyncKbButtonProps) {
   const [state, setState] = useState<SyncState>('idle')
   const [conflicts, setConflicts] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -47,11 +48,13 @@ export function SyncKbButton({ slug, disabled }: SyncKbButtonProps) {
         setState('error')
         setError(result.message || 'Sync failed')
       }
+      onComplete?.()
     } catch (err) {
       setState('error')
       setError(err instanceof Error ? err.message : 'Unknown error')
+      onComplete?.()
     }
-  }, [slug])
+  }, [slug, onComplete])
 
   const handleDismiss = useCallback(() => {
     setState('idle')

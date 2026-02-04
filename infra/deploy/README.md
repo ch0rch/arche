@@ -73,7 +73,7 @@ Like `--local` but mounts your source code for hot reload via `next dev`. Use th
 - **Postgres**: `localhost:5432`
 - Source from `apps/web/` is bind-mounted; `node_modules` lives in a named volume
 - Workspace image (`arche-workspace:latest`) is built automatically
-- Knowledge Base is deployed to `~/.arche/kb`
+- Knowledge Base is deployed to `~/.arche/kb` (repo bare)
 
 ```bash
 cd infra/deploy
@@ -148,6 +148,13 @@ Set in `.env` or export before running `deploy.sh`.
 | `ARCHE_SEED_ADMIN_EMAIL` | Seed admin email |
 | `ARCHE_SEED_ADMIN_PASSWORD` | Seed admin password |
 | `ARCHE_SEED_ADMIN_SLUG` | Seed admin URL slug |
+
+### Optional (seed test user)
+
+| Variable | Description |
+|----------|-------------|
+| `ARCHE_SEED_TEST_EMAIL` | Seed test user email |
+| `ARCHE_SEED_TEST_SLUG` | Seed test user URL slug |
 
 ### DNS provider tokens
 
