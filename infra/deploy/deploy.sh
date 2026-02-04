@@ -90,6 +90,8 @@ ENVIRONMENT VARIABLES (via .env or exported):
   ARCHE_SEED_ADMIN_EMAIL    Seed admin email
   ARCHE_SEED_ADMIN_PASSWORD Seed admin password
   ARCHE_SEED_ADMIN_SLUG     Seed admin URL slug
+  ARCHE_SEED_TEST_EMAIL     Seed test user email (optional)
+  ARCHE_SEED_TEST_SLUG      Seed test user slug (optional)
 
   DNS provider tokens (set the one matching --dns-provider):
     CF_DNS_API_TOKEN          Cloudflare
@@ -190,6 +192,8 @@ validate_local() {
   export ARCHE_SEED_ADMIN_EMAIL="${ARCHE_SEED_ADMIN_EMAIL:-admin@example.com}"
   export ARCHE_SEED_ADMIN_PASSWORD="${ARCHE_SEED_ADMIN_PASSWORD:-change-me}"
   export ARCHE_SEED_ADMIN_SLUG="${ARCHE_SEED_ADMIN_SLUG:-admin}"
+  export ARCHE_SEED_TEST_EMAIL="${ARCHE_SEED_TEST_EMAIL:-peter@example.com}"
+  export ARCHE_SEED_TEST_SLUG="${ARCHE_SEED_TEST_SLUG:-peter}"
 }
 
 # Determine mode
@@ -266,6 +270,8 @@ vars = {
     "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
     "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
+    "arche_seed_test_email": os.environ.get("ARCHE_SEED_TEST_EMAIL", ""),
+    "arche_seed_test_slug": os.environ.get("ARCHE_SEED_TEST_SLUG", ""),
     "ghcr_token": os.environ["GHCR_TOKEN"],
 }
 dns = os.environ["DNS_PROVIDER"]
@@ -314,6 +320,22 @@ deploy_local() {
     err "podman-compose not found. Install podman-compose first."
     exit 1
   fi
+
+  # Compute repo root and validate source tree
+  REPO_ROOT="$SCRIPT_DIR/../.."
+  REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
+  if [[ ! -f "$REPO_ROOT/infra/workspace-image/Containerfile" ]]; then
+    err "Cannot find infra/workspace-image/Containerfile in $REPO_ROOT"
+    err "Run this script from within the arche repository."
+    exit 1
+  fi
+
+  LOCAL_WORKSPACE_IMAGE="${LOCAL_WORKSPACE_IMAGE:-arche-workspace:latest}"
+  log "Building workspace image: $LOCAL_WORKSPACE_IMAGE"
+  podman build -t "$LOCAL_WORKSPACE_IMAGE" "$REPO_ROOT/infra/workspace-image"
+
+  # Ensure local stack uses the workspace image with agent
+  export OPENCODE_IMAGE="$LOCAL_WORKSPACE_IMAGE"
 
   # Detect Podman socket path (VM-internal path for container mounts)
   PODMAN_SOCKET_PATH="${PODMAN_SOCKET_PATH:-}"
@@ -367,6 +389,8 @@ vars = {
     "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
     "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
+    "arche_seed_test_email": os.environ.get("ARCHE_SEED_TEST_EMAIL", ""),
+    "arche_seed_test_slug": os.environ.get("ARCHE_SEED_TEST_SLUG", ""),
 }
 json.dump(vars, open(sys.argv[1], "w"))
 ' "$EXTRA_VARS_FILE"
@@ -533,6 +557,8 @@ vars = {
     "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
     "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
+    "arche_seed_test_email": os.environ.get("ARCHE_SEED_TEST_EMAIL", ""),
+    "arche_seed_test_slug": os.environ.get("ARCHE_SEED_TEST_SLUG", ""),
 }
 json.dump(vars, open(sys.argv[1], "w"))
 ' "$EXTRA_VARS_FILE"

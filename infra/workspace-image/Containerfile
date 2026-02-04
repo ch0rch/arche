@@ -2,11 +2,21 @@
 # Uso: podman build -t arche-workspace .
 
 ARG OPENCODE_VERSION=1.1.45
+
+FROM golang:1.22-alpine AS workspace-agent
+WORKDIR /src
+COPY workspace-agent/go.mod ./
+COPY workspace-agent/main.go ./
+RUN CGO_ENABLED=0 go build -o /workspace-agent
+
 FROM ghcr.io/anomalyco/opencode:${OPENCODE_VERSION}
 
 # Instalar git (necesario para sync de KB)
 USER root
 RUN apk add --no-cache git
+
+# Workspace agent (HTTP API for git/file ops)
+COPY --from=workspace-agent /workspace-agent /usr/local/bin/workspace-agent
 
 # Script de inicialización del workspace
 COPY init-workspace.sh /usr/local/bin/init-workspace.sh

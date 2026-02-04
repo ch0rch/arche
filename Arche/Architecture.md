@@ -146,7 +146,7 @@ arche.<domain>                                      <slug>.<domain>
                                      └───────────────┘
 
 Persistencia host:
-  /var/lib/arche/kb/vault.git   (repo bare)
+  /opt/arche/kb   (repo bare)
   /var/lib/arche/users/<slug>/  (workspace + datos opencode)
 ```
 
@@ -196,7 +196,7 @@ Integracion:
 - Postgres (container) para: usuarios, roles, instancias, configuracion, audit events
 - Prisma para: schema, migraciones, seeds
 - Git bare para KB:
-  - `vault.git` como source of truth
+  - `/opt/arche/kb` como source of truth (repo bare)
   - clones por usuario en `users/<slug>/vault` (idealmente con `--shared/--local` cuando aplique)
 
 ## Seguridad (modelo)

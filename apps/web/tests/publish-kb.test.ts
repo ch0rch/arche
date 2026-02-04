@@ -1,11 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import type { ExecResult } from '@/lib/spawner/docker'
 
 // --- Mocks ---
 
-const mockExecInContainer = vi.fn<(...args: unknown[]) => Promise<ExecResult>>()
-vi.mock('@/lib/spawner/docker', () => ({
-  execInContainer: (...args: unknown[]) => mockExecInContainer(...args),
+const mockCreateWorkspaceAgentClient = vi.fn()
+vi.mock('@/lib/workspace-agent/client', () => ({
+  createWorkspaceAgentClient: (...args: unknown[]) => mockCreateWorkspaceAgentClient(...args),
 }))
 
 const mockFindUnique = vi.fn()
@@ -30,12 +29,19 @@ function session(slug: string, role = 'USER') {
   return { user: { id: '1', email: 'a@b.com', slug, role }, sessionId: 's1' }
 }
 
-function exec(exitCode: number, stdout = '', stderr = ''): ExecResult {
-  return { exitCode, stdout, stderr }
-}
-
 function instance(status = 'running', containerId = 'ctr-1') {
   return { containerId, status }
+}
+
+function mockFetchResponse(payload: unknown, status = 200) {
+  const ok = status >= 200 && status < 300
+  const response = {
+    ok,
+    status,
+    json: async () => payload,
+    text: async () => JSON.stringify(payload),
+  }
+  ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(response)
 }
 
 async function callPOST(slug = 'alice') {
@@ -55,6 +61,7 @@ describe('POST /api/instances/[slug]/publish-kb', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.resetModules()
+    vi.stubGlobal('fetch', vi.fn())
   })
 
   it('returns 401 without session cookie', async () => {
@@ -94,7 +101,15 @@ describe('POST /api/instances/[slug]/publish-kb', () => {
     mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
     mockGetSessionFromToken.mockResolvedValue(session('alice'))
     mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer.mockResolvedValue(exec(1, '', 'fatal: no such remote'))
+    mockCreateWorkspaceAgentClient.mockResolvedValue({
+      baseUrl: 'http://agent',
+      authHeader: 'Basic abc'
+    })
+    mockFetchResponse({
+      ok: false,
+      status: 'no_remote',
+      message: 'KB remote not configured.'
+    })
     const { status, body } = await callPOST('alice')
     expect(status).toBe(200)
     expect(body.status).toBe('no_remote')
@@ -105,9 +120,15 @@ describe('POST /api/instances/[slug]/publish-kb', () => {
     mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
     mockGetSessionFromToken.mockResolvedValue(session('alice'))
     mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer
-      .mockResolvedValueOnce(exec(0, 'git@host:repo.git')) // remote check
-      .mockResolvedValueOnce(exec(0, ''))                   // git status --porcelain
+    mockCreateWorkspaceAgentClient.mockResolvedValue({
+      baseUrl: 'http://agent',
+      authHeader: 'Basic abc'
+    })
+    mockFetchResponse({
+      ok: true,
+      status: 'nothing_to_publish',
+      message: 'Nothing to publish.'
+    })
     const { status, body } = await callPOST('alice')
     expect(status).toBe(200)
     expect(body.status).toBe('nothing_to_publish')
@@ -118,16 +139,16 @@ describe('POST /api/instances/[slug]/publish-kb', () => {
     mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
     mockGetSessionFromToken.mockResolvedValue(session('alice'))
     mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer
-      .mockResolvedValueOnce(exec(0, 'git@host:repo.git'))           // remote check
-      .mockResolvedValueOnce(exec(0, ' M file1.md\n M file2.md\n')) // git status --porcelain
-      .mockResolvedValueOnce(exec(0))                                 // git add -A
-      .mockResolvedValueOnce(exec(0, ' file1.md | 2 +-\n file2.md | 1 +\n 2 files changed')) // diff --cached --stat
-      .mockResolvedValueOnce(exec(0))                                 // git commit
-      .mockResolvedValueOnce(exec(0, 'abc1234'))                      // rev-parse
-      .mockResolvedValueOnce(exec(0, 'file1.md\nfile2.md\n'))        // diff-tree
-      .mockResolvedValueOnce(exec(0, 'main'))                        // rev-parse branch
-      .mockResolvedValueOnce(exec(0))                                 // git push
+    mockCreateWorkspaceAgentClient.mockResolvedValue({
+      baseUrl: 'http://agent',
+      authHeader: 'Basic abc'
+    })
+    mockFetchResponse({
+      ok: true,
+      status: 'published',
+      commitHash: 'abc1234',
+      files: ['file1.md', 'file2.md']
+    })
     const { status, body } = await callPOST('alice')
     expect(status).toBe(200)
     expect(body.ok).toBe(true)
@@ -140,16 +161,17 @@ describe('POST /api/instances/[slug]/publish-kb', () => {
     mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
     mockGetSessionFromToken.mockResolvedValue(session('alice'))
     mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer
-      .mockResolvedValueOnce(exec(0, 'git@host:repo.git'))
-      .mockResolvedValueOnce(exec(0, ' M file1.md\n'))
-      .mockResolvedValueOnce(exec(0))                        // git add
-      .mockResolvedValueOnce(exec(0, ' file1.md | 1 +\n 1 file changed')) // stat
-      .mockResolvedValueOnce(exec(0))                        // commit
-      .mockResolvedValueOnce(exec(0, 'def5678'))             // rev-parse
-      .mockResolvedValueOnce(exec(0, 'file1.md\n'))          // diff-tree
-      .mockResolvedValueOnce(exec(0, 'main'))                // rev-parse branch
-      .mockResolvedValueOnce(exec(1, '', '! [rejected]'))    // push rejected
+    mockCreateWorkspaceAgentClient.mockResolvedValue({
+      baseUrl: 'http://agent',
+      authHeader: 'Basic abc'
+    })
+    mockFetchResponse({
+      ok: false,
+      status: 'push_rejected',
+      commitHash: 'def5678',
+      files: ['file1.md'],
+      message: 'Sync KB first'
+    })
     const { status, body } = await callPOST('alice')
     expect(status).toBe(200)
     expect(body.ok).toBe(false)
@@ -161,99 +183,53 @@ describe('POST /api/instances/[slug]/publish-kb', () => {
     mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
     mockGetSessionFromToken.mockResolvedValue(session('admin-user', 'ADMIN'))
     mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer
-      .mockResolvedValueOnce(exec(0, 'git@host:repo.git'))
-      .mockResolvedValueOnce(exec(0, '')) // clean
+    mockCreateWorkspaceAgentClient.mockResolvedValue({
+      baseUrl: 'http://agent',
+      authHeader: 'Basic abc'
+    })
+    mockFetchResponse({
+      ok: true,
+      status: 'nothing_to_publish',
+      message: 'Nothing to publish.'
+    })
     const { status, body } = await callPOST('alice')
     expect(status).toBe(200)
     expect(body.status).toBe('nothing_to_publish')
   })
 
-  it('generates commit message with file names for 1-3 files', async () => {
+  it('returns error when agent reports error', async () => {
     mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
     mockGetSessionFromToken.mockResolvedValue(session('alice'))
     mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer
-      .mockResolvedValueOnce(exec(0, 'git@host:repo.git'))
-      .mockResolvedValueOnce(exec(0, ' M a.md\n M b.md\n'))
-      .mockResolvedValueOnce(exec(0)) // add
-      .mockResolvedValueOnce(exec(0, ' a.md | 1 +\n b.md | 2 +-\n 2 files changed'))
-      .mockResolvedValueOnce(exec(0)) // commit
-      .mockResolvedValueOnce(exec(0, 'aaa1111'))
-      .mockResolvedValueOnce(exec(0, 'a.md\nb.md\n'))
-      .mockResolvedValueOnce(exec(0, 'main')) // rev-parse branch
-      .mockResolvedValueOnce(exec(0)) // push
-    await callPOST('alice')
-    // The commit call is the 5th invocation (index 4)
-    const commitCall = mockExecInContainer.mock.calls[4]
-    const commitCmd = commitCall[1] as string[]
-    expect(commitCmd).toContain('-m')
-    const msg = commitCmd[commitCmd.indexOf('-m') + 1]
-    expect(msg).toBe('Update a.md, b.md')
-  })
-
-  it('generates commit message with count for >3 files', async () => {
-    mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
-    mockGetSessionFromToken.mockResolvedValue(session('alice'))
-    mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer
-      .mockResolvedValueOnce(exec(0, 'git@host:repo.git'))
-      .mockResolvedValueOnce(exec(0, ' M a\n M b\n M c\n M d\n'))
-      .mockResolvedValueOnce(exec(0)) // add
-      .mockResolvedValueOnce(exec(0, ' a | 1 +\n b | 1 +\n c | 1 +\n d | 1 +\n 4 files changed'))
-      .mockResolvedValueOnce(exec(0)) // commit
-      .mockResolvedValueOnce(exec(0, 'bbb2222'))
-      .mockResolvedValueOnce(exec(0, 'a\nb\nc\nd\n'))
-      .mockResolvedValueOnce(exec(0, 'main')) // rev-parse branch
-      .mockResolvedValueOnce(exec(0)) // push
-    await callPOST('alice')
-    const commitCall = mockExecInContainer.mock.calls[4]
-    const commitCmd = commitCall[1] as string[]
-    const msg = commitCmd[commitCmd.indexOf('-m') + 1]
-    expect(msg).toBe('Update 4 files')
-  })
-
-  it('returns error when git add fails', async () => {
-    mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
-    mockGetSessionFromToken.mockResolvedValue(session('alice'))
-    mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer
-      .mockResolvedValueOnce(exec(0, 'git@host:repo.git'))       // remote check
-      .mockResolvedValueOnce(exec(0, ' M file1.md\n'))           // git status
-      .mockResolvedValueOnce(exec(1, '', 'fatal: index locked')) // git add fails
+    mockCreateWorkspaceAgentClient.mockResolvedValue({
+      baseUrl: 'http://agent',
+      authHeader: 'Basic abc'
+    })
+    mockFetchResponse({
+      ok: false,
+      status: 'error',
+      message: 'git add failed: index locked'
+    })
     const { status, body } = await callPOST('alice')
     expect(status).toBe(200)
     expect(body.ok).toBe(false)
     expect(body.status).toBe('error')
-    expect(body.message).toContain('git add failed')
+    expect(body.message).toBe('git add failed: index locked')
   })
 
-  it('returns error when git commit fails', async () => {
+  it('returns error when agent request fails', async () => {
     mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
     mockGetSessionFromToken.mockResolvedValue(session('alice'))
     mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer
-      .mockResolvedValueOnce(exec(0, 'git@host:repo.git'))       // remote check
-      .mockResolvedValueOnce(exec(0, ' M file1.md\n'))           // git status
-      .mockResolvedValueOnce(exec(0))                             // git add ok
-      .mockResolvedValueOnce(exec(0, ' file1.md | 1 +\n 1 file changed')) // stat
-      .mockResolvedValueOnce(exec(1, '', 'error: hook failed'))  // git commit fails
+    mockCreateWorkspaceAgentClient.mockResolvedValue({
+      baseUrl: 'http://agent',
+      authHeader: 'Basic abc'
+    })
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('agent down'))
     const { status, body } = await callPOST('alice')
     expect(status).toBe(200)
     expect(body.ok).toBe(false)
     expect(body.status).toBe('error')
-    expect(body.message).toContain('git commit failed')
-  })
-
-  it('returns error when execInContainer throws', async () => {
-    mockCookies.mockResolvedValue({ get: () => ({ value: 'tok' }) })
-    mockGetSessionFromToken.mockResolvedValue(session('alice'))
-    mockFindUnique.mockResolvedValue(instance())
-    mockExecInContainer.mockRejectedValue(new Error('container crashed'))
-    const { status, body } = await callPOST('alice')
-    expect(status).toBe(200)
-    expect(body.ok).toBe(false)
-    expect(body.status).toBe('error')
-    expect(body.message).toBe('container crashed')
+    expect(body.message).toBe('agent down')
   })
 })

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
 import { prisma } from '@/lib/prisma'
 import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
-import { execInContainer } from '@/lib/spawner/docker'
+import { createWorkspaceAgentClient } from '@/lib/workspace-agent/client'
 
 export interface PublishKbResult {
   ok: boolean
@@ -17,19 +17,6 @@ async function getAuthenticatedUser() {
   const token = cookieStore.get(SESSION_COOKIE_NAME)?.value
   if (!token) return null
   return getSessionFromToken(token)
-}
-
-function generateCommitMessage(statOutput: string): string {
-  // Parse file names from `git diff --cached --stat` output
-  // Each line looks like: " file.md | 2 +-"
-  // Last line is summary: " N files changed, ..."
-  const lines = statOutput.split('\n').filter(l => l.trim().length > 0)
-  const fileLines = lines.filter(l => l.includes('|'))
-  const fileNames = fileLines.map(l => l.split('|')[0].trim())
-
-  if (fileNames.length === 0) return 'Update files'
-  if (fileNames.length <= 3) return `Update ${fileNames.join(', ')}`
-  return `Update ${fileNames.length} files`
 }
 
 export async function POST(
@@ -61,121 +48,31 @@ export async function POST(
   }
 
   try {
-    // 1. Check remote 'kb' exists
-    const remoteCheck = await execInContainer(
-      instance.containerId,
-      ['git', 'remote', 'get-url', 'kb'],
-      { timeout: 5000 }
-    )
-
-    if (remoteCheck.exitCode !== 0) {
-      return NextResponse.json({
-        ok: false,
-        status: 'no_remote',
-        message: 'KB remote not configured.',
-      })
+    const agent = await createWorkspaceAgentClient(slug)
+    if (!agent) {
+      return NextResponse.json({ error: 'instance_unavailable' }, { status: 409 })
     }
 
-    // 2. Check for changes
-    const statusResult = await execInContainer(
-      instance.containerId,
-      ['git', 'status', '--porcelain'],
-      { timeout: 5000 }
-    )
-
-    if (statusResult.stdout.trim() === '') {
-      return NextResponse.json({
-        ok: true,
-        status: 'nothing_to_publish',
-        message: 'Nothing to publish.',
-      })
-    }
-
-    // 3. Stage all changes
-    const addResult = await execInContainer(
-      instance.containerId,
-      ['git', 'add', '-A'],
-      { timeout: 10000 }
-    )
-
-    if (addResult.exitCode !== 0) {
-      return NextResponse.json({
-        ok: false,
-        status: 'error',
-        message: `git add failed: ${addResult.stderr}`,
-      })
-    }
-
-    // 4. Get diff stat for commit message
-    const statResult = await execInContainer(
-      instance.containerId,
-      ['git', 'diff', '--cached', '--stat'],
-      { timeout: 5000 }
-    )
-
-    const commitMessage = generateCommitMessage(statResult.stdout)
-
-    // 5. Commit
-    const commitResult = await execInContainer(
-      instance.containerId,
-      ['git', 'commit', '-m', commitMessage],
-      { timeout: 10000 }
-    )
-
-    if (commitResult.exitCode !== 0) {
-      return NextResponse.json({
-        ok: false,
-        status: 'error',
-        message: `git commit failed: ${commitResult.stderr}`,
-      })
-    }
-
-    // 6. Get commit hash
-    const hashResult = await execInContainer(
-      instance.containerId,
-      ['git', 'rev-parse', '--short', 'HEAD'],
-      { timeout: 5000 }
-    )
-    const commitHash = hashResult.stdout.trim()
-
-    // 7. Get changed files
-    const filesResult = await execInContainer(
-      instance.containerId,
-      ['git', 'diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'],
-      { timeout: 5000 }
-    )
-    const files = filesResult.stdout.split('\n').map(f => f.trim()).filter(f => f.length > 0)
-
-    // 8. Detect current branch and push
-    const branchResult = await execInContainer(
-      instance.containerId,
-      ['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
-      { timeout: 5000 }
-    )
-    const currentBranch = branchResult.stdout.trim() || 'main'
-
-    const pushResult = await execInContainer(
-      instance.containerId,
-      ['git', 'push', 'kb', currentBranch],
-      { timeout: 30000 }
-    )
-
-    if (pushResult.exitCode !== 0) {
-      return NextResponse.json({
-        ok: false,
-        status: 'push_rejected',
-        commitHash,
-        files,
-        message: 'Sync KB first',
-      })
-    }
-
-    return NextResponse.json({
-      ok: true,
-      status: 'published',
-      commitHash,
-      files,
+    const response = await fetch(`${agent.baseUrl}/kb/publish`, {
+      method: 'POST',
+      headers: {
+        Authorization: agent.authHeader,
+        Accept: 'application/json'
+      },
+      cache: 'no-store'
     })
+
+    const data = await response.json().catch(() => null) as PublishKbResult | null
+    if (!response.ok || !data) {
+      const errorText = data?.message ?? `workspace_agent_http_${response.status}`
+      return NextResponse.json({
+        ok: false,
+        status: 'error',
+        message: errorText,
+      })
+    }
+
+    return NextResponse.json(data)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error'
     return NextResponse.json({

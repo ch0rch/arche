@@ -138,6 +138,16 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
   // Use workspace hook only when instance is running
   const workspace = useWorkspace({ slug, pollInterval: 5000, enabled: instanceStatus === 'running' });
+
+  const handleSyncComplete = useCallback(() => {
+    workspace.refreshDiffs();
+    workspace.refreshFiles();
+  }, [workspace.refreshDiffs, workspace.refreshFiles]);
+
+  const handlePublishComplete = useCallback(() => {
+    workspace.refreshDiffs();
+    workspace.refreshFiles();
+  }, [workspace.refreshDiffs, workspace.refreshFiles]);
   
   // Layout state
   const [leftWidth, setLeftWidth] = useState(MIN_LEFT_PX);
@@ -302,6 +312,15 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     await workspace.renameSession(sessionId, newTitle);
   }, [workspace]);
 
+  const handleToggleRight = useCallback(() => {
+    setRightCollapsed((prev) => !prev);
+  }, []);
+
+  const handleOpenReview = useCallback(() => {
+    setRightCollapsed(false);
+    setRightTab("review");
+  }, []);
+
   // Resize handlers
   const handleResizeLeft = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -461,7 +480,11 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     <div className="flex h-screen flex-col overflow-hidden bg-background text-foreground">
       <div className="pointer-events-none absolute inset-0 organic-background" />
 
-      <WorkspaceHeader slug={slug} status="active" />
+      <WorkspaceHeader
+        slug={slug}
+        status="active"
+        onSyncComplete={handleSyncComplete}
+      />
 
       <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1">
         {/* Left panel - File tree */}
@@ -527,6 +550,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
         >
           {!rightCollapsed && (
             <InspectorPanel
+              slug={slug}
               activeTab={rightTab}
               onTabChange={setRightTab}
               openFiles={openFiles}
@@ -534,7 +558,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               onSelectFile={handleSelectFile}
               onCloseFile={handleCloseFile}
               diffs={workspace.diffs}
+              isLoadingDiffs={workspace.isLoadingDiffs}
+              diffsError={workspace.diffsError}
               onOpenFile={handleOpenFile}
+              onPublish={handlePublishComplete}
             />
           )}
         </div>
@@ -544,7 +571,9 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
         leftCollapsed={leftCollapsed}
         rightCollapsed={rightCollapsed}
         onToggleLeft={() => setLeftCollapsed(prev => !prev)}
-        onToggleRight={() => setRightCollapsed(prev => !prev)}
+        onToggleRight={handleToggleRight}
+        onOpenReview={handleOpenReview}
+        pendingDiffs={workspace.diffs.length}
       />
     </div>
   );

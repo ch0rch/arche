@@ -36,10 +36,12 @@ podman build -t arche-workspace:latest ../workspace-image
 3) **Preparar el KB** (Knowledge Base):
 
 ```bash
-# Crear directorio y deploy del KB
-mkdir -p /opt/arche/kb
+# Crear repo bare y deploy del KB
+mkdir -p /opt/arche
 ../../scripts/deploy-kb.sh /opt/arche/kb
 ```
+
+El destino `/opt/arche/kb` es un repo Git bare (no tiene working tree).
 
 4) **Variables de entorno de `apps/web`**
 

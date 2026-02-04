@@ -60,6 +60,7 @@ describe('docker', () => {
         Env: [
           'OPENCODE_SERVER_PASSWORD=secret-password',
           'OPENCODE_SERVER_USERNAME=opencode',
+          'WORKSPACE_AGENT_PORT=4097',
         ],
         HostConfig: {
           NetworkMode: 'test-network',
