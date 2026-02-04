@@ -212,3 +212,114 @@ export async function applyWorkspacePatchAction(
     return { ok: false, error: e instanceof Error ? e.message : 'workspace_agent_unreachable' }
   }
 }
+
+export type ConflictResolutionStrategy = 'ours' | 'theirs' | 'manual'
+
+export type WorkspaceConflictDetails = {
+  path: string
+  ours: string
+  theirs: string
+  base?: string
+  working?: string
+}
+
+export async function getWorkspaceConflictAction(
+  slug: string,
+  path: string
+): Promise<{ ok: boolean; conflict?: WorkspaceConflictDetails; error?: string }> {
+  const auth = await authorizeWorkspace(slug)
+  if (!auth.ok) return { ok: false, error: auth.error }
+
+  const agent = await createWorkspaceAgentClient(slug)
+  if (!agent) return { ok: false, error: 'instance_unavailable' }
+
+  try {
+    const response = await fetch(`${agent.baseUrl}/git/conflict`, {
+      method: 'POST',
+      headers: {
+        Authorization: agent.authHeader,
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({ path }),
+      cache: 'no-store'
+    })
+
+    const data = await response.json() as AgentResponse & {
+      path?: string
+      ours?: string
+      theirs?: string
+      base?: string
+      working?: string
+    }
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: !data.ok ? data.error : `workspace_agent_http_${response.status}`
+      }
+    }
+
+    if (!data.ok) {
+      return { ok: false, error: data.error }
+    }
+
+    if (!data.path) {
+      return { ok: false, error: 'conflict_not_found' }
+    }
+
+    return {
+      ok: true,
+      conflict: {
+        path: data.path,
+        ours: data.ours ?? '',
+        theirs: data.theirs ?? '',
+        base: data.base,
+        working: data.working
+      }
+    }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'workspace_agent_unreachable' }
+  }
+}
+
+export async function resolveWorkspaceConflictAction(
+  slug: string,
+  payload: { path: string; strategy: ConflictResolutionStrategy; content?: string }
+): Promise<{ ok: boolean; error?: string }> {
+  const auth = await authorizeWorkspace(slug)
+  if (!auth.ok) return { ok: false, error: auth.error }
+
+  const agent = await createWorkspaceAgentClient(slug)
+  if (!agent) return { ok: false, error: 'instance_unavailable' }
+
+  try {
+    const response = await fetch(`${agent.baseUrl}/git/resolve`, {
+      method: 'POST',
+      headers: {
+        Authorization: agent.authHeader,
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify(payload),
+      cache: 'no-store'
+    })
+
+    const data = await response.json() as AgentResponse
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: !data.ok ? data.error : `workspace_agent_http_${response.status}`
+      }
+    }
+
+    if (!data.ok) {
+      return { ok: false, error: data.error }
+    }
+
+    return { ok: true }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'workspace_agent_unreachable' }
+  }
+}

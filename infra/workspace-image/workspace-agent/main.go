@@ -52,6 +52,32 @@ type gitDiffResponse struct {
   Diffs []gitDiffEntry `json:"diffs"`
 }
 
+type gitConflictRequest struct {
+  Path string `json:"path"`
+}
+
+type gitConflictResponse struct {
+  Ok      bool   `json:"ok"`
+  Path    string `json:"path"`
+  Ours    string `json:"ours"`
+  Theirs  string `json:"theirs"`
+  Base    string `json:"base,omitempty"`
+  Working string `json:"working,omitempty"`
+}
+
+type gitResolveRequest struct {
+  Path     string `json:"path"`
+  Strategy string `json:"strategy"`
+  Content  string `json:"content,omitempty"`
+}
+
+type gitResolveResponse struct {
+  Ok       bool   `json:"ok"`
+  Path     string `json:"path"`
+  Strategy string `json:"strategy"`
+  Message  string `json:"message,omitempty"`
+}
+
 type fileReadRequest struct {
   Path string `json:"path"`
 }
@@ -140,6 +166,8 @@ func main() {
   mux := http.NewServeMux()
   mux.HandleFunc("/health", s.withAuth(s.handleHealth))
   mux.HandleFunc("/git/diffs", s.withAuth(s.handleGitDiffs))
+  mux.HandleFunc("/git/conflict", s.withAuth(s.handleGitConflict))
+  mux.HandleFunc("/git/resolve", s.withAuth(s.handleGitResolve))
   mux.HandleFunc("/files/read", s.withAuth(s.handleFileRead))
   mux.HandleFunc("/files/write", s.withAuth(s.handleFileWrite))
   mux.HandleFunc("/files/delete", s.withAuth(s.handleFileDelete))
@@ -257,6 +285,141 @@ func (s *server) handleGitDiffs(w http.ResponseWriter, r *http.Request) {
   }
 
   writeJSON(w, http.StatusOK, gitDiffResponse{Ok: true, Diffs: diffs})
+}
+
+func (s *server) handleGitConflict(w http.ResponseWriter, r *http.Request) {
+  if r.Method != http.MethodPost {
+    writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+    return
+  }
+
+  var req gitConflictRequest
+  if err := decodeJSON(w, r, &req); err != nil {
+    writeError(w, http.StatusBadRequest, "invalid_json")
+    return
+  }
+
+  relPath, absPath, err := s.resolveRelPath(req.Path)
+  if err != nil {
+    writeError(w, http.StatusBadRequest, err.Error())
+    return
+  }
+
+  conflictOut, _, _, _ := runCmd(r.Context(), s.workspace, []string{
+    "git", "diff", "--name-only", "--diff-filter=U", "--", relPath,
+  })
+  if strings.TrimSpace(conflictOut) == "" {
+    writeError(w, http.StatusNotFound, "not_conflicted")
+    return
+  }
+
+  ours, err := s.readGitStage(r.Context(), 2, relPath)
+  if err != nil {
+    writeError(w, http.StatusBadGateway, "git_show_failed")
+    return
+  }
+
+  theirs, err := s.readGitStage(r.Context(), 3, relPath)
+  if err != nil {
+    writeError(w, http.StatusBadGateway, "git_show_failed")
+    return
+  }
+
+  base, err := s.readGitStage(r.Context(), 1, relPath)
+  if err != nil {
+    writeError(w, http.StatusBadGateway, "git_show_failed")
+    return
+  }
+
+  working := ""
+  if data, err := os.ReadFile(absPath); err == nil {
+    working = string(data)
+  }
+
+  writeJSON(w, http.StatusOK, gitConflictResponse{
+    Ok:      true,
+    Path:    req.Path,
+    Ours:    ours,
+    Theirs:  theirs,
+    Base:    base,
+    Working: working,
+  })
+}
+
+func (s *server) handleGitResolve(w http.ResponseWriter, r *http.Request) {
+  if r.Method != http.MethodPost {
+    writeError(w, http.StatusMethodNotAllowed, "method_not_allowed")
+    return
+  }
+
+  var req gitResolveRequest
+  if err := decodeJSON(w, r, &req); err != nil {
+    writeError(w, http.StatusBadRequest, "invalid_json")
+    return
+  }
+
+  relPath, absPath, err := s.resolveRelPath(req.Path)
+  if err != nil {
+    writeError(w, http.StatusBadRequest, err.Error())
+    return
+  }
+
+  switch req.Strategy {
+  case "ours":
+    _, checkoutErr, checkoutCode, checkoutExecErr := runCmd(r.Context(), s.workspace, []string{
+      "git", "checkout", "--ours", "--", relPath,
+    })
+    if checkoutExecErr != nil || checkoutCode != 0 {
+      msg := strings.TrimSpace(checkoutErr)
+      if msg == "" {
+        msg = "git_checkout_failed"
+      }
+      writeError(w, http.StatusBadGateway, msg)
+      return
+    }
+  case "theirs":
+    _, checkoutErr, checkoutCode, checkoutExecErr := runCmd(r.Context(), s.workspace, []string{
+      "git", "checkout", "--theirs", "--", relPath,
+    })
+    if checkoutExecErr != nil || checkoutCode != 0 {
+      msg := strings.TrimSpace(checkoutErr)
+      if msg == "" {
+        msg = "git_checkout_failed"
+      }
+      writeError(w, http.StatusBadGateway, msg)
+      return
+    }
+  case "manual":
+    if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+      writeError(w, http.StatusInternalServerError, "mkdir_failed")
+      return
+    }
+    if err := writeFileAtomic(absPath, []byte(req.Content), 0o644); err != nil {
+      writeError(w, http.StatusInternalServerError, "write_failed")
+      return
+    }
+  default:
+    writeError(w, http.StatusBadRequest, "invalid_strategy")
+    return
+  }
+
+  _, addErr, addCode, addExecErr := runCmd(r.Context(), s.workspace, []string{
+    "git", "add", "--", relPath,
+  })
+  if addExecErr != nil || addCode != 0 {
+    msg := strings.TrimSpace(addErr)
+    if msg == "" {
+      msg = "git_add_failed"
+    }
+    writeError(w, http.StatusBadGateway, msg)
+    return
+  }
+
+  writeJSON(w, http.StatusOK, gitResolveResponse{
+    Ok:       true,
+    Path:     req.Path,
+    Strategy: req.Strategy,
+  })
 }
 
 func (s *server) handleFileRead(w http.ResponseWriter, r *http.Request) {
@@ -918,6 +1081,39 @@ func runCmd(ctx context.Context, dir string, args []string) (string, string, int
     return stdout.String(), stderr.String(), 1, err
   }
   return stdout.String(), stderr.String(), 0, nil
+}
+
+func (s *server) readGitStage(ctx context.Context, stage int, relPath string) (string, error) {
+  spec := ":" + strconv.Itoa(stage) + ":" + relPath
+  out, _, code, execErr := runCmd(ctx, s.workspace, []string{
+    "git", "show", spec,
+  })
+  if execErr != nil {
+    return "", execErr
+  }
+  if code != 0 {
+    return "", nil
+  }
+  return out, nil
+}
+
+func (s *server) resolveRelPath(rel string) (string, string, error) {
+  abs, err := s.resolvePath(rel)
+  if err != nil {
+    return "", "", err
+  }
+  workspaceAbs, err := filepath.Abs(s.workspace)
+  if err != nil {
+    return "", "", errors.New("workspace_invalid")
+  }
+  relPath, err := filepath.Rel(workspaceAbs, abs)
+  if err != nil {
+    return "", "", errors.New("invalid_path")
+  }
+  if relPath == "." || relPath == "" {
+    return "", "", errors.New("invalid_path")
+  }
+  return filepath.ToSlash(relPath), abs, nil
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {

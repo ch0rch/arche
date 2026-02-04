@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { CaretDown, CaretRight, File, GitDiff, Minus, Plus } from "@phosphor-icons/react";
 
+import { ConflictResolverDialog } from "./conflict-resolver-dialog";
 import { PublishKbButton } from "./publish-kb-button";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,12 +18,23 @@ type ReviewPanelProps = {
   error?: string;
   onOpenFile: (path: string) => void;
   onPublish?: () => void;
+  onResolveConflict?: (path: string, content: string) => void;
 };
 
 const DIFF_PREVIEW_LINES = 120;
 
-export function ReviewPanel({ slug, diffs, isLoading, error, onOpenFile, onPublish }: ReviewPanelProps) {
+export function ReviewPanel({
+  slug,
+  diffs,
+  isLoading,
+  error,
+  onOpenFile,
+  onPublish,
+  onResolveConflict,
+}: ReviewPanelProps) {
   const [expandedDiffs, setExpandedDiffs] = useState<Record<string, boolean>>({});
+  const [conflictPath, setConflictPath] = useState<string | null>(null);
+  const [conflictOpen, setConflictOpen] = useState(false);
 
   const totals = useMemo(() => {
     return diffs.reduce(
@@ -40,6 +52,18 @@ export function ReviewPanel({ slug, diffs, isLoading, error, onOpenFile, onPubli
 
   const toggleDiff = useCallback((path: string) => {
     setExpandedDiffs((prev) => ({ ...prev, [path]: !prev[path] }));
+  }, []);
+
+  const openConflictResolver = useCallback((path: string) => {
+    setConflictPath(path);
+    setConflictOpen(true);
+  }, []);
+
+  const handleConflictOpenChange = useCallback((open: boolean) => {
+    setConflictOpen(open);
+    if (!open) {
+      setConflictPath(null);
+    }
   }, []);
 
   if (error) {
@@ -139,6 +163,19 @@ export function ReviewPanel({ slug, diffs, isLoading, error, onOpenFile, onPubli
                     <span className="text-red-500">-{diff.deletions}</span>
                   </span>
                 </button>
+                {diff.conflicted ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 shrink-0 px-2 text-[11px]"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openConflictResolver(diff.path);
+                    }}
+                  >
+                    Resolve
+                  </Button>
+                ) : null}
                 {isLong ? (
                   <Button
                     size="sm"
@@ -168,6 +205,15 @@ export function ReviewPanel({ slug, diffs, isLoading, error, onOpenFile, onPubli
           );
         })}
       </div>
+      <ConflictResolverDialog
+        slug={slug}
+        path={conflictPath}
+        open={conflictOpen}
+        onOpenChange={handleConflictOpenChange}
+        onResolved={(path, content) => {
+          onResolveConflict?.(path, content);
+        }}
+      />
     </div>
   );
 }

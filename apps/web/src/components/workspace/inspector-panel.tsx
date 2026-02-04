@@ -32,6 +32,7 @@ type InspectorPanelProps = {
   diffsError?: string | null;
   onOpenFile: (path: string) => void;
   onPublish?: () => void;
+  onResolveConflict?: (path: string, content: string) => void;
 };
 
 function getParentFolder(path: string): string | null {
@@ -52,7 +53,8 @@ export function InspectorPanel({
   isLoadingDiffs,
   diffsError,
   onOpenFile,
-  onPublish
+  onPublish,
+  onResolveConflict
 }: InspectorPanelProps) {
   const pendingDiffs = diffs.length;
   const activeFile = openFiles.find((f) => f.path === activeFilePath) ?? null;
@@ -244,6 +246,7 @@ export function InspectorPanel({
               error={diffsError ?? undefined}
               onOpenFile={onOpenFile}
               onPublish={onPublish}
+              onResolveConflict={onResolveConflict}
             />
           </div>
         )}

@@ -148,6 +148,29 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     workspace.refreshDiffs();
     workspace.refreshFiles();
   }, [workspace.refreshDiffs, workspace.refreshFiles]);
+
+  const handleResolveConflict = useCallback(
+    (path: string, content: string) => {
+      workspace.refreshDiffs();
+      workspace.refreshFiles();
+
+      setFileCache((prev) => {
+        const existing = prev[path];
+        if (!existing) return prev;
+        const size = `${(content.length / 1024).toFixed(1)} KB`;
+        return {
+          ...prev,
+          [path]: {
+            ...existing,
+            content,
+            updatedAt: "Ahora",
+            size,
+          },
+        };
+      });
+    },
+    [workspace.refreshDiffs, workspace.refreshFiles]
+  );
   
   // Layout state
   const [leftWidth, setLeftWidth] = useState(MIN_LEFT_PX);
@@ -562,6 +585,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               diffsError={workspace.diffsError}
               onOpenFile={handleOpenFile}
               onPublish={handlePublishComplete}
+              onResolveConflict={handleResolveConflict}
             />
           )}
         </div>
