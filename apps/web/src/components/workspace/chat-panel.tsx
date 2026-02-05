@@ -931,7 +931,7 @@ export function ChatPanel({
   return (
     <div className="flex h-full flex-col text-card-foreground">
       {/* Session tabs */}
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/10 pl-3 pr-2">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/10 pl-2 pr-2">
         {canScrollLeft && (
           <Button
             size="icon"
@@ -953,7 +953,7 @@ export function ChatPanel({
             <div
               key={session.id}
               className={cn(
-                "group flex shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1 py-1 text-xs transition-colors",
+                "group flex shrink-0 items-center gap-1 rounded-xl pl-2.5 pr-1 py-1 text-xs transition-colors",
                 session.id === activeSessionId
                   ? "bg-primary/10 text-primary"
                   : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"

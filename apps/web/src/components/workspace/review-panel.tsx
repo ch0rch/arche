@@ -82,9 +82,9 @@ export function ReviewPanel({
 
   if (diffs.length === 0) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 text-center">
-        <GitDiff size={28} className="text-muted-foreground/30" />
-        <p className="text-xs text-muted-foreground">
+      <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+        <GitDiff size={32} className="text-muted-foreground/30" />
+        <p className="max-w-[240px] text-sm text-muted-foreground">
           {isLoading ? 'Loading changes…' : 'No pending changes'}
         </p>
       </div>

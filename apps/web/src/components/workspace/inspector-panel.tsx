@@ -96,12 +96,12 @@ export function InspectorPanel({
 
   return (
     <div className="flex h-full flex-col text-card-foreground">
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/10 pl-3 pr-2">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/10 pl-2 pr-2">
         <button
           type="button"
           onClick={() => onTabChange("preview")}
           className={cn(
-            "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors",
+            "flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium transition-colors",
             activeTab === "preview"
               ? "bg-primary/10 text-primary"
               : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
@@ -114,7 +114,7 @@ export function InspectorPanel({
           type="button"
           onClick={() => onTabChange("review")}
           className={cn(
-            "flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors",
+            "flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium transition-colors",
             activeTab === "review"
               ? "bg-primary/10 text-primary"
               : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
@@ -230,15 +230,15 @@ export function InspectorPanel({
               ) : null}
             </div>
           ) : (
-            <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
-              <File size={28} className="text-muted-foreground/30" />
-              <p className="text-xs text-muted-foreground">
+            <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
+              <File size={32} className="text-muted-foreground/30" />
+              <p className="max-w-[240px] text-sm text-muted-foreground">
                 Select a file
               </p>
             </div>
           )
         ) : (
-          <div className="p-5">
+          <div className="h-full p-5">
             <ReviewPanel
               slug={slug}
               diffs={diffs}
