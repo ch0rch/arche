@@ -32,6 +32,7 @@ type InspectorPanelProps = {
   diffsError?: string | null;
   onOpenFile: (path: string) => void;
   onPublish?: () => void;
+  onResolveConflict?: (path: string, content: string) => void;
 };
 
 function getParentFolder(path: string): string | null {
@@ -52,7 +53,8 @@ export function InspectorPanel({
   isLoadingDiffs,
   diffsError,
   onOpenFile,
-  onPublish
+  onPublish,
+  onResolveConflict
 }: InspectorPanelProps) {
   const pendingDiffs = diffs.length;
   const activeFile = openFiles.find((f) => f.path === activeFilePath) ?? null;
@@ -93,16 +95,16 @@ export function InspectorPanel({
   };
 
   return (
-    <div className="flex h-full flex-col bg-card/50">
-      <div className="flex h-12 items-center gap-1 border-b border-border/60 px-3">
+    <div className="flex h-full flex-col text-card-foreground">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/10 pl-2 pr-2">
         <button
           type="button"
           onClick={() => onTabChange("preview")}
           className={cn(
-            "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+            "flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium transition-colors",
             activeTab === "preview"
               ? "bg-primary/10 text-primary"
-              : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+              : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           )}
         >
           <Eye size={14} weight={activeTab === "preview" ? "fill" : "bold"} />
@@ -112,10 +114,10 @@ export function InspectorPanel({
           type="button"
           onClick={() => onTabChange("review")}
           className={cn(
-            "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+            "flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-xs font-medium transition-colors",
             activeTab === "review"
               ? "bg-primary/10 text-primary"
-              : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+              : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
           )}
         >
           <GitDiff size={14} weight={activeTab === "review" ? "fill" : "bold"} />
@@ -128,12 +130,12 @@ export function InspectorPanel({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto scrollbar-none">
         {activeTab === "preview" ? (
           openFiles.length > 0 ? (
             <div className="flex h-full flex-col">
               {/* File tabs */}
-              <div className="flex items-center border-b border-border/60">
+              <div className="flex items-center border-b border-white/10">
                 {canScrollLeft && (
                   <Button
                     size="icon"
@@ -148,17 +150,17 @@ export function InspectorPanel({
                 
                 <div
                   ref={tabsRef}
-                  className="flex flex-1 items-center gap-0.5 overflow-x-auto px-2 py-1.5 scrollbar-none"
+                  className="flex flex-1 items-center gap-0.5 overflow-x-auto pl-3 pr-2 py-2 scrollbar-none"
                   style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
                 >
                   {openFiles.map((file) => (
                     <div
                       key={file.path}
                       className={cn(
-                        "group flex shrink-0 items-center gap-1 rounded-md pl-2.5 pr-1 py-1 text-xs transition-colors",
+                        "group flex shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1 py-1 text-xs transition-colors",
                         file.path === activeFilePath
                           ? "bg-primary/10 text-primary"
-                          : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
+                          : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
                       )}
                     >
                       <button
@@ -180,7 +182,7 @@ export function InspectorPanel({
                           "hover:bg-foreground/10",
                           file.path === activeFilePath && "opacity-100"
                         )}
-                        aria-label={`Cerrar ${file.title}`}
+                        aria-label={`Close ${file.title}`}
                       >
                         <X size={12} weight="bold" />
                       </button>
@@ -204,7 +206,7 @@ export function InspectorPanel({
               {/* File content */}
               {activeFile ? (
                 <>
-                  <div className="flex items-center justify-between gap-3 px-4 py-3">
+                  <div className="flex items-center justify-between gap-3 px-5 py-3">
                     <p className="min-w-0 truncate text-sm font-medium text-foreground">
                       {activeFile.title}
                     </p>
@@ -212,31 +214,31 @@ export function InspectorPanel({
                       {parentFolder ? (
                         <>
                           <span className="max-w-[100px] truncate">{parentFolder}</span>
-                          <span className="text-border">·</span>
+                          <span className="text-muted-foreground/30">·</span>
                         </>
                       ) : null}
                       <span>{activeFile.updatedAt}</span>
-                      <span className="text-border">·</span>
+                      <span className="text-muted-foreground/30">·</span>
                       <span>{activeFile.size}</span>
                     </div>
                   </div>
-                  <div className="border-t border-border/60" />
-                  <div className="flex-1 overflow-y-auto px-8 py-6">
+                  <div className="border-t border-white/10" />
+                  <div className="flex-1 overflow-y-auto px-6 py-6 scrollbar-none">
                     <MarkdownPreview content={activeFile.content} />
                   </div>
                 </>
               ) : null}
             </div>
           ) : (
-            <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center">
-              <File size={28} className="text-muted-foreground/30" />
-              <p className="text-xs text-muted-foreground">
-                Selecciona un archivo
+            <div className="flex h-full flex-col items-center justify-center gap-3 p-4 text-center">
+              <File size={32} className="text-muted-foreground/30" />
+              <p className="max-w-[240px] text-sm text-muted-foreground">
+                Select a file
               </p>
             </div>
           )
         ) : (
-          <div className="p-4">
+          <div className="h-full p-5">
             <ReviewPanel
               slug={slug}
               diffs={diffs}
@@ -244,6 +246,7 @@ export function InspectorPanel({
               error={diffsError ?? undefined}
               onOpenFile={onOpenFile}
               onPublish={onPublish}
+              onResolveConflict={onResolveConflict}
             />
           </div>
         )}
