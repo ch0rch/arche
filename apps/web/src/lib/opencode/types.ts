@@ -66,6 +66,11 @@ export type WorkspaceMessage = {
   id: string
   sessionId: string
   role: MessageRole
+  agentId?: string
+  model?: {
+    providerId: string
+    modelId: string
+  }
   content: string
   timestamp: string
   /** Raw timestamp in milliseconds for comparison (e.g., grouping by minute) */

@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { Circle, Gear, Palette } from "@phosphor-icons/react";
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -38,6 +38,8 @@ export function WorkspaceHeader({
   const router = useRouter();
   const statusStyle = statusConfig[status];
   const { themes, themeId, setThemeId } = useWorkspaceTheme();
+  const [pendingConfig, setPendingConfig] = useState(false);
+  const [isRestarting, setIsRestarting] = useState(false);
 
   const { lightThemes, darkThemes } = useMemo(() => {
     return {
@@ -45,6 +47,55 @@ export function WorkspaceHeader({
       darkThemes: themes.filter((t) => t.isDark),
     };
   }, [themes]);
+
+  useEffect(() => {
+    if (status !== "active") {
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadStatus = async () => {
+      try {
+        const response = await fetch(`/api/instances/${slug}/config-status`, { cache: "no-store" });
+        const data = (await response.json().catch(() => null)) as { pending?: boolean } | null;
+        if (!response.ok || !data) {
+          return;
+        }
+        if (!cancelled) {
+          setPendingConfig(Boolean(data.pending));
+        }
+      } catch {
+        // Silent — we only need the banner when available
+      }
+    };
+
+    loadStatus();
+    const interval = setInterval(loadStatus, 300000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [slug, status]);
+
+  const handleRestart = async () => {
+    if (isRestarting) return;
+    setIsRestarting(true);
+    try {
+      const response = await fetch(`/api/instances/${slug}/restart`, { method: "POST" });
+      if (!response.ok) {
+        setIsRestarting(false);
+        return;
+      }
+      setPendingConfig(false);
+      setTimeout(() => {
+        setIsRestarting(false);
+      }, 1000);
+    } catch {
+      setIsRestarting(false);
+    }
+  };
 
   return (
     <header className="glass-bar relative z-30 shrink-0 rounded-2xl text-card-foreground">
@@ -66,6 +117,17 @@ export function WorkspaceHeader({
         </div>
 
         <div className="flex items-center gap-1">
+          {pendingConfig && status === "active" && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 px-2 text-xs"
+              onClick={handleRestart}
+              disabled={isRestarting}
+            >
+              {isRestarting ? "Restarting..." : "Restart to apply changes"}
+            </Button>
+          )}
           <SyncKbButton
             slug={slug}
             disabled={status !== "active"}

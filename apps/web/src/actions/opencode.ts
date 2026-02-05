@@ -375,11 +375,27 @@ export async function listMessagesAction(slug: string, sessionId: string): Promi
       const parts = transformParts(m.parts ?? [])
       const rawTimestamp = m.info.time?.created
       const isAssistant = m.info.role === 'assistant'
-      const pending = isAssistant && !m.info.time?.completed
+      const completedAt = (m.info.time as { completed?: number } | undefined)?.completed
+      const pending = isAssistant && !completedAt
+      const info = m.info as Record<string, unknown>
+      const infoModel = info.model as Record<string, unknown> | undefined
+      const providerId = typeof info.providerID === 'string'
+        ? info.providerID
+        : typeof infoModel?.providerID === 'string'
+          ? infoModel.providerID
+          : undefined
+      const modelId = typeof info.modelID === 'string'
+        ? info.modelID
+        : typeof infoModel?.modelID === 'string'
+          ? infoModel.modelID
+          : undefined
+      const agentId = typeof info.agent === 'string' ? info.agent : undefined
       return {
         id: m.info.id,
         sessionId,
         role: m.info.role as 'user' | 'assistant',
+        agentId,
+        model: providerId && modelId ? { providerId, modelId } : undefined,
         content: extractTextContent(parts),
         timestamp: formatTimestamp(rawTimestamp),
         timestampRaw: typeof rawTimestamp === 'number' ? rawTimestamp : undefined,
@@ -477,7 +493,7 @@ export async function sendMessageAction(
       }
       
       console.log('[sendMessageAction] Extracted text:', textContent.substring(0, 100))
-    } catch (e) {
+    } catch {
       // If not valid JSON, maybe it's streaming format (NDJSON)
       console.log('[sendMessageAction] JSON parse failed, trying NDJSON')
       const lines = responseText.split('\n')

@@ -8,15 +8,14 @@ Este directorio contiene el Knowledge Base compartido que se inyecta en cada wor
 |--------------------|-------------|
 | `Company/` | Identidad de marca, voz y tono, glosario, documentación de producto |
 | `Templates/` | Plantillas operativas (PRD, KB entry, informes, etc.) |
-| `System Prompts/` | Prompts de los agentes de OpenCode |
-| `opencode.json` | Configuración de agentes |
-| `AGENTS.md` | Instrucciones para agentes de código |
+
+Nota: `AGENTS.md` y `CommonWorkspaceConfig.json` se gestionan ahora en el repositorio de configuración (`config/`).
 
 ## Flujo de despliegue
 
-1. **Deploy inicial**: El script `scripts/deploy-kb.sh` sincroniza este directorio en un repo Git bare en `/opt/arche/kb`.
+1. **Deploy inicial**: El script `scripts/deploy-kb.sh` sincroniza este directorio en un repo Git bare en `/opt/arche/kb-content`.
 
-2. **Creación de workspace**: Al crear un container para un usuario, se monta `/opt/arche/kb` como repo bare en `/kb` (read-write). El script de init clona el repo al workspace del usuario.
+2. **Creación de workspace**: Al crear un container para un usuario, se monta `/opt/arche/kb-content` como repo bare en `/kb-content` (read-write). El script de init clona el repo al workspace del usuario.
 
 3. **Sincronización**: Los usuarios pueden actualizar su KB local ejecutando:
    ```bash
@@ -38,7 +37,7 @@ Para actualizar el KB en producción:
 
 ```
 /opt/arche/
-└── kb/                     # Repo Git bare (sin working tree)
+└── kb-content/             # Repo Git bare (sin working tree)
     ├── HEAD
     ├── objects/
     ├── refs/

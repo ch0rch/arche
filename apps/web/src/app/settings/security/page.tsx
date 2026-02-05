@@ -28,13 +28,15 @@ export default async function SecuritySettingsPage() {
       <main className="relative mx-auto max-w-2xl px-6 py-16">
         <div className="space-y-8">
           {/* Header */}
-          <div className="space-y-2">
-            <Link
-              href={`/u/${session.user.slug}`}
-              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-            >
-              &larr; Back to dashboard
-            </Link>
+          <div>
+            <div className="mb-5">
+              <Link
+                href={`/u/${session.user.slug}`}
+                className="inline-flex text-sm text-muted-foreground transition-colors hover:text-foreground"
+              >
+                &larr; Back to dashboard
+              </Link>
+            </div>
             <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
               Security
             </h1>

@@ -2,8 +2,13 @@
 set -e
 
 # Inicializar workspace con KB si es necesario
-if [ -d "/kb" ]; then
+if [ -d "/kb-content" ]; then
   /usr/local/bin/init-workspace.sh
+fi
+
+# Generar opencode.json desde CommonWorkspaceConfig.json
+if [ -f "/usr/local/bin/generate-opencode-config.sh" ]; then
+  /usr/local/bin/generate-opencode-config.sh
 fi
 
 # Iniciar workspace-agent si está disponible

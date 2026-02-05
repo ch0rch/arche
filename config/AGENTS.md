@@ -11,8 +11,6 @@ notes and predictable file naming.
 
 - `README.md`: vault landing page with setup instructions and placeholder list.
 - `Outputs/Meetings/`: meeting notes (pattern: `YYYY-MM-DD - <Title>.md`).
-- `opencode.json`: OpenCode project configuration (agents, tools, MCP servers, etc.).
-- `System Prompts/`: system prompts referenced by `opencode.json` (one file per agent).
 - `.obsidian/`: Obsidian app configuration (JSON). Avoid editing unless explicitly requested.
 - `Company/Product/docs/`: product documentation/help center (primary source for support).
 - `Outputs/Comunicaciones/`: outputs ready to publish (blog/newsletter/Discord/social).

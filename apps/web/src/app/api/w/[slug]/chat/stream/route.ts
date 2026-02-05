@@ -176,13 +176,10 @@ export async function POST(
           const lines = buffer.split('\n')
           buffer = lines.pop() || ''
           
-          let eventType = ''
           let eventData = ''
-          
+
           for (const line of lines) {
-            if (line.startsWith('event:')) {
-              eventType = line.slice(6).trim()
-            } else if (line.startsWith('data:')) {
+            if (line.startsWith('data:')) {
               eventData = line.slice(5).trim()
             } else if (line === '' && eventData) {
               // End of event, process it
@@ -248,6 +245,13 @@ export async function POST(
                     if (info.role === 'assistant' && !assistantMessageId) {
                       assistantMessageId = info.id
                     }
+                    if (info.role === 'assistant') {
+                      sendEvent('assistant-meta', {
+                        providerID: info.providerID,
+                        modelID: info.modelID,
+                        agent: info.agent
+                      })
+                    }
                     break
                   }
 
@@ -305,6 +309,16 @@ export async function POST(
                         emitStatus('thinking')
                         break
                       }
+
+                      case 'agent': {
+                        sendEvent('agent', { agent: part.name })
+                        break
+                      }
+
+                      case 'subtask': {
+                        sendEvent('agent', { agent: part.agent })
+                        break
+                      }
                     }
                     break
                   }
@@ -320,11 +334,10 @@ export async function POST(
                   default:
                     console.log('[stream] Unhandled event type:', event.type)
                 }
-              } catch (parseError) {
+              } catch {
                 console.log('[stream] Failed to parse event:', eventData.substring(0, 100))
               }
-              
-              eventType = ''
+
               eventData = ''
             }
           }

@@ -40,6 +40,13 @@ export type WorkspaceDiff = {
   conflicted: boolean
 }
 
+type AgentCatalogItem = {
+  id: string
+  displayName: string
+  model?: string
+  isPrimary: boolean
+}
+
 export type UseWorkspaceOptions = {
   slug: string
   /** Poll interval in ms for session status updates */
@@ -90,6 +97,7 @@ export type UseWorkspaceReturn = {
   models: AvailableModel[]
   selectedModel: AvailableModel | null
   setSelectedModel: (model: AvailableModel | null) => void
+  activeAgentName: string | null
 }
 
 export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseWorkspaceOptions): UseWorkspaceReturn {
@@ -129,10 +137,88 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
   // Models
   const [models, setModels] = useState<AvailableModel[]>([])
   const [selectedModel, setSelectedModel] = useState<AvailableModel | null>(null)
+  const [agentCatalog, setAgentCatalog] = useState<AgentCatalogItem[]>([])
+  const [activeAgentId, setActiveAgentId] = useState<string | null>(null)
   
   const isConnected = connection.status === 'connected'
   
   const activeSession = sessions.find(s => s.id === activeSessionId) ?? null
+  const activeAgentName = activeAgentId
+    ? agentCatalog.find((entry) => {
+        if (entry.id === activeAgentId) return true
+        return entry.displayName.trim().toLowerCase() === activeAgentId.trim().toLowerCase()
+      })?.displayName ?? activeAgentId
+    : null
+
+  const parseModelString = useCallback((value?: string): { providerId: string; modelId: string } | null => {
+    if (!value) return null
+    const separator = value.indexOf('/')
+    if (separator <= 0 || separator >= value.length - 1) return null
+    return {
+      providerId: value.slice(0, separator),
+      modelId: value.slice(separator + 1)
+    }
+  }, [])
+
+  const syncSelectedModel = useCallback((providerId?: string, modelId?: string) => {
+    if (!providerId || !modelId) return
+
+    setSelectedModel((current) => {
+      if (current?.providerId === providerId && current?.modelId === modelId) {
+        return current
+      }
+
+      const found = models.find((entry) => entry.providerId === providerId && entry.modelId === modelId)
+      if (found) return found
+
+      return {
+        providerId,
+        modelId,
+        providerName: providerId,
+        modelName: modelId,
+        isDefault: false
+      }
+    })
+  }, [models])
+
+  const applyAgentDefaultModel = useCallback((agentId: string) => {
+    const normalized = agentId.trim().toLowerCase()
+    const targetAgent = agentCatalog.find((entry) => {
+      if (entry.id === agentId) return true
+      return entry.displayName.trim().toLowerCase() === normalized
+    })
+    const parsed = parseModelString(targetAgent?.model)
+    if (!parsed) return
+    syncSelectedModel(parsed.providerId, parsed.modelId)
+  }, [agentCatalog, parseModelString, syncSelectedModel])
+
+  const extractRuntimeMetadata = useCallback((items: WorkspaceMessage[]) => {
+    const reversed = [...items].reverse()
+
+    for (const message of reversed) {
+      if (message.role !== 'assistant') continue
+
+      let agentId = message.agentId
+      const parts = [...(message.parts ?? [])].reverse()
+      for (const part of parts) {
+        if (part.type === 'subtask') {
+          agentId = part.agent
+          break
+        }
+        if (part.type === 'agent') {
+          agentId = part.name
+          break
+        }
+      }
+
+      return {
+        agentId: agentId ?? null,
+        model: message.model ?? null
+      }
+    }
+
+    return { agentId: null, model: null }
+  }, [])
   
   // Check connection
   const checkConnection = useCallback(async () => {
@@ -291,11 +377,20 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
       console.log('[useWorkspace] refreshMessages result:', result.ok, 'messages:', result.messages?.length)
       if (result.ok && result.messages) {
         setMessages(result.messages)
+
+        const runtime = extractRuntimeMetadata(result.messages)
+        if (runtime.agentId) {
+          setActiveAgentId(runtime.agentId)
+          applyAgentDefaultModel(runtime.agentId)
+        }
+        if (runtime.model) {
+          syncSelectedModel(runtime.model.providerId, runtime.model.modelId)
+        }
       }
     } finally {
       setIsLoadingMessages(false)
     }
-  }, [slug, activeSessionId])
+  }, [slug, activeSessionId, extractRuntimeMetadata, applyAgentDefaultModel, syncSelectedModel])
 
   const deriveStatusInfoFromPart = useCallback((part: MessagePart) => {
     switch (part.type) {
@@ -505,6 +600,25 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
                   break
                 }
 
+                case 'assistant-meta': {
+                  if (typeof data.providerID === 'string' && typeof data.modelID === 'string') {
+                    syncSelectedModel(data.providerID, data.modelID)
+                  }
+                  if (typeof data.agent === 'string') {
+                    setActiveAgentId(data.agent)
+                    applyAgentDefaultModel(data.agent)
+                  }
+                  break
+                }
+
+                case 'agent': {
+                  if (typeof data.agent === 'string') {
+                    setActiveAgentId(data.agent)
+                    applyAgentDefaultModel(data.agent)
+                  }
+                  break
+                }
+
                 case 'part': {
                   if (!data.part) break
                   const messageId = data.messageId ?? data.part?.messageID
@@ -556,7 +670,7 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
         activeStreamRef.current = null
       }
     }
-  }, [abortActiveStream, slug, transformParts, upsertMessagePart])
+  }, [abortActiveStream, slug, transformParts, upsertMessagePart, applyAgentDefaultModel, syncSelectedModel])
   
   // Send message with SSE streaming
   const sendMessage = useCallback(async (text: string, model?: { providerId: string; modelId: string }) => {
@@ -659,6 +773,25 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
       }
     }
   }, [slug])
+
+  const loadAgentCatalog = useCallback(async () => {
+    try {
+      const response = await fetch(`/api/u/${slug}/agents`, { cache: 'no-store' })
+      const data = await response.json().catch(() => null) as { agents?: AgentCatalogItem[] } | null
+      if (!response.ok || !data?.agents) return
+
+      setAgentCatalog(data.agents)
+      setActiveAgentId((current) => {
+        if (current && data.agents?.some((agent) => agent.id === current)) {
+          return current
+        }
+        const primary = data.agents.find((agent) => agent.isPrimary)
+        return primary?.id ?? current
+      })
+    } catch {
+      // keep defaults when catalog is unavailable
+    }
+  }, [slug])
   
   // Initial load when connected - with retry on failure
   useEffect(() => {
@@ -684,6 +817,7 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
           refreshFiles(),
           loadSessions(),
           loadModels(),
+          loadAgentCatalog(),
           refreshDiffs(),
         ])
       } else if (retryCount < MAX_RETRIES) {
@@ -705,7 +839,7 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
       mounted = false
       if (retryTimeout) clearTimeout(retryTimeout)
     }
-  }, [checkConnection, refreshFiles, loadSessions, loadModels, refreshDiffs, enabled])
+  }, [checkConnection, refreshFiles, loadSessions, loadModels, loadAgentCatalog, refreshDiffs, enabled])
   
   // Load messages when active session changes
   useEffect(() => {
@@ -744,6 +878,11 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
       refreshDiffs()
     }
   }, [diffsRefreshTrigger, isConnected, refreshDiffs])
+
+  useEffect(() => {
+    if (!activeAgentId) return
+    applyAgentDefaultModel(activeAgentId)
+  }, [activeAgentId, applyAgentDefaultModel])
 
   
   // Poll for session status updates
@@ -794,6 +933,7 @@ export function useWorkspace({ slug, pollInterval = 5000, enabled = true }: UseW
     refreshDiffs,
     models,
     selectedModel,
-    setSelectedModel
+    setSelectedModel,
+    activeAgentName
   }
 }

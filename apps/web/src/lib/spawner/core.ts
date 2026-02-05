@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/prisma'
 import { auditEvent } from '@/lib/auth'
+import { getCommonWorkspaceConfigHash } from '@/lib/common-workspace-config-store'
 import { isInstanceHealthyWithPassword } from '@/lib/opencode/client'
 import * as docker from './docker'
 import { decryptPassword, generatePassword, encryptPassword } from './crypto'
@@ -26,6 +27,8 @@ function getErrorDetail(err: unknown): string | undefined {
 
 export async function startInstance(slug: string, userId: string): Promise<StartResult> {
   const existing = await prisma.instance.findUnique({ where: { slug } })
+  const configHashResult = await getCommonWorkspaceConfigHash()
+  const appliedConfigSha = configHashResult.ok ? configHashResult.hash : null
 
   if (existing?.status === 'running') {
     return { ok: false, error: 'already_running' }
@@ -78,7 +81,11 @@ export async function startInstance(slug: string, userId: string): Promise<Start
 
     await prisma.instance.update({
       where: { slug },
-      data: { status: 'running', lastActivityAt: new Date() },
+      data: {
+        status: 'running',
+        lastActivityAt: new Date(),
+        appliedConfigSha
+      },
     })
 
     await auditEvent({

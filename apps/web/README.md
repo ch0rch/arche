@@ -154,7 +154,8 @@ El spawner puede conectarse al container runtime de dos formas:
 | `ARCHE_ENCRYPTION_KEY` | Clave AES-256 (base64, 32 bytes) | Ver `.env.example` |
 | `ARCHE_START_TIMEOUT_MS` | Timeout de arranque | `120000` |
 | `ARCHE_IDLE_TIMEOUT_MINUTES` | Inactividad antes de parar | `30` |
-| `KB_HOST_PATH` | Path al repo bare del Knowledge Base | `~/.arche/kb` |
+| `KB_CONTENT_HOST_PATH` | Path al repo bare de contenido KB | `~/.arche/kb-content` |
+| `KB_CONFIG_HOST_PATH` | Path al repo bare de configuración | `~/.arche/kb-config` |
 
 ### Construir la imagen de workspace
 

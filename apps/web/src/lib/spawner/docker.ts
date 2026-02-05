@@ -1,5 +1,13 @@
 import Docker from 'dockerode'
-import { getContainerSocketPath, getContainerProxyUrl, getOpencodeImage, getOpencodeNetwork, getKbHostPath, getWorkspaceAgentPort } from './config'
+import {
+  getContainerSocketPath,
+  getContainerProxyUrl,
+  getOpencodeImage,
+  getOpencodeNetwork,
+  getKbConfigHostPath,
+  getKbContentHostPath,
+  getWorkspaceAgentPort
+} from './config'
 
 function getContainerClient(): Docker {
   const socketPath = getContainerSocketPath()
@@ -25,12 +33,16 @@ export async function createContainer(slug: string, password: string) {
     // Volume might already exist, ignore error
   }
 
-  // Build binds array: always mount workspace, optionally mount KB
+  // Build binds array: always mount workspace, optionally mount KB repos
   const binds = [`${volumeName}:/workspace`]
-  const kbHostPath = getKbHostPath()
-  if (kbHostPath) {
-    // Mount KB repo so workspaces can pull/push via git
-    binds.push(`${kbHostPath}:/kb`)
+  const kbContentHostPath = getKbContentHostPath()
+  if (kbContentHostPath) {
+    binds.push(`${kbContentHostPath}:/kb-content`)
+  }
+
+  const kbConfigHostPath = getKbConfigHostPath()
+  if (kbConfigHostPath) {
+    binds.push(`${kbConfigHostPath}:/kb-config`)
   }
 
   return docker.createContainer({

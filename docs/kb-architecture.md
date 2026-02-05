@@ -8,12 +8,11 @@ Proveer una base de conocimiento común a todos los workspaces de usuario que in
 
 - Documentación de producto
 - Guías de estilo y brand
-- Configuración de agentes (OpenCode)
 - Plantillas operativas
 
 ## Componentes
 
-### 1. Directorio `kb/`
+### 1. Directorio `kb/` (contenido)
 
 Contiene el contenido maestro del KB:
 
@@ -21,14 +20,19 @@ Contiene el contenido maestro del KB:
 kb/
 ├── Company/           # Identidad, voz, glosario, docs de producto
 ├── Templates/         # Plantillas operativas (PRD, KB entry, etc.)
-├── System Prompts/    # Prompts de agentes OpenCode
-├── opencode.json      # Configuración de agentes
-├── AGENTS.md          # Instrucciones para agentes de código
 ├── .gitignore         # Excluye me.txt, .obsidian/, etc.
 └── README.md          # Documentación del KB
 ```
 
-### 2. Imagen `arche-workspace`
+### 2. Directorio `config/` (control plane)
+
+```
+config/
+├── CommonWorkspaceConfig.json  # Fuente de verdad de agentes y prompts inline
+└── AGENTS.md                   # Instrucciones del agente runtime
+```
+
+### 3. Imagen `arche-workspace`
 
 Imagen Docker derivada de OpenCode que incluye:
 
@@ -37,32 +41,36 @@ Imagen Docker derivada de OpenCode que incluye:
 
 Ubicación: `infra/workspace-image/`
 
-### 3. Script `deploy-kb.sh`
+### 4. Scripts de deploy
 
-Despliega el KB al host de producción:
+Despliegan contenido y configuración al host de producción:
 
 ```bash
-./scripts/deploy-kb.sh /opt/arche/kb
+./scripts/deploy-kb.sh /opt/arche/kb-content
+./scripts/deploy-config.sh /opt/arche/kb-config
 ```
 
-El script:
+Los scripts:
 1. Inicializa un repo Git bare si no existe
-2. Sincroniza el contenido de `kb/` vía commit
-3. Empuja los cambios al repo bare
+2. Sincronizan `kb/` (contenido) y `config/` (config runtime) vía commit
+3. Empujan cambios a cada repo bare
 
-### 4. Spawner modificado
+### 5. Spawner modificado
 
 El spawner (`apps/web/src/lib/spawner/`) monta el KB en cada container:
 
 ```typescript
 // docker.ts
 const binds = [`${volumeName}:/workspace`]
-if (kbHostPath) {
-  binds.push(`${kbHostPath}:/kb`)  // bare repo (read-write)
+if (kbContentHostPath) {
+  binds.push(`${kbContentHostPath}:/kb-content`)  // bare repo (read-write)
+}
+if (kbConfigHostPath) {
+  binds.push(`${kbConfigHostPath}:/kb-config`)    // bare repo (read-only runtime)
 }
 ```
 
-### 5. Endpoint de sync
+### 6. Endpoint de sync
 
 `POST /api/instances/[slug]/sync-kb`
 
@@ -77,7 +85,7 @@ Respuestas posibles:
 - `{ status: 'conflicts', conflicts: [...] }` - Hay conflictos
 - `{ status: 'error', message: '...' }` - Error
 
-### 6. UI de sync
+### 7. UI de sync
 
 Botón "Sync KB" en el workspace header que:
 - Llama al endpoint de sync
@@ -89,17 +97,17 @@ Botón "Sync KB" en el workspace header que:
 ```
 ┌─────────────────┐
 │   Monorepo      │
-│   kb/           │ ─── deploy-kb.sh ──▶ /opt/arche/kb (Host)
+│   kb/ + config/ │ ─── deploy scripts ─▶ /opt/arche/kb-content + /opt/arche/kb-config
 └─────────────────┘                           │
                                               │ mount :ro
                                               ▼
 ┌─────────────────────────────────────────────────────────┐
 │  Container (workspace usuario)                          │
 │  ┌──────────────┐    init     ┌──────────────────────┐ │
-│  │  /kb         │ ──────────▶ │  /workspace          │ │
-│  │  (bare repo) │   clone     │  (read-write)        │ │
+│  │ /kb-content  │ ──────────▶ │  /workspace          │ │
+│  │ (bare repo)  │   clone     │  (read-write)        │ │
 │  └──────────────┘             │  ├── .git/           │ │
-│                               │  │   remote: kb=/kb  │ │
+│                               │  │   remote: kb=/kb-content │ │
 │                               │  ├── Company/        │ │
 │                               │  └── ...             │ │
 │                               └──────────────────────┘ │
@@ -111,8 +119,8 @@ Botón "Sync KB" en el workspace header que:
 Al crear un container nuevo (`init-workspace.sh`):
 
 1. Si `/workspace/.git` **no existe**:
-   - Clona el repo bare de `/kb` a `/workspace`
-   - Configura el remote `kb` apuntando a `/kb`
+   - Clona el repo bare de `/kb-content` a `/workspace`
+   - Configura el remote `kb` apuntando a `/kb-content`
 
 2. Si `/workspace/.git` **ya existe**:
    - No copia nada (respeta el trabajo del usuario)
@@ -148,12 +156,14 @@ Si el merge genera conflictos:
 
 | Variable | Default | Descripción |
 |----------|---------|-------------|
-| `KB_HOST_PATH` | - | Path al repo bare del KB en el host (ej: `/opt/arche/kb`) |
+| `KB_CONTENT_HOST_PATH` | - | Path al repo bare de contenido KB (ej: `/opt/arche/kb-content`) |
+| `KB_CONFIG_HOST_PATH` | - | Path al repo bare de configuración (ej: `/opt/arche/kb-config`) |
 | `OPENCODE_IMAGE` | `ghcr.io/anomalyco/opencode:1.1.45` | Imagen de workspace (usar `arche-workspace:latest`) |
 
 ## Consideraciones de seguridad
 
-- El KB se monta como repo bare **read-write** en los containers
+- El contenido KB se monta como repo bare **read-write** en los containers
+- La configuración runtime se monta desde un repo separado (`kb-config`)
 - Los cambios locales quedan en el volumen del usuario
 - El endpoint de sync requiere autenticación
 - Los cambios se empujan al repo central con "Publish KB"
@@ -164,7 +174,7 @@ Para actualizar el KB en producción:
 
 1. Edita los archivos en `kb/`
 2. Haz commit y push al monorepo
-3. En el servidor, ejecuta `deploy-kb.sh`
+3. En el servidor, ejecuta `deploy-kb.sh` y `deploy-config.sh`
 4. Los usuarios sincronizan manualmente (botón "Sync KB")
 5. Para cambios desde workspaces, usa "Publish KB"
 
@@ -173,7 +183,7 @@ Para actualizar el KB en producción:
 ### El workspace no tiene el KB
 
 Verifica que:
-- `KB_HOST_PATH` está configurado
+- `KB_CONTENT_HOST_PATH` y `KB_CONFIG_HOST_PATH` están configurados
 - El directorio existe y tiene contenido
 - El container se creó después de configurar el KB
 
@@ -181,7 +191,7 @@ Verifica que:
 
 El workspace no se inicializó con el KB. Opciones:
 - Recrear el workspace (eliminar volumen)
-- Añadir el remote manualmente: `git remote add kb /kb`
+- Añadir el remote manualmente: `git remote add kb /kb-content`
 
 ### Conflictos persistentes
 

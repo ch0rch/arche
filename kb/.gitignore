@@ -8,6 +8,9 @@ me.txt
 .DS_Store
 Thumbs.db
 
+# Config generado de OpenCode
+opencode.json
+
 # Outputs generados por usuario (no son parte del KB base)
 # Nota: si quieres que los outputs se sincronicen, comenta estas líneas
 # Outputs/

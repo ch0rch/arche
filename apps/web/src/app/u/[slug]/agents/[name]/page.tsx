@@ -1,0 +1,60 @@
+import { cookies } from 'next/headers'
+import { redirect } from 'next/navigation'
+import Link from 'next/link'
+
+import { AgentForm } from '@/components/agents/agent-form'
+import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
+
+export default async function EditAgentPage({
+  params
+}: {
+  params: Promise<{ slug: string; name: string }>
+}) {
+  const { slug, name } = await params
+
+  const cookieStore = await cookies()
+  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value
+  if (!token) redirect('/login')
+
+  const session = await getSessionFromToken(token)
+  if (!session) redirect('/login')
+
+  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
+    redirect(`/u/${session.user.slug}`)
+  }
+
+  if (session.user.role !== 'ADMIN') {
+    redirect(`/u/${slug}/agents`)
+  }
+
+  return (
+    <div className="relative min-h-screen bg-background text-foreground">
+      <div className="pointer-events-none absolute inset-0 organic-background" />
+
+      <main className="relative mx-auto max-w-3xl px-6 py-12">
+        <div className="space-y-8">
+          <div>
+            <div className="mb-5">
+              <Link
+                href={`/u/${slug}/agents`}
+                className="inline-flex text-sm text-muted-foreground transition-colors hover:text-foreground"
+              >
+                &larr; Back to agents
+              </Link>
+            </div>
+            <div className="space-y-2">
+              <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
+                Edit agent
+              </h1>
+              <p className="text-muted-foreground">
+                Update the model, temperature, and prompt.
+              </p>
+            </div>
+          </div>
+
+          <AgentForm slug={slug} mode="edit" agentId={name} />
+        </div>
+      </main>
+    </div>
+  )
+}

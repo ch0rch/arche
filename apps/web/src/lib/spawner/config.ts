@@ -49,6 +49,10 @@ export function getIdleTimeoutMinutes(): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 30
 }
 
-export function getKbHostPath(): string | undefined {
-  return process.env.KB_HOST_PATH || undefined
+export function getKbContentHostPath(): string | undefined {
+  return process.env.KB_CONTENT_HOST_PATH || undefined
+}
+
+export function getKbConfigHostPath(): string | undefined {
+  return process.env.KB_CONFIG_HOST_PATH || undefined
 }
