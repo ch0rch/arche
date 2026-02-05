@@ -148,6 +148,47 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     workspace.refreshDiffs();
     workspace.refreshFiles();
   }, [workspace.refreshDiffs, workspace.refreshFiles]);
+
+  // Auto-sync KB on first connection
+  const hasAutoSynced = useRef(false);
+
+  useEffect(() => {
+    if (!workspace.isConnected || hasAutoSynced.current) return;
+    hasAutoSynced.current = true;
+
+    (async () => {
+      try {
+        await fetch(`/api/instances/${slug}/sync-kb`, { method: 'POST' });
+      } catch {
+        // silent — auto-sync is best-effort
+      }
+      workspace.refreshDiffs();
+      workspace.refreshFiles();
+    })();
+  }, [workspace.isConnected, slug, workspace.refreshDiffs, workspace.refreshFiles]);
+
+  const handleResolveConflict = useCallback(
+    (path: string, content: string) => {
+      workspace.refreshDiffs();
+      workspace.refreshFiles();
+
+      setFileCache((prev) => {
+        const existing = prev[path];
+        if (!existing) return prev;
+        const size = `${(content.length / 1024).toFixed(1)} KB`;
+        return {
+          ...prev,
+          [path]: {
+            ...existing,
+            content,
+            updatedAt: "Just now",
+            size,
+          },
+        };
+      });
+    },
+    [workspace.refreshDiffs, workspace.refreshFiles]
+  );
   
   // Layout state
   const [leftWidth, setLeftWidth] = useState(MIN_LEFT_PX);
@@ -272,7 +313,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             content: result.content,
             type: result.type,
             title: path.split('/').pop() ?? path,
-            updatedAt: 'Ahora',
+            updatedAt: 'Just now',
             size: `${(result.content.length / 1024).toFixed(1)} KB`
           }
         }));
@@ -301,7 +342,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   }, [workspace]);
 
   const handleCreateSession = useCallback(async () => {
-    await workspace.createSession(`Sesión ${workspace.sessions.length + 1}`);
+    await workspace.createSession(`Session ${workspace.sessions.length + 1}`);
   }, [workspace]);
 
   const handleCloseSession = useCallback(async (sessionId: string) => {
@@ -406,10 +447,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                 </div>
                 <div className="space-y-2">
                   <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
-                    Iniciando workspace
+                    Starting workspace
                   </h2>
                   <p className="text-sm text-muted-foreground">
-                    Preparando tu entorno de desarrollo...
+                    Preparing your development environment...
                   </p>
                 </div>
               </>
@@ -421,10 +462,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                 </div>
                 <div className="space-y-2">
                   <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold text-destructive">
-                    Error al iniciar
+                    Failed to start
                   </h2>
                   <p className="text-sm text-muted-foreground">
-                    {instanceError ?? 'No se pudo iniciar el workspace'}
+                    {instanceError ?? 'Unable to start the workspace'}
                   </p>
                 </div>
               </>
@@ -436,7 +477,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                 </div>
                 <div className="space-y-2">
                   <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
-                    Conectando...
+                    Connecting...
                   </h2>
                 </div>
               </>
@@ -462,12 +503,12 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             </div>
             <div className="space-y-2">
               <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
-                Conectando con OpenCode
+                Connecting to OpenCode
               </h2>
               <p className="text-sm text-muted-foreground">
                 {workspace.connection.status === 'error' 
                   ? `Error: ${workspace.connection.error}`
-                  : 'Estableciendo conexión...'}
+                  : 'Establishing connection...'}
               </p>
             </div>
           </div>
@@ -562,6 +603,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               diffsError={workspace.diffsError}
               onOpenFile={handleOpenFile}
               onPublish={handlePublishComplete}
+              onResolveConflict={handleResolveConflict}
             />
           )}
         </div>

@@ -137,4 +137,4 @@ fi
 log "KB deployed successfully!"
 log "Bare repo: $KB_DEST"
 log "Recent commits:"
-git --git-dir="$KB_DEST" log --oneline -3
+git --no-pager --git-dir="$KB_DEST" log --oneline -3
