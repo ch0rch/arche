@@ -48,7 +48,7 @@ export async function syncProviderAccessForInstance(
       provider: providerConfig,
     }
 
-    await client.config.update({ body: configBody })
+    await client.config.update({ config: configBody })
 
     for (const providerId of enabledProviders) {
       const credential = credentialsByProvider.get(providerId)
@@ -62,8 +62,8 @@ export async function syncProviderAccessForInstance(
       })
 
       await client.auth.set({
-        path: { id: providerId },
-        body: { type: 'api', key: token },
+        providerID: providerId,
+        auth: { type: 'api', key: token },
       })
     }
 

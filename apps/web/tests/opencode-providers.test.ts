@@ -66,7 +66,7 @@ describe('syncProviderAccessForInstance', () => {
     const result = await syncProviderAccessForInstance({ slug: 'alice', userId: 'user-1' })
 
     expect(mockConfigUpdate).toHaveBeenCalledWith({
-      body: {
+      config: {
         enabled_providers: ['openai'],
         provider: {
           openai: {
@@ -84,8 +84,8 @@ describe('syncProviderAccessForInstance', () => {
       version: 2,
     })
     expect(mockAuthSet).toHaveBeenCalledWith({
-      path: { id: 'openai' },
-      body: { type: 'api', key: 'token-openai' },
+      providerID: 'openai',
+      auth: { type: 'api', key: 'token-openai' },
     })
     expect(result).toEqual({ ok: true })
   })
