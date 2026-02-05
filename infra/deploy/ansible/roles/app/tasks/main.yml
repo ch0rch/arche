@@ -1,12 +1,11 @@
 ---
 - name: Create users data directory
   ansible.builtin.file:
-    path: /opt/arche/users
+    path: "{{ users_path | default('/opt/arche/users') }}"
     state: directory
     owner: "{{ deploy_user }}"
     group: "{{ deploy_user }}"
     mode: "0750"
-  when: users_path is defined and users_path
 
 - name: Log in to GHCR
   ansible.builtin.command:

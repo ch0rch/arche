@@ -34,12 +34,10 @@ export async function createContainer(slug: string, password: string) {
     binds.push(`${kbHostPath}:/kb`)
   }
 
-  // Mount user data directory if configured
+  // Mount user data directory
   const userDataPath = getUserDataHostPath(slug)
-  if (userDataPath) {
-    await ensureUserDirectory(slug)
-    binds.push(`${userDataPath}:/user-data`)
-  }
+  await ensureUserDirectory(slug)
+  binds.push(`${userDataPath}:/user-data`)
 
   return docker.createContainer({
     Image: getOpencodeImage(),
