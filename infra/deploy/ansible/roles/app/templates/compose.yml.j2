@@ -112,6 +112,10 @@ services:
     restart: unless-stopped
     env_file:
       - {{ env_file_name | default('.env') }}
+    environment:
+      ARCHE_GATEWAY_TOKEN_SECRET: "${ARCHE_GATEWAY_TOKEN_SECRET}"
+      ARCHE_GATEWAY_TOKEN_TTL_SECONDS: "${ARCHE_GATEWAY_TOKEN_TTL_SECONDS}"
+      ARCHE_GATEWAY_BASE_URL: "${ARCHE_GATEWAY_BASE_URL}"
     networks:
       - default
       - arche-internal

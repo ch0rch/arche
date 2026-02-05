@@ -87,6 +87,9 @@ ENVIRONMENT VARIABLES (via .env or exported):
   ARCHE_SESSION_PEPPER      Session pepper secret
   ARCHE_ENCRYPTION_KEY      Encryption key
   ARCHE_INTERNAL_TOKEN      Internal API token
+  ARCHE_GATEWAY_TOKEN_SECRET Gateway token signing secret
+  ARCHE_GATEWAY_TOKEN_TTL_SECONDS Gateway token TTL (seconds, optional)
+  ARCHE_GATEWAY_BASE_URL    Gateway base URL (optional)
   ARCHE_SEED_ADMIN_EMAIL    Seed admin email
   ARCHE_SEED_ADMIN_PASSWORD Seed admin password
   ARCHE_SEED_ADMIN_SLUG     Seed admin URL slug
@@ -174,6 +177,7 @@ validate_remote() {
   [[ -z "${ARCHE_SESSION_PEPPER:-}" ]]      && ERRORS+=("ARCHE_SESSION_PEPPER is required")
   [[ -z "${ARCHE_ENCRYPTION_KEY:-}" ]]      && ERRORS+=("ARCHE_ENCRYPTION_KEY is required")
   [[ -z "${ARCHE_INTERNAL_TOKEN:-}" ]]      && ERRORS+=("ARCHE_INTERNAL_TOKEN is required")
+  [[ -z "${ARCHE_GATEWAY_TOKEN_SECRET:-}" ]] && ERRORS+=("ARCHE_GATEWAY_TOKEN_SECRET is required")
   [[ -z "${ARCHE_SEED_ADMIN_EMAIL:-}" ]]    && ERRORS+=("ARCHE_SEED_ADMIN_EMAIL is required")
   [[ -z "${ARCHE_SEED_ADMIN_PASSWORD:-}" ]] && ERRORS+=("ARCHE_SEED_ADMIN_PASSWORD is required")
   [[ -z "${ARCHE_SEED_ADMIN_SLUG:-}" ]]     && ERRORS+=("ARCHE_SEED_ADMIN_SLUG is required")
@@ -189,6 +193,9 @@ validate_local() {
   # Must be base64 for a 32-byte key (AES-256-GCM). Keep stable across runs.
   export ARCHE_ENCRYPTION_KEY="${ARCHE_ENCRYPTION_KEY:-ZGV2LWluc2VjdXJlLWtleS0zMi1ieXRlcy1sb25nISE=}"
   export ARCHE_INTERNAL_TOKEN="${ARCHE_INTERNAL_TOKEN:-local-dev-internal-token}"
+  export ARCHE_GATEWAY_TOKEN_SECRET="${ARCHE_GATEWAY_TOKEN_SECRET:-local-dev-gateway-token-secret-not-for-production}"
+  export ARCHE_GATEWAY_TOKEN_TTL_SECONDS="${ARCHE_GATEWAY_TOKEN_TTL_SECONDS:-}"
+  export ARCHE_GATEWAY_BASE_URL="${ARCHE_GATEWAY_BASE_URL:-}"
   export ARCHE_SEED_ADMIN_EMAIL="${ARCHE_SEED_ADMIN_EMAIL:-admin@example.com}"
   export ARCHE_SEED_ADMIN_PASSWORD="${ARCHE_SEED_ADMIN_PASSWORD:-change-me}"
   export ARCHE_SEED_ADMIN_SLUG="${ARCHE_SEED_ADMIN_SLUG:-admin}"
@@ -267,6 +274,9 @@ vars = {
     "arche_session_pepper": os.environ["ARCHE_SESSION_PEPPER"],
     "arche_encryption_key": os.environ["ARCHE_ENCRYPTION_KEY"],
     "arche_internal_token": os.environ["ARCHE_INTERNAL_TOKEN"],
+    "arche_gateway_token_secret": os.environ["ARCHE_GATEWAY_TOKEN_SECRET"],
+    "arche_gateway_token_ttl_seconds": os.environ.get("ARCHE_GATEWAY_TOKEN_TTL_SECONDS", ""),
+    "arche_gateway_base_url": os.environ.get("ARCHE_GATEWAY_BASE_URL", ""),
     "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
     "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
@@ -386,6 +396,9 @@ vars = {
     "arche_session_pepper": os.environ["ARCHE_SESSION_PEPPER"],
     "arche_encryption_key": os.environ["ARCHE_ENCRYPTION_KEY"],
     "arche_internal_token": os.environ["ARCHE_INTERNAL_TOKEN"],
+    "arche_gateway_token_secret": os.environ["ARCHE_GATEWAY_TOKEN_SECRET"],
+    "arche_gateway_token_ttl_seconds": os.environ.get("ARCHE_GATEWAY_TOKEN_TTL_SECONDS", ""),
+    "arche_gateway_base_url": os.environ.get("ARCHE_GATEWAY_BASE_URL", ""),
     "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
     "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
@@ -554,6 +567,9 @@ vars = {
     "arche_session_pepper": os.environ["ARCHE_SESSION_PEPPER"],
     "arche_encryption_key": os.environ["ARCHE_ENCRYPTION_KEY"],
     "arche_internal_token": os.environ["ARCHE_INTERNAL_TOKEN"],
+    "arche_gateway_token_secret": os.environ["ARCHE_GATEWAY_TOKEN_SECRET"],
+    "arche_gateway_token_ttl_seconds": os.environ.get("ARCHE_GATEWAY_TOKEN_TTL_SECONDS", ""),
+    "arche_gateway_base_url": os.environ.get("ARCHE_GATEWAY_BASE_URL", ""),
     "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
     "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
