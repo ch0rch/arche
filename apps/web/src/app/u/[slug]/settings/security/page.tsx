@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { get2FAStatus } from './actions'
 import { TotpSetupWizard } from '@/components/totp-setup-wizard'
+import { ThemePicker } from '@/components/dashboard/theme-picker'
 
 export default async function SecuritySettingsPage({
   params,
@@ -27,13 +28,22 @@ export default async function SecuritySettingsPage({
   const { enabled, verifiedAt, recoveryCodesRemaining } = status
 
   return (
-    <main className="relative mx-auto max-w-2xl px-6 py-10">
+    <main className="relative mx-auto max-w-6xl px-6 py-10">
       <div className="space-y-8">
         <div>
           <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
-            Security
+            Settings
           </h1>
         </div>
+
+        {/* Appearance section */}
+        <section className="space-y-4 rounded-lg border border-border/60 bg-card/50 p-6">
+          <h2 className="text-lg font-medium">Appearance</h2>
+          <p className="text-sm text-muted-foreground">
+            Choose a theme for the dashboard.
+          </p>
+          <ThemePicker />
+        </section>
 
         {/* 2FA section */}
         <section className="space-y-4 rounded-lg border border-border/60 bg-card/50 p-6">

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { ChatCircle, Circle } from "@phosphor-icons/react";
+import { ChatCircle, Circle, Plus } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -30,7 +30,7 @@ export function SessionsPanel({
     return (
       <div className="flex flex-1 flex-col">
         <div className="px-3 pt-3 pb-2">
-          <Button className="w-full" onClick={onCreateSession}>New session</Button>
+          <Button variant="outline" className="w-full" onClick={onCreateSession}><Plus size={14} weight="bold" className="mr-1.5" />New chat</Button>
         </div>
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
           <ChatCircle size={24} weight="bold" className="text-muted-foreground/50" />
@@ -43,7 +43,7 @@ export function SessionsPanel({
   return (
     <div className="flex-1 overflow-y-auto px-2 pb-4 pt-3 scrollbar-none">
       <div className="px-1 pb-2">
-        <Button className="w-full" onClick={onCreateSession}>New session</Button>
+        <Button variant="outline" className="w-full" onClick={onCreateSession}><Plus size={14} weight="bold" className="mr-1.5" />New chat</Button>
       </div>
       {buckets.map((bucket) => (
         <div key={bucket.label} className="mb-3">

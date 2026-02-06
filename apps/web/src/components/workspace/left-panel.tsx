@@ -35,7 +35,7 @@ type LeftPanelProps = {
 };
 
 const TABS: { id: LeftTab; label: string; icon: typeof ChatCircle }[] = [
-  { id: "sessions", label: "Sessions", icon: ChatCircle },
+  { id: "sessions", label: "Chats", icon: ChatCircle },
   { id: "agents", label: "Agents", icon: Robot },
   { id: "knowledge", label: "Knowledge", icon: FolderOpen },
 ];

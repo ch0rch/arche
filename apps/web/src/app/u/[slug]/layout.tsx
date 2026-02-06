@@ -1,8 +1,10 @@
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 
-import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
 import { DashboardNav } from '@/components/dashboard/dashboard-nav'
+import { DashboardThemeShell } from '@/components/dashboard/dashboard-theme-shell'
+import { WorkspaceThemeProvider } from '@/contexts/workspace-theme-context'
+import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
 
 export default async function DashboardLayout({
   children,
@@ -30,14 +32,14 @@ export default async function DashboardLayout({
   }
 
   return (
-    <div className="relative min-h-screen bg-background text-foreground">
-      <div className="pointer-events-none absolute inset-0 organic-background" />
+    <WorkspaceThemeProvider>
+      <DashboardThemeShell>
+        <div className="mx-auto max-w-6xl px-6 pt-6">
+          <DashboardNav slug={slug} />
+        </div>
 
-      <div className="relative mx-auto max-w-6xl px-6 pt-6">
-        <DashboardNav slug={slug} />
-      </div>
-
-      {children}
-    </div>
+        {children}
+      </DashboardThemeShell>
+    </WorkspaceThemeProvider>
   )
 }

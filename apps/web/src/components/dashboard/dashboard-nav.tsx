@@ -18,12 +18,12 @@ export function DashboardNav({ slug }: { slug: string }) {
   const workspaceHref = `/w/${slug}`
 
   return (
-    <nav className="glass-bar flex h-14 items-center gap-1 rounded-2xl border-border/40 bg-card/65 px-5 text-card-foreground">
+    <nav className="glass-bar flex h-14 items-center gap-1 rounded-2xl border-border/40 bg-card/65 pl-5 pr-3 text-card-foreground shadow-none">
       <Link
         href="/"
-        className="mr-2 font-[family-name:var(--font-display)] text-sm font-semibold"
+        className="mr-2 font-[family-name:var(--font-display)] text-base font-semibold"
       >
-        Arche
+        Archē
       </Link>
       <span className="mr-3 text-xs text-muted-foreground">/&nbsp;{slug}</span>
 
@@ -40,7 +40,7 @@ export function DashboardNav({ slug }: { slug: string }) {
             href={href}
             className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
               isActive
-                ? 'bg-muted/50 text-foreground'
+                ? 'bg-muted/70 font-medium text-foreground'
                 : 'text-muted-foreground hover:text-foreground'
             }`}
           >

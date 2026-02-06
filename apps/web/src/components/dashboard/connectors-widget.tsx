@@ -1,9 +1,6 @@
 'use client'
 
-import Link from 'next/link'
 import { useEffect, useState } from 'react'
-
-import { Button } from '@/components/ui/button'
 
 type ConnectorListItem = {
   id: string
@@ -48,7 +45,7 @@ export function ConnectorsWidget({ slug }: ConnectorsWidgetProps) {
     return (
       <div className="space-y-2">
         {Array.from({ length: 2 }).map((_, index) => (
-          <div key={index} className="h-12 animate-pulse rounded-lg border border-border/60 bg-card/40" />
+          <div key={index} className="h-12 animate-pulse rounded-lg glass-panel" />
         ))}
       </div>
     )
@@ -56,16 +53,11 @@ export function ConnectorsWidget({ slug }: ConnectorsWidgetProps) {
 
   if (connectors.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-border/60 bg-card/40 p-6 text-center">
+      <div className="glass-panel rounded-xl p-6 text-center">
         <p className="text-sm font-medium text-foreground">No connectors enabled</p>
         <p className="mt-1 text-xs text-muted-foreground">
-          Connect your first integration to unlock MCP tools.
+          Connect integrations to unlock MCP tools.
         </p>
-        <div className="mt-4">
-          <Button size="sm" asChild>
-            <Link href={`/u/${slug}/connectors`}>Add your first connector</Link>
-          </Button>
-        </div>
       </div>
     )
   }
@@ -75,10 +67,13 @@ export function ConnectorsWidget({ slug }: ConnectorsWidgetProps) {
       {connectors.map((connector) => (
         <div
           key={connector.id}
-          className="flex items-center justify-between rounded-lg border border-border/60 bg-card/50 px-4 py-3"
+          className="glass-panel flex items-center gap-3 rounded-lg px-4 py-3"
         >
-          <span className="text-sm text-foreground">{connector.name}</span>
-          <span className="text-xs uppercase tracking-wide text-muted-foreground">{connector.type}</span>
+          <span className="flex h-2 w-2 shrink-0 rounded-full bg-emerald-500" />
+          <span className="flex-1 text-sm text-foreground">{connector.name}</span>
+          <span className="rounded-md bg-foreground/5 px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {connector.type}
+          </span>
         </div>
       ))}
     </div>

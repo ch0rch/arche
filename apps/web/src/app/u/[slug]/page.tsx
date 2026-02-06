@@ -1,10 +1,10 @@
 import Link from "next/link";
 
 import { ConnectorsWidget } from '@/components/dashboard/connectors-widget'
+import { DashboardHero } from '@/components/dashboard/dashboard-hero'
 import { listRecentKbFileUpdates, readCommonWorkspaceConfig } from '@/lib/common-workspace-config-store'
 import { getAgentSummaries, parseCommonWorkspaceConfig } from '@/lib/workspace-config'
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 
 function formatCommitTime(value: string): string {
   const parsed = new Date(value)
@@ -35,30 +35,21 @@ export default async function WorkspacePage({
   const recentUpdates = recentUpdatesResult.ok ? recentUpdatesResult.updates : []
 
   return (
-    <main className="relative mx-auto max-w-6xl px-6 py-10">
-      {/* Page header */}
-      <div className="mb-10 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="font-[family-name:var(--font-display)] text-2xl font-semibold tracking-tight sm:text-3xl">
-          Dashboard
-        </h1>
-        <div className="flex gap-3">
-          <Button variant="outline" asChild>
-            <Link href={`/u/${slug}/connectors`}>Add connector</Link>
-          </Button>
-        </div>
-      </div>
+    <main className="relative mx-auto max-w-6xl px-6 py-6">
+      {/* Hero */}
+      <DashboardHero slug={slug} />
 
-      {/* Main grid */}
-      <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_320px]">
+      {/* Sections grid */}
+      <div className="grid gap-8 md:grid-cols-2">
+        {/* Recent Activity */}
         <section>
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-sm font-medium text-muted-foreground">
               Recent Activity
             </h2>
-            <span className="text-xs text-muted-foreground">Last 10 file updates</span>
           </div>
 
-          <div className="rounded-xl border border-border/60 bg-card/50">
+          <div className="glass-panel rounded-xl">
             {recentUpdates.length === 0 ? (
               <div className="px-5 py-8 text-sm text-muted-foreground">
                 No file activity available yet.
@@ -84,7 +75,8 @@ export default async function WorkspacePage({
           </div>
         </section>
 
-        <aside className="space-y-8">
+        {/* Agents & Connectors */}
+        <div className="space-y-8">
           <section>
             <div className="mb-4 flex items-center justify-between">
               <h2 className="text-sm font-medium text-muted-foreground">Agents</h2>
@@ -97,14 +89,14 @@ export default async function WorkspacePage({
             </div>
             <div className="space-y-2">
               {agents.length === 0 ? (
-                <div className="rounded-lg border border-border/60 bg-card/50 px-4 py-3 text-sm text-muted-foreground">
+                <div className="glass-panel rounded-lg px-4 py-3 text-sm text-muted-foreground">
                   No agents configured.
                 </div>
               ) : (
                 agents.map((agent) => (
                   <div
                     key={agent.id}
-                    className="flex items-center justify-between rounded-lg border border-border/60 bg-card/50 px-4 py-3"
+                    className="glass-panel flex items-center justify-between rounded-lg px-4 py-3"
                   >
                     <span className="text-sm text-foreground">{agent.displayName}</span>
                     <Badge variant={agent.isPrimary ? "default" : "secondary"}>
@@ -128,7 +120,7 @@ export default async function WorkspacePage({
             </div>
             <ConnectorsWidget slug={slug} />
           </section>
-        </aside>
+        </div>
       </div>
     </main>
   );
