@@ -64,7 +64,7 @@ services:
       - docker-socket-proxy
 
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.4.2
+    image: ghcr.io/tecnativa/docker-socket-proxy:master
     restart: unless-stopped
 {% if deploy_mode in ('local', 'local-dev') %}
     user: root
@@ -112,6 +112,10 @@ services:
     restart: unless-stopped
     env_file:
       - {{ env_file_name | default('.env') }}
+    environment:
+      ARCHE_GATEWAY_TOKEN_SECRET: "${ARCHE_GATEWAY_TOKEN_SECRET}"
+      ARCHE_GATEWAY_TOKEN_TTL_SECONDS: "${ARCHE_GATEWAY_TOKEN_TTL_SECONDS}"
+      ARCHE_GATEWAY_BASE_URL: "${ARCHE_GATEWAY_BASE_URL}"
     networks:
       - default
       - arche-internal

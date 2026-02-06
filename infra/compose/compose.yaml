@@ -12,7 +12,7 @@ services:
   # Proxy de seguridad para el Podman socket.
   # Filtra operaciones permitidas; tanto Traefik como web lo usan.
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.4.2
+    image: ghcr.io/tecnativa/docker-socket-proxy:master
     environment:
       CONTAINERS: 1  # listar/inspeccionar contenedores
       NETWORKS: 1    # ver redes
@@ -77,6 +77,10 @@ services:
       CONTAINER_PROXY_PORT: "2375"
       # Encryption key for instance passwords (generate with: openssl rand -base64 32)
       ARCHE_ENCRYPTION_KEY: ${ARCHE_ENCRYPTION_KEY:-}
+      # Gateway
+      ARCHE_GATEWAY_TOKEN_SECRET: ${ARCHE_GATEWAY_TOKEN_SECRET:-}
+      ARCHE_GATEWAY_TOKEN_TTL_SECONDS: ${ARCHE_GATEWAY_TOKEN_TTL_SECONDS:-}
+      ARCHE_GATEWAY_BASE_URL: ${ARCHE_GATEWAY_BASE_URL:-}
       # Usar imagen personalizada con git (build con: podman build -t arche-workspace infra/workspace-image)
       OPENCODE_IMAGE: arche-workspace:latest
       OPENCODE_NETWORK: arche-internal

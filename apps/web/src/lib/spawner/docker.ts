@@ -19,6 +19,23 @@ export async function createContainer(slug: string, password: string, opencodeCo
   const containerName = `opencode-${slug}`
   const volumeName = `arche-workspace-${slug}`
 
+  // Configure provider base URLs to route through Arche's internal gateway.
+  // Auth is still managed at runtime via the OpenCode /auth endpoints.
+  const providerGatewayConfig = {
+    provider: {
+      openai: { options: { baseURL: 'http://web:3000/api/internal/providers/openai' } },
+      anthropic: { options: { baseURL: 'http://web:3000/api/internal/providers/anthropic' } },
+      openrouter: { options: { baseURL: 'http://web:3000/api/internal/providers/openrouter' } },
+    },
+  }
+
+  // Merge passed-in config (e.g. MCP) with provider gateway config
+  const mergedConfigContent = JSON.stringify(
+    opencodeConfigContent
+      ? { ...JSON.parse(opencodeConfigContent), ...providerGatewayConfig }
+      : providerGatewayConfig
+  )
+
   // Ensure volume exists for persistent workspace
   try {
     await docker.createVolume({ Name: volumeName })
@@ -45,9 +62,7 @@ export async function createContainer(slug: string, password: string, opencodeCo
     `WORKSPACE_AGENT_PORT=${getWorkspaceAgentPort()}`,
   ]
 
-  if (opencodeConfigContent) {
-    env.push(`OPENCODE_CONFIG_CONTENT=${opencodeConfigContent}`)
-  }
+  env.push(`OPENCODE_CONFIG_CONTENT=${mergedConfigContent}`)
 
   return docker.createContainer({
     Image: getOpencodeImage(),

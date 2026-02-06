@@ -8,6 +8,9 @@ vi.mock('@/lib/prisma', () => ({
       upsert: vi.fn(),
       update: vi.fn(),
     },
+    user: {
+      findUnique: vi.fn(),
+    },
   },
 }))
 
@@ -19,6 +22,11 @@ vi.mock('@/lib/auth', () => ({
 // Mock opencode client
 vi.mock('@/lib/opencode/client', () => ({
   isInstanceHealthyWithPassword: vi.fn(),
+}))
+
+// Mock opencode providers
+vi.mock('@/lib/opencode/providers', () => ({
+  syncProviderAccessForInstance: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
 // Mock docker
@@ -45,6 +53,7 @@ vi.mock('../crypto', () => ({
 import { prisma } from '@/lib/prisma'
 import { auditEvent } from '@/lib/auth'
 import { isInstanceHealthyWithPassword } from '@/lib/opencode/client'
+import { syncProviderAccessForInstance } from '@/lib/opencode/providers'
 import * as docker from '../docker'
 import { buildMcpConfigForSlug } from '../mcp-config'
 import { startInstance, stopInstance, getInstanceStatus, isSlowStart } from '../core'
@@ -54,6 +63,7 @@ const mockDocker = vi.mocked(docker)
 const mockBuildMcpConfigForSlug = vi.mocked(buildMcpConfigForSlug)
 const mockAudit = vi.mocked(auditEvent)
 const mockHealth = vi.mocked(isInstanceHealthyWithPassword)
+const mockSync = vi.mocked(syncProviderAccessForInstance)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -84,6 +94,7 @@ describe('startInstance', () => {
     mockPrisma.instance.findUnique.mockResolvedValue(null)
     mockPrisma.instance.upsert.mockResolvedValue({} as never)
     mockPrisma.instance.update.mockResolvedValue({} as never)
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 'owner-1' } as never)
     mockDocker.createContainer.mockResolvedValue({ id: 'container-123' } as never)
     mockDocker.startContainer.mockResolvedValue(undefined)
     mockDocker.isContainerRunning.mockResolvedValue(true)
@@ -97,6 +108,7 @@ describe('startInstance', () => {
       '{"$schema":"https://opencode.ai/config.json","mcp":{}}'
     )
     expect(mockDocker.startContainer).toHaveBeenCalledWith('container-123')
+    expect(mockSync).toHaveBeenCalledWith({ slug: 'alice', userId: 'owner-1' })
     expect(mockAudit).toHaveBeenCalledWith({
       actorUserId: 'user-1',
       action: 'instance.started',
