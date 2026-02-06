@@ -18,7 +18,7 @@ export function DashboardNav({ slug }: { slug: string }) {
   const workspaceHref = `/w/${slug}`
 
   return (
-    <nav className="glass-bar flex h-14 items-center gap-1 rounded-2xl border-border/40 bg-card/65 pl-5 pr-3 text-card-foreground shadow-none">
+    <nav className="glass-bar flex h-14 items-center gap-1 rounded-2xl border-border/40 bg-card/65 pl-5 pr-2 text-card-foreground shadow-none">
       <Link
         href="/"
         className="mr-2 font-[family-name:var(--font-display)] text-base font-semibold"
@@ -40,7 +40,7 @@ export function DashboardNav({ slug }: { slug: string }) {
             href={href}
             className={`rounded-lg px-3 py-1.5 text-sm transition-colors ${
               isActive
-                ? 'bg-muted/70 font-medium text-foreground'
+                ? 'bg-primary/10 font-medium text-primary'
                 : 'text-muted-foreground hover:text-foreground'
             }`}
           >
