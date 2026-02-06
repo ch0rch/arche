@@ -15,7 +15,7 @@ set -euo pipefail
 
 # Configuración
 KB_SOURCE="${KB_SOURCE:-$(dirname "$0")/../kb}"
-KB_DEST="${1:-/opt/arche/kb}"
+KB_DEST="${1:-/opt/arche/kb-content}"
 GIT_USER_NAME="${GIT_USER_NAME:-Arche Deploy}"
 GIT_USER_EMAIL="${GIT_USER_EMAIL:-deploy@arche.local}"
 
@@ -109,6 +109,9 @@ git config user.email "$GIT_USER_EMAIL"
 log "Syncing KB content into worktree..."
 rsync -av --delete \
   --exclude='.git' \
+  --exclude='.arche' \
+  --exclude='AGENTS.md' \
+  --exclude='opencode.json' \
   --exclude='.DS_Store' \
   --exclude='Thumbs.db' \
   "$KB_SOURCE/" "$TMP_DIR/repo/" >/dev/null

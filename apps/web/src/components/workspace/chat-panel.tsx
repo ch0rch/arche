@@ -61,6 +61,7 @@ type ChatPanelProps = {
   models?: AvailableModel[];
   selectedModel?: AvailableModel | null;
   onSelectModel?: (model: AvailableModel | null) => void;
+  activeAgentName?: string | null;
 };
 
 /**
@@ -779,7 +780,8 @@ export function ChatPanel({
   isSending = false,
   models = [],
   selectedModel,
-  onSelectModel
+  onSelectModel,
+  activeAgentName
 }: ChatPanelProps) {
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId),
@@ -1176,8 +1178,19 @@ export function ChatPanel({
       {/* Input area */}
       <div className="border-t border-white/10 px-6 py-5">
         {/* Model selector and context - same row */}
-        {(models.length > 0 || openFilesCount > 0) && (
+        {(models.length > 0 || openFilesCount > 0 || activeAgentName) && (
           <div className="mb-3 flex items-center gap-4">
+            {activeAgentName && (
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Agent
+                </span>
+                <span className="rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground">
+                  {activeAgentName}
+                </span>
+              </div>
+            )}
+
             {/* Model selector */}
             {models.length > 0 && (
               <div className="flex items-center gap-2">

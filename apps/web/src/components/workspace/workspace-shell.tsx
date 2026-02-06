@@ -724,6 +724,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               models={workspace.models}
               selectedModel={workspace.selectedModel}
               onSelectModel={workspace.setSelectedModel}
+              activeAgentName={workspace.activeAgentName}
             />
           </div>
 

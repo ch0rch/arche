@@ -14,12 +14,12 @@ services:
   docker-socket-proxy:
     image: ghcr.io/tecnativa/docker-socket-proxy:master
     environment:
-      CONTAINERS: 1  # listar/inspeccionar contenedores
-      NETWORKS: 1    # ver redes
-      IMAGES: 1      # ver imágenes
-      INFO: 1        # info del daemon
-      POST: 1        # crear contenedores (para spawner)
-      VOLUMES: 1     # crear volúmenes para workspaces
+      CONTAINERS: 1 # listar/inspeccionar contenedores
+      NETWORKS: 1 # ver redes
+      IMAGES: 1 # ver imágenes
+      INFO: 1 # info del daemon
+      POST: 1 # crear contenedores (para spawner)
+      VOLUMES: 1 # crear volúmenes para workspaces
     volumes:
       - /run/podman/podman.sock:/var/run/docker.sock:ro
     networks:
@@ -84,9 +84,13 @@ services:
       # Usar imagen personalizada con git (build con: podman build -t arche-workspace infra/workspace-image)
       OPENCODE_IMAGE: arche-workspace:latest
       OPENCODE_NETWORK: arche-internal
-      # Path al KB en el host (debe existir antes de crear workspaces)
-      # Configurar via: export KB_HOST_PATH=/path/to/kb
-      KB_HOST_PATH: ${KB_HOST_PATH:-}
+      # Path al repo bare de contenido KB en host
+      KB_CONTENT_HOST_PATH: ${KB_CONTENT_HOST_PATH:-}
+      # Path al repo bare de configuración en host
+      KB_CONFIG_HOST_PATH: ${KB_CONFIG_HOST_PATH:-}
+      # Paths montados en web para lectura Git
+      ARCHE_KB_CONTENT_PATH: /kb-content
+      ARCHE_CONFIG_REPO_PATH: /kb-config
       # Path para datos persistentes de usuario
       ARCHE_USERS_PATH: ${ARCHE_USERS_PATH:-/tmp/arche-users}
     networks:
@@ -94,9 +98,11 @@ services:
       - arche-internal
     volumes:
       - ./../../apps/web:/app
-      - arche_web_node_modules:/app/node_modules
+      - ${KB_CONTENT_HOST_PATH:-/opt/arche/kb-content}:/kb-content
+      - ${KB_CONFIG_HOST_PATH:-/opt/arche/kb-config}:/kb-config
       - ${ARCHE_USERS_PATH:-/tmp/arche-users}:${ARCHE_USERS_PATH:-/tmp/arche-users}
-    command: sh -lc "corepack enable && pnpm install && pnpm prisma generate && pnpm dev"
+      - arche_web_node_modules:/app/node_modules
+    command: sh -lc "apt-get update -y && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* && corepack enable && pnpm install && pnpm prisma generate && pnpm dev"
     labels:
       - traefik.enable=true
       - traefik.docker.network=arche_default

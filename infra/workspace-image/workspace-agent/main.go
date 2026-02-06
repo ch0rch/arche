@@ -756,23 +756,17 @@ func (s *server) handleKbPublish(w http.ResponseWriter, r *http.Request) {
     return
   }
 
-  statusOut, statusErr, statusCode, statusExecErr := runCmd(r.Context(), s.workspace, []string{
-    "git", "status", "--porcelain",
-  })
-  if statusExecErr != nil || statusCode != 0 {
-    msg := strings.TrimSpace(statusErr)
-    if msg == "" {
-      msg = "git_status_failed"
-    }
+  entries, statusErr := s.gitStatusEntries(r.Context())
+  if statusErr != nil {
     writeJSON(w, http.StatusOK, publishKbResponse{
       Ok:      false,
       Status:  "error",
-      Message: msg,
+      Message: statusErr.Error(),
     })
     return
   }
 
-  if strings.TrimSpace(statusOut) == "" {
+  if len(entries) == 0 {
     writeJSON(w, http.StatusOK, publishKbResponse{
       Ok:      true,
       Status:  "nothing_to_publish",

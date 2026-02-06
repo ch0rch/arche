@@ -60,6 +60,7 @@ model Instance {
 
   containerId     String?        @map("container_id")
   serverPassword  String         @map("server_password")
+  appliedConfigSha String?       @map("applied_config_sha")
 
   user            User           @relation(fields: [slug], references: [slug])
 

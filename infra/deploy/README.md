@@ -73,7 +73,8 @@ Like `--local` but mounts your source code for hot reload via `next dev`. Use th
 - **Postgres**: `localhost:5432`
 - Source from `apps/web/` is bind-mounted; `node_modules` lives in a named volume
 - Workspace image (`arche-workspace:latest`) is built automatically
-- Knowledge Base is deployed to `~/.arche/kb` (repo bare)
+- Knowledge Base content is deployed to `~/.arche/kb-content` (repo bare)
+- Common config is deployed to `~/.arche/kb-config` (repo bare)
 
 ```bash
 cd infra/deploy

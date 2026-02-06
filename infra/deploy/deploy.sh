@@ -79,7 +79,8 @@ LOCAL DEV MODE:
     - Postgres:         localhost:5432
     - Source mounted from apps/web/ with node_modules in a named volume
     - Workspace image built automatically
-    - KB deployed to ~/.arche/kb
+    - KB content deployed to ~/.arche/kb-content
+    - KB config deployed to ~/.arche/kb-config
 
 
 ENVIRONMENT VARIABLES (via .env or exported):
@@ -95,6 +96,9 @@ ENVIRONMENT VARIABLES (via .env or exported):
   ARCHE_SEED_ADMIN_SLUG     Seed admin URL slug
   ARCHE_SEED_TEST_EMAIL     Seed test user email (optional)
   ARCHE_SEED_TEST_SLUG      Seed test user slug (optional)
+  ARCHE_USERS_PATH          Host path for persisted user data (optional)
+  KB_CONTENT_HOST_PATH      Path del repo bare de contenido KB
+  KB_CONFIG_HOST_PATH       Path del repo bare de configuración
 
   DNS provider tokens (set the one matching --dns-provider):
     CF_DNS_API_TOKEN          Cloudflare
@@ -282,6 +286,8 @@ vars = {
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
     "arche_seed_test_email": os.environ.get("ARCHE_SEED_TEST_EMAIL", ""),
     "arche_seed_test_slug": os.environ.get("ARCHE_SEED_TEST_SLUG", ""),
+    "kb_content_host_path": os.environ.get("KB_CONTENT_HOST_PATH", "/opt/arche/kb-content"),
+    "kb_config_host_path": os.environ.get("KB_CONFIG_HOST_PATH", "/opt/arche/kb-config"),
     "ghcr_token": os.environ["GHCR_TOKEN"],
 }
 dns = os.environ["DNS_PROVIDER"]
@@ -347,6 +353,16 @@ deploy_local() {
   # Ensure local stack uses the workspace image with agent
   export OPENCODE_IMAGE="$LOCAL_WORKSPACE_IMAGE"
 
+  KB_CONTENT_DEST="${KB_CONTENT_HOST_PATH:-$HOME/.arche/kb-content}"
+  KB_CONFIG_DEST="${KB_CONFIG_HOST_PATH:-$HOME/.arche/kb-config}"
+  USERS_DEST="${ARCHE_USERS_PATH:-$HOME/.arche/users}"
+  log "Deploying KB content to: $KB_CONTENT_DEST"
+  "$REPO_ROOT/scripts/deploy-kb.sh" "$KB_CONTENT_DEST"
+  log "Deploying KB config to: $KB_CONFIG_DEST"
+  "$REPO_ROOT/scripts/deploy-config.sh" "$KB_CONFIG_DEST"
+  log "Ensuring users data directory exists: $USERS_DEST"
+  mkdir -p "$USERS_DEST"
+
   # Detect Podman socket path (VM-internal path for container mounts)
   PODMAN_SOCKET_PATH="${PODMAN_SOCKET_PATH:-}"
   if [[ -z "$PODMAN_SOCKET_PATH" ]]; then
@@ -377,7 +393,7 @@ deploy_local() {
     trap 'rm -f "$TEMP_PLAYBOOK" "$EXTRA_VARS_FILE"' EXIT
 
     # Export variables so python3 subprocess can read them
-    export LOCAL_DOMAIN PODMAN_SOCKET_PATH IMAGE_PREFIX WEB_VERSION OPENCODE_IMAGE
+    export LOCAL_DOMAIN PODMAN_SOCKET_PATH IMAGE_PREFIX WEB_VERSION OPENCODE_IMAGE KB_CONTENT_DEST KB_CONFIG_DEST USERS_DEST
 
     # Build extra vars as JSON (safe for secrets with special characters)
     python3 -c '
@@ -404,6 +420,9 @@ vars = {
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
     "arche_seed_test_email": os.environ.get("ARCHE_SEED_TEST_EMAIL", ""),
     "arche_seed_test_slug": os.environ.get("ARCHE_SEED_TEST_SLUG", ""),
+    "kb_content_host_path": os.environ["KB_CONTENT_DEST"],
+    "kb_config_host_path": os.environ["KB_CONFIG_DEST"],
+    "users_path": os.environ["USERS_DEST"],
 }
 json.dump(vars, open(sys.argv[1], "w"))
 ' "$EXTRA_VARS_FILE"
@@ -529,9 +548,15 @@ deploy_local_dev() {
   podman build -t arche-workspace:latest "$REPO_ROOT/infra/workspace-image"
 
   # Deploy Knowledge Base
-  KB_DEST="${KB_HOST_PATH:-$HOME/.arche/kb}"
-  log "Deploying Knowledge Base to: $KB_DEST"
-  "$REPO_ROOT/scripts/deploy-kb.sh" "$KB_DEST"
+  KB_CONTENT_DEST="${KB_CONTENT_HOST_PATH:-$HOME/.arche/kb-content}"
+  KB_CONFIG_DEST="${KB_CONFIG_HOST_PATH:-$HOME/.arche/kb-config}"
+  USERS_DEST="${ARCHE_USERS_PATH:-$HOME/.arche/users}"
+  log "Deploying KB content to: $KB_CONTENT_DEST"
+  "$REPO_ROOT/scripts/deploy-kb.sh" "$KB_CONTENT_DEST"
+  log "Deploying KB config to: $KB_CONFIG_DEST"
+  "$REPO_ROOT/scripts/deploy-config.sh" "$KB_CONFIG_DEST"
+  log "Ensuring users data directory exists: $USERS_DEST"
+  mkdir -p "$USERS_DEST"
 
   # Render compose from template using Ansible
   COMPOSE_OUT="$SCRIPT_DIR/.compose-local-dev.yml"
@@ -547,7 +572,7 @@ deploy_local_dev() {
   EXTRA_VARS_FILE=$(mktemp)
   trap 'rm -f "$TEMP_PLAYBOOK" "$EXTRA_VARS_FILE"' EXIT
 
-  export LOCAL_DOMAIN PODMAN_SOCKET_PATH IMAGE_PREFIX WEB_VERSION REPO_ROOT KB_DEST
+  export LOCAL_DOMAIN PODMAN_SOCKET_PATH IMAGE_PREFIX WEB_VERSION REPO_ROOT KB_CONTENT_DEST KB_CONFIG_DEST USERS_DEST
 
   python3 -c '
 import json, os, sys
@@ -562,7 +587,8 @@ vars = {
     "web_version": os.environ["WEB_VERSION"],
     "opencode_image": "arche-workspace:latest",
     "repo_root": os.environ["REPO_ROOT"],
-    "kb_host_path": os.environ["KB_DEST"],
+    "kb_content_host_path": os.environ["KB_CONTENT_DEST"],
+    "kb_config_host_path": os.environ["KB_CONFIG_DEST"],
     "postgres_password": os.environ["POSTGRES_PASSWORD"],
     "arche_session_pepper": os.environ["ARCHE_SESSION_PEPPER"],
     "arche_encryption_key": os.environ["ARCHE_ENCRYPTION_KEY"],
@@ -575,7 +601,7 @@ vars = {
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
     "arche_seed_test_email": os.environ.get("ARCHE_SEED_TEST_EMAIL", ""),
     "arche_seed_test_slug": os.environ.get("ARCHE_SEED_TEST_SLUG", ""),
-    "users_path": os.environ.get("ARCHE_USERS_PATH", "/opt/arche/users"),
+    "users_path": os.environ["USERS_DEST"],
 }
 json.dump(vars, open(sys.argv[1], "w"))
 ' "$EXTRA_VARS_FILE"

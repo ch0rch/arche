@@ -17,18 +17,15 @@ El sistema incluye un Knowledge Base compartido que se inyecta en cada workspace
 
 ```
 Host (VPS)
-├── /opt/arche/kb/           ← Repo Git con el KB (se carga en deploy)
-│   ├── .git/
-│   ├── Company/
-│   ├── Templates/
-│   ├── System Prompts/
-│   └── opencode.json
+├── /opt/arche/kb-content/   ← Repo bare de contenido KB
+├── /opt/arche/kb-config/    ← Repo bare de configuración
 │
 └── Containers (por usuario)
-    └── /workspace/          ← Volumen persistente
-        ├── .git/            ← Repo local con remote 'kb'
-        ├── Company/         ← Copiado del KB al init
-        └── ...
+└── /workspace/          ← Volumen persistente
+    ├── .git/            ← Repo local con remote 'kb'
+    ├── Company/         ← Copiado del KB al init
+    ├── ...
+    └── opencode.json    ← Generado en runtime desde kb-config
 ```
 
 ### Setup del KB
@@ -39,14 +36,16 @@ Host (VPS)
    podman build -t arche-workspace:latest .
    ```
 
-2. **Deploy del KB al host**:
+2. **Deploy del KB de contenido al host**:
    ```bash
-   ./scripts/deploy-kb.sh /opt/arche/kb
+   ./scripts/deploy-kb.sh /opt/arche/kb-content
+   ./scripts/deploy-config.sh /opt/arche/kb-config
    ```
 
 3. **Configurar la variable de entorno** en el compose o en producción:
    ```
-   KB_HOST_PATH=/opt/arche/kb
+   KB_CONTENT_HOST_PATH=/opt/arche/kb-content
+   KB_CONFIG_HOST_PATH=/opt/arche/kb-config
    ```
 
 ### Sincronización
