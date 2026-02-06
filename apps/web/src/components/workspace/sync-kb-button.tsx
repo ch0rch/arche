@@ -107,7 +107,7 @@ export function SyncKbButton({ slug, disabled, onComplete }: SyncKbButtonProps) 
 
   return (
     <div className="relative">
-      <TooltipProvider delayDuration={300}>
+      <TooltipProvider delayDuration={2000}>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

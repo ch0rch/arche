@@ -106,48 +106,56 @@ export function PublishKbButton({ slug, disabled, disabledReason, onComplete }: 
       icon: Check,
       label: 'Publish',
       className: '',
+      buttonClassName: '',
       weight: 'bold' as const,
     },
     publishing: {
       icon: ArrowsClockwise,
       label: 'Publishing...',
       className: 'animate-spin',
+      buttonClassName: '',
       weight: 'bold' as const,
     },
     published: {
       icon: Check,
       label: 'Published',
-      className: 'text-emerald-500',
+      className: '',
+      buttonClassName: 'bg-emerald-500/15 text-emerald-600 hover:bg-emerald-500/25',
       weight: 'bold' as const,
     },
     nothing: {
       icon: Check,
       label: 'No changes',
-      className: 'text-muted-foreground',
+      className: '',
+      buttonClassName: 'bg-muted text-muted-foreground hover:bg-muted/80',
       weight: 'bold' as const,
     },
     push_rejected: {
       icon: Warning,
       label: 'Sync required',
       className: 'text-amber-500',
+      buttonClassName: '',
       weight: 'fill' as const,
     },
     conflicts: {
       icon: Warning,
       label: 'Conflicts',
       className: 'text-amber-500',
+      buttonClassName: '',
       weight: 'fill' as const,
     },
     no_remote: {
       icon: Warning,
       label: 'No remote',
       className: 'text-amber-500',
+      buttonClassName: '',
       weight: 'fill' as const,
     },
     error: {
       icon: X,
       label: 'Error',
       className: 'text-red-500',
+      buttonClassName: '',
       weight: 'bold' as const,
     },
   }
@@ -160,7 +168,7 @@ export function PublishKbButton({ slug, disabled, disabledReason, onComplete }: 
     <div className="relative">
       <Button
         size="sm"
-        className="h-7 gap-1.5 px-2.5 text-xs"
+        className={cn("h-7 gap-1.5 px-2.5 text-xs", config.buttonClassName)}
         onClick={handlePublish}
         disabled={disabled || state === 'publishing'}
         title={message || disabledReason || 'Publish changes'}

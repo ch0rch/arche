@@ -123,7 +123,7 @@ export function WorkspaceHeader({
           />
         </div>
 
-        <TooltipProvider delayDuration={300}>
+        <TooltipProvider delayDuration={2000}>
           <div className="flex items-center gap-1">
             {pendingConfig && status === "active" && (
               <Button

@@ -1160,13 +1160,13 @@ export function ChatPanel({
           </div>
         )}
         
-        <div className="flex items-center gap-2.5 rounded-xl border border-white/10 bg-foreground/5 px-2.5 py-2.5">
+        <div className="flex items-start gap-2.5 rounded-xl border border-white/10 bg-foreground/5 px-2.5 py-2.5">
           <textarea
             ref={textareaRef}
             value={inputValue}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            className="max-h-[200px] flex-1 resize-none bg-transparent px-2 text-sm leading-9 text-foreground outline-none placeholder:text-muted-foreground/60"
+            className="max-h-[200px] flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground/60"
             placeholder="Type a message..."
             disabled={isSending || !onSendMessage}
             rows={1}
