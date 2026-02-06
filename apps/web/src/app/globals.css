@@ -180,6 +180,91 @@
   --sidebar-ring: 24 80% 50%;
 }
 
+/* Theme-specific accent palettes */
+.theme-warm-sand {
+  --primary: 24 85% 48%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 28 25% 94%;
+  --accent-foreground: 20 15% 18%;
+  --ring: 24 85% 48%;
+  --chart-1: 24 85% 48%;
+  --sidebar-primary: 24 85% 48%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-ring: 24 85% 48%;
+}
+
+.theme-ocean-mist {
+  --primary: 195 22% 50%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 194 16% 93%;
+  --accent-foreground: 198 14% 22%;
+  --ring: 195 22% 50%;
+  --chart-1: 195 22% 50%;
+  --sidebar-primary: 195 22% 50%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-ring: 195 22% 50%;
+}
+
+.theme-forest-dew {
+  --primary: 152 20% 46%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 150 14% 92%;
+  --accent-foreground: 154 12% 22%;
+  --ring: 152 20% 46%;
+  --chart-1: 152 20% 46%;
+  --sidebar-primary: 152 20% 46%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-ring: 152 20% 46%;
+}
+
+.theme-lavender-haze {
+  --primary: 272 20% 58%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 270 14% 93%;
+  --accent-foreground: 274 12% 24%;
+  --ring: 272 20% 58%;
+  --chart-1: 272 20% 58%;
+  --sidebar-primary: 272 20% 58%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-ring: 272 20% 58%;
+}
+
+.theme-sunset-glow {
+  --primary: 348 26% 56%;
+  --primary-foreground: 0 0% 100%;
+  --accent: 345 18% 93%;
+  --accent-foreground: 348 14% 24%;
+  --ring: 348 26% 56%;
+  --chart-1: 348 26% 56%;
+  --sidebar-primary: 348 26% 56%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-ring: 348 26% 56%;
+}
+
+.theme-midnight-ember {
+  --primary: 24 85% 55%;
+  --primary-foreground: 20 12% 8%;
+  --accent: 24 20% 20%;
+  --accent-foreground: 30 15% 92%;
+  --ring: 24 80% 50%;
+  --chart-1: 24 85% 55%;
+  --sidebar-primary: 24 85% 55%;
+  --sidebar-primary-foreground: 20 12% 8%;
+  --sidebar-ring: 24 80% 50%;
+}
+
+.theme-midnight-ash {
+  --primary: 24 85% 55%;
+  --primary-foreground: 0 0% 8%;
+  --accent: 24 16% 20%;
+  --accent-foreground: 0 0% 92%;
+  --ring: 24 80% 50%;
+  --chart-1: 24 85% 55%;
+  --sidebar-primary: 24 85% 55%;
+  --sidebar-primary-foreground: 0 0% 8%;
+  --sidebar-ring: 24 80% 50%;
+}
+
 @layer base {
   * {
     @apply border-border;

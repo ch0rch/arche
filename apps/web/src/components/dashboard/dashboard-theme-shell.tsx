@@ -11,6 +11,7 @@ type DashboardThemeShellProps = {
 
 export function DashboardThemeShell({ children }: DashboardThemeShellProps) {
   const { theme } = useWorkspaceTheme()
+  const themeClassName = `theme-${theme.id}`
 
   const darkModeClasses = theme.isDark
     ? `dark ${theme.darkVariant === 'ash' ? 'dark-ash' : 'dark-ember'}`
@@ -18,7 +19,7 @@ export function DashboardThemeShell({ children }: DashboardThemeShellProps) {
 
   return (
     <div
-      className={cn('relative min-h-screen text-foreground', darkModeClasses)}
+      className={cn('relative min-h-screen text-foreground', darkModeClasses, themeClassName)}
       style={{
         backgroundAttachment: 'fixed',
         backgroundImage: theme.gradient,

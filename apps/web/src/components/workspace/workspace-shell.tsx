@@ -576,6 +576,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   const darkModeClasses = theme.isDark
     ? `dark ${theme.darkVariant === "ash" ? "dark-ash" : "dark-ember"}`
     : "";
+  const themeClassName = `theme-${theme.id}`;
 
   // Loading screen while instance is starting
   if (instanceStatus !== 'running') {
@@ -583,7 +584,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       <div 
         className={cn(
           "flex h-screen flex-col overflow-hidden text-foreground",
-          darkModeClasses
+          darkModeClasses,
+          themeClassName
         )}
         style={{ 
           backgroundImage: theme.gradient,
@@ -655,7 +657,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       <div 
         className={cn(
           "flex h-screen flex-col overflow-hidden text-foreground",
-          darkModeClasses
+          darkModeClasses,
+          themeClassName
         )}
         style={{ 
           backgroundImage: theme.gradient,
@@ -693,7 +696,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     <div 
       className={cn(
         "flex h-screen flex-col overflow-hidden text-foreground",
-        darkModeClasses
+        darkModeClasses,
+        themeClassName
       )}
       style={{ 
         backgroundImage: theme.gradient,
