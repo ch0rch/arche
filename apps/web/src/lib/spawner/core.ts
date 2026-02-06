@@ -2,9 +2,11 @@ import { prisma } from '@/lib/prisma'
 import { auditEvent } from '@/lib/auth'
 import { getCommonWorkspaceConfigHash } from '@/lib/common-workspace-config-store'
 import { isInstanceHealthyWithPassword } from '@/lib/opencode/client'
+import { syncProviderAccessForInstance } from '@/lib/opencode/providers'
 import * as docker from './docker'
 import { decryptPassword, generatePassword, encryptPassword } from './crypto'
 import { getStartExpectedMs, getStartTimeoutMs } from './config'
+import { buildMcpConfigForSlug } from './mcp-config'
 
 export type StartResult =
   | { ok: true; status: 'running' }
@@ -57,7 +59,17 @@ export async function startInstance(slug: string, userId: string): Promise<Start
   let containerId: string | null = null
 
   try {
-    const container = await docker.createContainer(slug, password)
+    let opencodeConfigContent: string | undefined
+    try {
+      const mcpConfig = await buildMcpConfigForSlug(slug)
+      if (mcpConfig) {
+        opencodeConfigContent = JSON.stringify(mcpConfig)
+      }
+    } catch {
+      console.warn('[spawner] MCP config build failed')
+    }
+
+    const container = await docker.createContainer(slug, password, opencodeConfigContent)
     containerId = container.id
     await docker.startContainer(container.id)
 
@@ -87,6 +99,18 @@ export async function startInstance(slug: string, userId: string): Promise<Start
         appliedConfigSha
       },
     })
+
+    const owner = await prisma.user.findUnique({
+      where: { slug },
+      select: { id: true },
+    })
+
+    // Provider credentials are per workspace owner (slug), not per actor.
+    const syncUserId = owner?.id ?? userId
+    const syncResult = await syncProviderAccessForInstance({ slug, userId: syncUserId })
+    if (!syncResult.ok) {
+      console.error('[spawner] Failed to sync OpenCode providers', syncResult.error)
+    }
 
     await auditEvent({
       actorUserId: userId,

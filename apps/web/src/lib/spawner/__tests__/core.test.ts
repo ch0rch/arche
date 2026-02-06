@@ -8,6 +8,9 @@ vi.mock('@/lib/prisma', () => ({
       upsert: vi.fn(),
       update: vi.fn(),
     },
+    user: {
+      findUnique: vi.fn(),
+    },
   },
 }))
 
@@ -21,6 +24,11 @@ vi.mock('@/lib/opencode/client', () => ({
   isInstanceHealthyWithPassword: vi.fn(),
 }))
 
+// Mock opencode providers
+vi.mock('@/lib/opencode/providers', () => ({
+  syncProviderAccessForInstance: vi.fn().mockResolvedValue({ ok: true }),
+}))
+
 // Mock docker
 vi.mock('../docker', () => ({
   createContainer: vi.fn(),
@@ -28,6 +36,11 @@ vi.mock('../docker', () => ({
   stopContainer: vi.fn(),
   removeContainer: vi.fn(),
   isContainerRunning: vi.fn(),
+}))
+
+// Mock MCP config
+vi.mock('../mcp-config', () => ({
+  buildMcpConfigForSlug: vi.fn(),
 }))
 
 // Mock crypto
@@ -40,17 +53,22 @@ vi.mock('../crypto', () => ({
 import { prisma } from '@/lib/prisma'
 import { auditEvent } from '@/lib/auth'
 import { isInstanceHealthyWithPassword } from '@/lib/opencode/client'
+import { syncProviderAccessForInstance } from '@/lib/opencode/providers'
 import * as docker from '../docker'
+import { buildMcpConfigForSlug } from '../mcp-config'
 import { startInstance, stopInstance, getInstanceStatus, isSlowStart } from '../core'
 
 const mockPrisma = vi.mocked(prisma)
 const mockDocker = vi.mocked(docker)
+const mockBuildMcpConfigForSlug = vi.mocked(buildMcpConfigForSlug)
 const mockAudit = vi.mocked(auditEvent)
 const mockHealth = vi.mocked(isInstanceHealthyWithPassword)
+const mockSync = vi.mocked(syncProviderAccessForInstance)
 
 beforeEach(() => {
   vi.clearAllMocks()
   mockHealth.mockResolvedValue(true)
+  mockBuildMcpConfigForSlug.mockResolvedValue(null)
 })
 
 describe('startInstance', () => {
@@ -69,9 +87,14 @@ describe('startInstance', () => {
   })
 
   it('creates container and starts it when no existing instance', async () => {
+    mockBuildMcpConfigForSlug.mockResolvedValue({
+      $schema: 'https://opencode.ai/config.json',
+      mcp: {},
+    })
     mockPrisma.instance.findUnique.mockResolvedValue(null)
     mockPrisma.instance.upsert.mockResolvedValue({} as never)
     mockPrisma.instance.update.mockResolvedValue({} as never)
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 'owner-1' } as never)
     mockDocker.createContainer.mockResolvedValue({ id: 'container-123' } as never)
     mockDocker.startContainer.mockResolvedValue(undefined)
     mockDocker.isContainerRunning.mockResolvedValue(true)
@@ -79,8 +102,13 @@ describe('startInstance', () => {
     const result = await startInstance('alice', 'user-1')
 
     expect(result).toEqual({ ok: true, status: 'running' })
-    expect(mockDocker.createContainer).toHaveBeenCalledWith('alice', 'test-password-123')
+    expect(mockDocker.createContainer).toHaveBeenCalledWith(
+      'alice',
+      'test-password-123',
+      '{"$schema":"https://opencode.ai/config.json","mcp":{}}'
+    )
     expect(mockDocker.startContainer).toHaveBeenCalledWith('container-123')
+    expect(mockSync).toHaveBeenCalledWith({ slug: 'alice', userId: 'owner-1' })
     expect(mockAudit).toHaveBeenCalledWith({
       actorUserId: 'user-1',
       action: 'instance.started',

@@ -1,17 +1,25 @@
+# =============================================================================
+# LOCAL DEVELOPMENT ONLY - DO NOT USE IN PRODUCTION
+# =============================================================================
+# This compose file is for local development with hardcoded defaults.
+# For production deployment, use: ./infra/deploy/deploy.sh --remote
+# The deploy script uses Ansible templates with proper secret management.
+# =============================================================================
+
 name: arche
 
 services:
   # Proxy de seguridad para el Podman socket.
   # Filtra operaciones permitidas; tanto Traefik como web lo usan.
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3
+    image: ghcr.io/tecnativa/docker-socket-proxy:master
     environment:
-      CONTAINERS: 1  # listar/inspeccionar contenedores
-      NETWORKS: 1    # ver redes
-      IMAGES: 1      # ver imágenes
-      INFO: 1        # info del daemon
-      POST: 1        # crear contenedores (para spawner)
-      VOLUMES: 1     # crear volúmenes para workspaces
+      CONTAINERS: 1 # listar/inspeccionar contenedores
+      NETWORKS: 1 # ver redes
+      IMAGES: 1 # ver imágenes
+      INFO: 1 # info del daemon
+      POST: 1 # crear contenedores (para spawner)
+      VOLUMES: 1 # crear volúmenes para workspaces
     volumes:
       - /run/podman/podman.sock:/var/run/docker.sock:ro
     networks:
@@ -22,6 +30,8 @@ services:
     depends_on:
       - docker-socket-proxy
     command:
+      # Dashboard enabled for local dev debugging (localhost:8081)
+      # Production deployments disable this via Ansible templates
       - --api.dashboard=true
       - --api.insecure=true
       - --providers.docker=true
@@ -67,6 +77,10 @@ services:
       CONTAINER_PROXY_PORT: "2375"
       # Encryption key for instance passwords (generate with: openssl rand -base64 32)
       ARCHE_ENCRYPTION_KEY: ${ARCHE_ENCRYPTION_KEY:-}
+      # Gateway
+      ARCHE_GATEWAY_TOKEN_SECRET: ${ARCHE_GATEWAY_TOKEN_SECRET:-}
+      ARCHE_GATEWAY_TOKEN_TTL_SECONDS: ${ARCHE_GATEWAY_TOKEN_TTL_SECONDS:-}
+      ARCHE_GATEWAY_BASE_URL: ${ARCHE_GATEWAY_BASE_URL:-}
       # Usar imagen personalizada con git (build con: podman build -t arche-workspace infra/workspace-image)
       OPENCODE_IMAGE: arche-workspace:latest
       OPENCODE_NETWORK: arche-internal
@@ -77,6 +91,8 @@ services:
       # Paths montados en web para lectura Git
       ARCHE_KB_CONTENT_PATH: /kb-content
       ARCHE_CONFIG_REPO_PATH: /kb-config
+      # Path para datos persistentes de usuario
+      ARCHE_USERS_PATH: ${ARCHE_USERS_PATH:-/tmp/arche-users}
     networks:
       - default
       - arche-internal
@@ -84,6 +100,7 @@ services:
       - ./../../apps/web:/app
       - ${KB_CONTENT_HOST_PATH:-/opt/arche/kb-content}:/kb-content
       - ${KB_CONFIG_HOST_PATH:-/opt/arche/kb-config}:/kb-config
+      - ${ARCHE_USERS_PATH:-/tmp/arche-users}:${ARCHE_USERS_PATH:-/tmp/arche-users}
       - arche_web_node_modules:/app/node_modules
     command: sh -lc "apt-get update -y && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/* && corepack enable && pnpm install && pnpm prisma generate && pnpm dev"
     labels:
