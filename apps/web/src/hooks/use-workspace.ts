@@ -166,7 +166,11 @@ export function useWorkspace({
   const [isLoadingDiffs, setIsLoadingDiffs] = useState(false);
   const [diffsError, setDiffsError] = useState<string | null>(null);
   const [diffsRefreshTrigger, setDiffsRefreshTrigger] = useState(0);
+  const [filesRefreshTrigger, setFilesRefreshTrigger] = useState(0);
   const isLoadingDiffsRef = useRef(false);
+  const workspaceRefreshTimeoutRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
 
   // Models
   const [models, setModels] = useState<AvailableModel[]>([]);
@@ -601,6 +605,16 @@ export function useWorkspace({
     [deriveStatusInfoFromPart]
   );
 
+  const scheduleWorkspaceRefresh = useCallback(() => {
+    if (workspaceRefreshTimeoutRef.current) return;
+
+    workspaceRefreshTimeoutRef.current = setTimeout(() => {
+      workspaceRefreshTimeoutRef.current = null;
+      setDiffsRefreshTrigger((prev) => prev + 1);
+      setFilesRefreshTrigger((prev) => prev + 1);
+    }, 250);
+  }, []);
+
   type StreamMode = "send" | "resume";
   type StreamOptions = {
     sessionId: string;
@@ -804,6 +818,11 @@ export function useWorkspace({
                     break;
                   }
 
+                  case "workspace-updated": {
+                    scheduleWorkspaceRefresh();
+                    break;
+                  }
+
                   case "done": {
                     streamCompleted = true;
                     break;
@@ -843,7 +862,7 @@ export function useWorkspace({
           if (result.ok && result.messages) {
             setMessages(result.messages);
           }
-          setDiffsRefreshTrigger((prev) => prev + 1);
+          scheduleWorkspaceRefresh();
         }
 
         if (isLatest) {
@@ -860,6 +879,7 @@ export function useWorkspace({
       syncActiveAgentFromRuntime,
       applyAgentDefaultModel,
       syncSelectedModel,
+      scheduleWorkspaceRefresh,
     ]
   );
 
@@ -932,9 +952,9 @@ export function useWorkspace({
   }, [abortActiveStream, slug, activeSessionId]);
 
   // Load diffs
-  const refreshDiffs = useCallback(async () => {
+  const refreshDiffs = useCallback(async (options?: { force?: boolean }) => {
     if (!enabled) return;
-    if (!isConnected) return;
+    if (!options?.force && !isConnected) return;
 
     // Avoid overlapping refreshes (interval + manual triggers)
     if (isLoadingDiffsRef.current) return;
@@ -1071,7 +1091,7 @@ export function useWorkspace({
           loadSessions(),
           loadModels(),
           loadAgentCatalog(),
-          refreshDiffs(),
+          refreshDiffs({ force: true }),
         ]);
       } else if (retryCount < MAX_RETRIES) {
         // Retry with exponential backoff (1s, 2s, 4s, 8s... capped at 30s)
@@ -1158,6 +1178,12 @@ export function useWorkspace({
   }, [diffsRefreshTrigger, isConnected, refreshDiffs]);
 
   useEffect(() => {
+    if (filesRefreshTrigger > 0 && isConnected) {
+      refreshFiles();
+    }
+  }, [filesRefreshTrigger, isConnected, refreshFiles]);
+
+  useEffect(() => {
     if (!activeAgentId) return;
     applyAgentDefaultModel(activeAgentId);
   }, [activeAgentId, applyAgentDefaultModel]);
@@ -1176,6 +1202,10 @@ export function useWorkspace({
 
   useEffect(() => {
     return () => {
+      if (workspaceRefreshTimeoutRef.current) {
+        clearTimeout(workspaceRefreshTimeoutRef.current);
+        workspaceRefreshTimeoutRef.current = null;
+      }
       abortActiveStream();
     };
   }, [abortActiveStream]);

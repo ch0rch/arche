@@ -46,8 +46,10 @@ type ChatPanelProps = {
   sessions: ChatSession[];
   messages: ChatMessage[];
   activeSessionId: string | null;
+  sessionTabs?: Array<{ id: string; title: string; depth: number }>;
   openFilesCount: number;
   onCloseSession: (id: string) => void;
+  onSelectSessionTab?: (id: string) => void;
   onOpenFile: (path: string) => void;
   onShowContext?: () => void;
   // New props for real functionality
@@ -824,8 +826,10 @@ export function ChatPanel({
   sessions,
   messages,
   activeSessionId,
+  sessionTabs = [],
   openFilesCount,
   onCloseSession,
+  onSelectSessionTab,
   onOpenFile,
   onShowContext,
   onSendMessage,
@@ -949,6 +953,38 @@ export function ChatPanel({
           </DropdownMenu>
         ) : null}
       </div>
+
+      {sessionTabs.length > 1 ? (
+        <div className="border-b border-white/10 px-2 py-2">
+          <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
+            {sessionTabs.map((sessionTab) => {
+              const isSubtask = sessionTab.depth > 0;
+              const isActive = sessionTab.id === activeSessionId;
+
+              return (
+                <button
+                  key={sessionTab.id}
+                  type="button"
+                  onClick={() => onSelectSessionTab?.(sessionTab.id)}
+                  className={cn(
+                    "flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors",
+                    isActive
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                  )}
+                >
+                  {isSubtask ? (
+                    <TreeStructure size={12} weight={isActive ? "fill" : "bold"} />
+                  ) : (
+                    <ChatCircle size={12} weight={isActive ? "fill" : "bold"} />
+                  )}
+                  <span className="max-w-[180px] truncate">{sessionTab.title}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
 
       {/* Messages area */}
       <div className="flex-1 overflow-y-auto px-6 py-6 scrollbar-custom">

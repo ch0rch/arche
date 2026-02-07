@@ -6,7 +6,7 @@ import { ensureInstanceRunningAction } from "@/actions/spawner";
 import type { SyncKbResult } from "@/app/api/instances/[slug]/sync-kb/route";
 import { useWorkspaceTheme } from "@/contexts/workspace-theme-context";
 import { useWorkspace } from "@/hooks/use-workspace";
-import type { WorkspaceFileNode } from "@/lib/opencode/types";
+import type { WorkspaceFileNode, WorkspaceSession } from "@/lib/opencode/types";
 import { cn } from "@/lib/utils";
 
 import { ChatPanel } from "./chat-panel";
@@ -91,6 +91,49 @@ const persistLayout = (key: string, state: StoredLayoutState) => {
   window.localStorage.setItem(key, JSON.stringify(state));
 };
 
+function resolveRootSessionId(
+  sessionId: string | null,
+  sessionsById: Map<string, WorkspaceSession>
+): string | null {
+  if (!sessionId) return null;
+
+  let cursorId: string | null = sessionId;
+  const visited = new Set<string>();
+
+  while (cursorId) {
+    if (visited.has(cursorId)) return cursorId;
+    visited.add(cursorId);
+
+    const current = sessionsById.get(cursorId);
+    if (!current) return cursorId;
+    if (!current.parentId || !sessionsById.has(current.parentId)) {
+      return current.id;
+    }
+    cursorId = current.parentId;
+  }
+
+  return sessionId;
+}
+
+function getSessionDepth(
+  session: WorkspaceSession,
+  sessionsById: Map<string, WorkspaceSession>
+): number {
+  let depth = 0;
+  let cursor = session;
+  const visited = new Set<string>([session.id]);
+
+  while (cursor.parentId) {
+    const parent = sessionsById.get(cursor.parentId);
+    if (!parent || visited.has(parent.id)) break;
+    depth += 1;
+    visited.add(parent.id);
+    cursor = parent;
+  }
+
+  return depth;
+}
+
 // File content cache for preview panel
 type FileContentCache = Record<string, { content: string; type: 'raw' | 'patch'; title: string; updatedAt: string; size: string }>;
 
@@ -143,6 +186,57 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
   // Use workspace hook only when instance is running
   const workspace = useWorkspace({ slug, pollInterval: 5000, enabled: instanceStatus === 'running' });
+
+  const sessionsById = useMemo(() => {
+    const map = new Map<string, WorkspaceSession>();
+    workspace.sessions.forEach((session) => {
+      map.set(session.id, session);
+    });
+    return map;
+  }, [workspace.sessions]);
+
+  const rootSessions = useMemo(() => {
+    return workspace.sessions.filter((session) => {
+      if (!session.parentId) return true;
+      return !sessionsById.has(session.parentId);
+    });
+  }, [workspace.sessions, sessionsById]);
+
+  const activeRootSessionId = useMemo(
+    () => resolveRootSessionId(workspace.activeSessionId, sessionsById),
+    [workspace.activeSessionId, sessionsById]
+  );
+
+  const activeSessionTabs = useMemo(() => {
+    if (!activeRootSessionId) return [];
+
+    const belongsToRoot = (session: WorkspaceSession) => {
+      let cursor: WorkspaceSession | undefined = session;
+      const visited = new Set<string>();
+
+      while (cursor) {
+        if (cursor.id === activeRootSessionId) return true;
+        if (!cursor.parentId || visited.has(cursor.id)) return false;
+        visited.add(cursor.id);
+        cursor = sessionsById.get(cursor.parentId);
+      }
+
+      return false;
+    };
+
+    const root = sessionsById.get(activeRootSessionId);
+    const descendants = workspace.sessions
+      .filter((session) => session.id !== activeRootSessionId && belongsToRoot(session))
+      .sort((a, b) => (b.updatedAtRaw ?? 0) - (a.updatedAtRaw ?? 0));
+
+    const ordered = root ? [root, ...descendants] : descendants;
+
+    return ordered.map((session) => ({
+      id: session.id,
+      title: session.title,
+      depth: getSessionDepth(session, sessionsById),
+    }));
+  }, [activeRootSessionId, sessionsById, workspace.sessions]);
 
   // Auto-sync KB on first connection
   const hasAutoSynced = useRef(false);
@@ -463,9 +557,13 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     workspace.selectSession(sessionId);
   }, [workspace]);
 
-  const handleCreateSession = useCallback(async () => {
-    await workspace.createSession(`Session ${workspace.sessions.length + 1}`);
+  const handleSelectSessionTab = useCallback((sessionId: string) => {
+    workspace.selectSession(sessionId);
   }, [workspace]);
+
+  const handleCreateSession = useCallback(async () => {
+    await workspace.createSession(`Session ${rootSessions.length + 1}`);
+  }, [rootSessions.length, workspace]);
 
   const handleCloseSession = useCallback(async (sessionId: string) => {
     await workspace.deleteSession(sessionId);
@@ -714,8 +812,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               }}
             >
               <LeftPanel
-                sessions={workspace.sessions}
-                activeSessionId={workspace.activeSessionId}
+                sessions={rootSessions}
+                activeSessionId={activeRootSessionId}
                 onSelectSession={handleSelectSession}
                 onCreateSession={handleCreateSession}
                 agents={workspace.agentCatalog}
@@ -748,8 +846,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               sessions={uiSessions}
               messages={uiMessages}
               activeSessionId={workspace.activeSessionId}
+              sessionTabs={activeSessionTabs}
               openFilesCount={openFilePaths.length}
               onCloseSession={handleCloseSession}
+              onSelectSessionTab={handleSelectSessionTab}
               onOpenFile={handleOpenFile}
               onShowContext={() => {
                 setRightCollapsed(false);
