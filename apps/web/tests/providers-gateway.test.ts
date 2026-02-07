@@ -159,6 +159,151 @@ describe('providers gateway', () => {
     expect(headers.get('accept-encoding')).toBe('identity')
   })
 
+  it('normalizes unsupported OpenAI text verbosity for responses API', async () => {
+    mockGetActiveCredentialForUser.mockResolvedValue({
+      id: 'cred-1',
+      type: 'api',
+      secret: 'encrypted',
+      version: 1,
+    })
+    mockDecryptProviderSecret.mockReturnValue({ apiKey: 'sk-real' })
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('ok', { status: 200, headers: { 'content-type': 'application/json' } })
+    )
+
+    const requestBody = {
+      model: 'gpt-5.2-chat-latest',
+      input: 'hello',
+      text: { verbosity: 'low' },
+    }
+    const requestBodyJson = JSON.stringify(requestBody)
+
+    await callProxy({
+      provider: 'openai',
+      path: ['responses'],
+      headers: {
+        Authorization: 'Bearer internal-token',
+        'Content-Type': 'application/json',
+        'Content-Length': String(Buffer.byteLength(requestBodyJson)),
+      },
+      body: requestBodyJson,
+      query: '',
+    })
+
+    const [, options] = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const headers = options.headers as Headers
+    const upstreamBody = JSON.parse(options.body as string) as { text?: { verbosity?: string } }
+    expect(upstreamBody.text?.verbosity).toBe('medium')
+    expect(headers.get('content-length')).toBe(null)
+  })
+
+  it('normalizes unsupported OpenAI reasoning effort for responses API', async () => {
+    mockGetActiveCredentialForUser.mockResolvedValue({
+      id: 'cred-1',
+      type: 'api',
+      secret: 'encrypted',
+      version: 1,
+    })
+    mockDecryptProviderSecret.mockReturnValue({ apiKey: 'sk-real' })
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('ok', { status: 200, headers: { 'content-type': 'application/json' } })
+    )
+
+    await callProxy({
+      provider: 'openai',
+      path: ['responses'],
+      headers: {
+        Authorization: 'Bearer internal-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'gpt-5.2-chat-latest',
+        input: 'hello',
+        reasoning: { effort: 'low' },
+        reasoning_effort: 'low',
+      }),
+      query: '',
+    })
+
+    const [, options] = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const upstreamBody = JSON.parse(options.body as string) as {
+      reasoning?: { effort?: string }
+      reasoning_effort?: string
+    }
+    expect(upstreamBody.reasoning?.effort).toBe('medium')
+    expect(upstreamBody.reasoning_effort).toBe('medium')
+  })
+
+  it('retries transient OpenAI responses upstream socket errors', async () => {
+    mockGetActiveCredentialForUser.mockResolvedValue({
+      id: 'cred-1',
+      type: 'api',
+      secret: 'encrypted',
+      version: 1,
+    })
+    mockDecryptProviderSecret.mockReturnValue({ apiKey: 'sk-real' })
+
+    const transientError = Object.assign(new Error('socket closed'), {
+      cause: { code: 'UND_ERR_SOCKET' },
+    })
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(transientError)
+      .mockRejectedValueOnce(transientError)
+      .mockResolvedValueOnce(new Response('ok', { status: 200 }))
+
+    const response = await callProxy({
+      provider: 'openai',
+      path: ['responses'],
+      headers: {
+        Authorization: 'Bearer internal-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model: 'gpt-5.2-chat-latest', input: 'hello' }),
+      query: '',
+    })
+
+    expect(response.status).toBe(200)
+    expect(global.fetch).toHaveBeenCalledTimes(3)
+  })
+
+  it('returns 502 when OpenAI responses upstream stays unavailable', async () => {
+    mockGetActiveCredentialForUser.mockResolvedValue({
+      id: 'cred-1',
+      type: 'api',
+      secret: 'encrypted',
+      version: 1,
+    })
+    mockDecryptProviderSecret.mockReturnValue({ apiKey: 'sk-real' })
+
+    const transientError = Object.assign(new Error('socket closed'), {
+      cause: { code: 'UND_ERR_SOCKET' },
+    })
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(transientError)
+      .mockRejectedValueOnce(transientError)
+      .mockRejectedValueOnce(transientError)
+
+    const response = await callProxy({
+      provider: 'openai',
+      path: ['responses'],
+      headers: {
+        Authorization: 'Bearer internal-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ model: 'gpt-5.2-chat-latest', input: 'hello' }),
+      query: '',
+    })
+
+    const body = await response.json()
+    expect(response.status).toBe(502)
+    expect(body.error).toBe('provider_unavailable')
+    expect(global.fetch).toHaveBeenCalledTimes(3)
+  })
+
   it('strips content-encoding/content-length from upstream response', async () => {
     mockGetActiveCredentialForUser.mockResolvedValue({
       id: 'cred-1',

@@ -13,6 +13,30 @@ const PROVIDER_BASE_URL: Record<ProviderId, string> = {
   openrouter: 'https://openrouter.ai/api/v1',
 }
 
+const OPENAI_RESPONSES_MAX_FETCH_ATTEMPTS = 3
+const OPENAI_RESPONSES_RETRY_DELAY_MS = 250
+const RETRYABLE_FETCH_ERROR_CODES = new Set([
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_SOCKET',
+  'ECONNRESET',
+  'EPIPE',
+  'ETIMEDOUT',
+])
+
+const HOP_BY_HOP_HEADERS = [
+  'connection',
+  'content-length',
+  'host',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]
+
 function isProviderId(value: string): value is ProviderId {
   return PROVIDERS.includes(value as ProviderId)
 }
@@ -44,11 +68,120 @@ function buildUpstreamUrl(base: string, path: string[] | string | undefined, req
   return upstream.toString()
 }
 
+function normalizeOpenAiResponsesPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return payload
+  }
+
+  const body = payload as Record<string, unknown>
+  let normalizedBody: Record<string, unknown> | null = null
+
+  const ensureNormalizedBody = (): Record<string, unknown> => {
+    if (normalizedBody) {
+      return normalizedBody
+    }
+    normalizedBody = { ...body }
+    return normalizedBody
+  }
+
+  const text = body.text
+
+  if (text && typeof text === 'object' && !Array.isArray(text)) {
+    const textObject = text as Record<string, unknown>
+    if (textObject.verbosity === 'low') {
+      ensureNormalizedBody().text = {
+        ...textObject,
+        verbosity: 'medium',
+      }
+    }
+  }
+
+  const reasoning = body.reasoning
+  if (reasoning && typeof reasoning === 'object' && !Array.isArray(reasoning)) {
+    const reasoningObject = reasoning as Record<string, unknown>
+    if (reasoningObject.effort === 'low') {
+      ensureNormalizedBody().reasoning = {
+        ...reasoningObject,
+        effort: 'medium',
+      }
+    }
+  }
+
+  if (body.reasoning_effort === 'low') {
+    ensureNormalizedBody().reasoning_effort = 'medium'
+  }
+
+  return normalizedBody ?? payload
+}
+
+function isRetryableFetchError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false
+  }
+
+  const directCode = (error as Error & { code?: string }).code
+  if (directCode && RETRYABLE_FETCH_ERROR_CODES.has(directCode)) {
+    return true
+  }
+
+  const causeCode = (error as Error & { cause?: { code?: string } }).cause?.code
+  return Boolean(causeCode && RETRYABLE_FETCH_ERROR_CODES.has(causeCode))
+}
+
+function getFetchErrorCode(error: unknown): string | null {
+  if (!(error instanceof Error)) {
+    return null
+  }
+
+  const directCode = (error as Error & { code?: string }).code
+  if (directCode) {
+    return directCode
+  }
+
+  const causeCode = (error as Error & { cause?: { code?: string } }).cause?.code
+  return causeCode ?? null
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, maxAttempts: number): Promise<Response> {
+  let attempt = 1
+
+  while (true) {
+    try {
+      return await fetch(url, init)
+    } catch (error) {
+      if (attempt >= maxAttempts || !isRetryableFetchError(error)) {
+        throw error
+      }
+
+      const backoffMs = OPENAI_RESPONSES_RETRY_DELAY_MS * attempt
+      await new Promise((resolve) => setTimeout(resolve, backoffMs))
+      attempt += 1
+    }
+  }
+}
+
+function stripHopByHopHeaders(headers: Headers): void {
+  const connectionHeader = headers.get('connection')
+  if (connectionHeader) {
+    for (const value of connectionHeader.split(',')) {
+      const headerName = value.trim().toLowerCase()
+      if (headerName) {
+        headers.delete(headerName)
+      }
+    }
+  }
+
+  for (const headerName of HOP_BY_HOP_HEADERS) {
+    headers.delete(headerName)
+  }
+}
+
 async function handleProxy(
   request: NextRequest,
   { params }: { params: Promise<{ provider: string; path?: string[] | string }> }
 ) {
   const { provider, path } = await params
+  const pathSegments = Array.isArray(path) ? [...path] : path ? [path] : []
 
   if (!isProviderId(provider)) {
     return NextResponse.json({ error: 'invalid_provider' }, { status: 400 })
@@ -95,9 +228,10 @@ async function handleProxy(
   }
 
   const apiKey = secret.apiKey.trim()
-  const upstreamUrl = buildUpstreamUrl(PROVIDER_BASE_URL[provider], path, new URL(request.url))
+  const upstreamUrl = buildUpstreamUrl(PROVIDER_BASE_URL[provider], pathSegments, new URL(request.url))
 
   const headers = new Headers(request.headers)
+  stripHopByHopHeaders(headers)
   headers.delete('authorization')
   headers.delete('x-api-key')
 
@@ -121,12 +255,44 @@ async function handleProxy(
     method: request.method,
     headers,
   }
+
+  const contentType = headers.get('content-type') ?? ''
+  const isOpenAiResponsesRequest =
+    provider === 'openai' &&
+    request.method === 'POST' &&
+    pathSegments[0] === 'responses' &&
+    contentType.includes('application/json')
+
   if (hasBody) {
-    init.body = request.body
-    init.duplex = 'half'
+    if (isOpenAiResponsesRequest) {
+      try {
+        const parsedBody = await request.clone().json()
+        const normalizedBody = normalizeOpenAiResponsesPayload(parsedBody)
+        init.body = JSON.stringify(normalizedBody)
+      } catch {
+        init.body = await request.arrayBuffer()
+      }
+    } else {
+      init.body = request.body
+      init.duplex = 'half'
+    }
   }
 
-  const upstreamResponse = await fetch(upstreamUrl, init)
+  const maxAttempts = isOpenAiResponsesRequest ? OPENAI_RESPONSES_MAX_FETCH_ATTEMPTS : 1
+
+  let upstreamResponse: Response
+  try {
+    upstreamResponse = await fetchWithRetry(upstreamUrl, init, maxAttempts)
+  } catch (error) {
+    console.error('[providers/gateway] upstream fetch failed', {
+      provider,
+      path: pathSegments.join('/'),
+      code: getFetchErrorCode(error),
+      message: error instanceof Error ? error.message : 'unknown_error',
+    })
+    return NextResponse.json({ error: 'provider_unavailable' }, { status: 502 })
+  }
+
   const responseHeaders = new Headers(upstreamResponse.headers)
 
   // Ensure response headers match the returned body.
