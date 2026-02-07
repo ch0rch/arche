@@ -81,16 +81,18 @@ export function CreateUserDialog({ open, slug, onOpenChange, onUserCreated }: Cr
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-xl">
+      <DialogContent className="scrollbar-custom max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Create user</DialogTitle>
+          <DialogTitle className="font-[family-name:var(--font-display)] text-xl">
+            Add user
+          </DialogTitle>
           <DialogDescription>
             Create a new account and assign the initial role.
           </DialogDescription>
         </DialogHeader>
 
-        <form className="space-y-4" onSubmit={handleSubmit}>
-          <div className="space-y-2">
+        <form className="space-y-5" onSubmit={handleSubmit}>
+          <div className="space-y-1.5">
             <Label htmlFor="create-user-email">Email</Label>
             <Input
               id="create-user-email"
@@ -104,7 +106,7 @@ export function CreateUserDialog({ open, slug, onOpenChange, onUserCreated }: Cr
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="create-user-slug">Slug</Label>
               <Input
                 id="create-user-slug"
@@ -115,11 +117,11 @@ export function CreateUserDialog({ open, slug, onOpenChange, onUserCreated }: Cr
               />
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <Label htmlFor="create-user-role">Role</Label>
               <select
                 id="create-user-role"
-                className="flex h-10 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-2"
+                className="flex h-10 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-2"
                 value={role}
                 onChange={(event) => setRole(event.target.value === 'ADMIN' ? 'ADMIN' : 'USER')}
               >
@@ -129,7 +131,7 @@ export function CreateUserDialog({ open, slug, onOpenChange, onUserCreated }: Cr
             </div>
           </div>
 
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="create-user-password">Password</Label>
             <Input
               id="create-user-password"
@@ -148,9 +150,12 @@ export function CreateUserDialog({ open, slug, onOpenChange, onUserCreated }: Cr
             </p>
           ) : null}
 
-          <div className="flex justify-end">
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
             <Button type="submit" disabled={isSaving}>
-              {isSaving ? 'Creating...' : 'Create user'}
+              {isSaving ? 'Creating...' : 'Add user'}
             </Button>
           </div>
         </form>

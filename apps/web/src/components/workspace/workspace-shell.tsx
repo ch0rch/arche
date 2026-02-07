@@ -663,6 +663,17 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     : "";
   const themeClassName = `theme-${theme.id}`;
 
+  // Sync theme classes to <html> so Radix portals (dropdowns, tooltips)
+  // rendered outside this container still inherit the correct theme.
+  useEffect(() => {
+    const root = document.documentElement;
+    const classes = [themeClassName, ...(darkModeClasses ? darkModeClasses.split(" ") : [])];
+    classes.forEach((c) => root.classList.add(c));
+    return () => {
+      classes.forEach((c) => root.classList.remove(c));
+    };
+  }, [darkModeClasses, themeClassName]);
+
   // Loading screen while instance is starting
   if (instanceStatus !== 'running') {
     return (

@@ -97,98 +97,105 @@ export function TeamPageClient({ slug, isAdmin, currentUserId }: TeamPageClientP
     }
   }, [])
 
-  if (isLoading) {
-    return (
-      <div className="flex min-h-[280px] items-center justify-center rounded-xl border border-border/60 bg-card/40">
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <SpinnerGap size={16} className="animate-spin" />
-          Loading team directory...
-        </div>
-      </div>
-    )
-  }
-
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-card/40 p-4">
-        <p className="text-sm text-muted-foreground">
-          Everyone can browse the directory. Only admins can manage users and provider access.
-        </p>
+    <main className="relative mx-auto max-w-6xl px-6 py-10">
+      <div className="space-y-8">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="space-y-2">
+            <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
+              Team
+            </h1>
+            <p className="text-muted-foreground">
+              Directory of all users in this Arche installation.
+            </p>
+          </div>
+          {isAdmin ? (
+            <Button variant="outline" onClick={() => setIsCreateDialogOpen(true)}>Add user</Button>
+          ) : null}
+        </div>
+
+        {isLoading ? (
+          <div className="flex min-h-[280px] items-center justify-center rounded-xl border border-border/60 bg-card/40">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <SpinnerGap size={16} className="animate-spin" />
+              Loading team directory...
+            </div>
+          </div>
+        ) : null}
+
+        {!isLoading && loadError ? (
+          <div className="rounded-lg border border-border/60 bg-card/50 p-4 text-sm text-destructive">
+            Failed to load team directory: {loadError}
+            <div className="mt-3">
+              <Button variant="outline" size="sm" onClick={loadUsers}>
+                Retry
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {!isLoading && !loadError && sortedUsers.length === 0 ? (
+          <div className="rounded-xl border border-dashed border-border/60 bg-card/40 p-8 text-center text-sm text-muted-foreground">
+            No users found.
+          </div>
+        ) : null}
+
+        {!isLoading && !loadError && sortedUsers.length > 0 ? (
+          <div className="space-y-3">
+            {sortedUsers.map((user) => (
+              <Card key={user.id} className="border-border/60 bg-card/40">
+                <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+                  <div className="min-w-0 space-y-1">
+                    <p className="truncate text-sm font-semibold text-foreground">{user.email}</p>
+                    <p className="text-xs text-muted-foreground">
+                      /{user.slug} - created {formatCreatedAt(user.createdAt)}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <Badge variant={user.role === 'ADMIN' ? 'default' : 'secondary'}>{user.role}</Badge>
+                    {user.id === currentUserId ? <Badge variant="outline">You</Badge> : null}
+                    {isAdmin ? (
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                        onClick={() => {
+                          setEditingUser(user)
+                          setIsEditDialogOpen(true)
+                        }}
+                        aria-label={`Edit ${user.email}`}
+                      >
+                        <PencilSimple size={16} weight="bold" />
+                      </Button>
+                    ) : null}
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : null}
+
         {isAdmin ? (
-          <Button onClick={() => setIsCreateDialogOpen(true)}>Create user</Button>
+          <CreateUserDialog
+            open={isCreateDialogOpen}
+            slug={slug}
+            onOpenChange={setIsCreateDialogOpen}
+            onUserCreated={handleUserCreated}
+          />
+        ) : null}
+
+        {isAdmin ? (
+          <EditUserDialog
+            open={isEditDialogOpen}
+            slug={slug}
+            user={editingUser}
+            onOpenChange={handleEditOpenChange}
+            onUserUpdated={handleUserUpdated}
+            onUserDeleted={handleUserDeleted}
+          />
         ) : null}
       </div>
-
-      {loadError ? (
-        <div className="rounded-lg border border-border/60 bg-card/50 p-4 text-sm text-destructive">
-          Failed to load team directory: {loadError}
-          <div className="mt-3">
-            <Button variant="outline" size="sm" onClick={loadUsers}>
-              Retry
-            </Button>
-          </div>
-        </div>
-      ) : null}
-
-      {!loadError && sortedUsers.length === 0 ? (
-        <div className="rounded-xl border border-dashed border-border/60 bg-card/40 p-8 text-center text-sm text-muted-foreground">
-          No users found.
-        </div>
-      ) : null}
-
-      <div className="space-y-3">
-        {sortedUsers.map((user) => (
-          <Card key={user.id} className="border-border/60 bg-card/40">
-            <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
-              <div className="min-w-0 space-y-1">
-                <p className="truncate text-sm font-semibold text-foreground">{user.email}</p>
-                <p className="text-xs text-muted-foreground">
-                  /{user.slug} - created {formatCreatedAt(user.createdAt)}
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <Badge variant={user.role === 'ADMIN' ? 'default' : 'secondary'}>{user.role}</Badge>
-                {user.id === currentUserId ? <Badge variant="outline">You</Badge> : null}
-                {isAdmin ? (
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                    onClick={() => {
-                      setEditingUser(user)
-                      setIsEditDialogOpen(true)
-                    }}
-                    aria-label={`Edit ${user.email}`}
-                  >
-                    <PencilSimple size={16} weight="bold" />
-                  </Button>
-                ) : null}
-              </div>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-
-      {isAdmin ? (
-        <CreateUserDialog
-          open={isCreateDialogOpen}
-          slug={slug}
-          onOpenChange={setIsCreateDialogOpen}
-          onUserCreated={handleUserCreated}
-        />
-      ) : null}
-
-      {isAdmin ? (
-        <EditUserDialog
-          open={isEditDialogOpen}
-          slug={slug}
-          user={editingUser}
-          onOpenChange={handleEditOpenChange}
-          onUserUpdated={handleUserUpdated}
-          onUserDeleted={handleUserDeleted}
-        />
-      ) : null}
-    </div>
+    </main>
   )
 }

@@ -1,6 +1,6 @@
 'use client'
 
-import { type ReactNode } from 'react'
+import { useEffect, type ReactNode } from 'react'
 
 import { useWorkspaceTheme } from '@/contexts/workspace-theme-context'
 import { cn } from '@/lib/utils'
@@ -16,6 +16,17 @@ export function DashboardThemeShell({ children }: DashboardThemeShellProps) {
   const darkModeClasses = theme.isDark
     ? `dark ${theme.darkVariant === 'ash' ? 'dark-ash' : 'dark-ember'}`
     : ''
+
+  // Sync theme classes to <html> so Radix portals (dialogs, dropdowns)
+  // rendered outside this container still inherit the correct theme.
+  useEffect(() => {
+    const root = document.documentElement
+    const classes = [themeClassName, ...(darkModeClasses ? darkModeClasses.split(' ') : [])]
+    classes.forEach((c) => root.classList.add(c))
+    return () => {
+      classes.forEach((c) => root.classList.remove(c))
+    }
+  }, [darkModeClasses, themeClassName])
 
   return (
     <div

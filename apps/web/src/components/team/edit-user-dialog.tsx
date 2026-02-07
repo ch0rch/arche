@@ -63,6 +63,7 @@ export function EditUserDialog({
   const [role, setRole] = useState<TeamUserRole>('USER')
   const [isSavingRole, setIsSavingRole] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
 
   const [providers, setProviders] = useState<TeamProviderStatus[]>([])
@@ -78,6 +79,7 @@ export function EditUserDialog({
     setActionError(null)
     setProviderError(null)
     setProviderApiKeys({})
+    setShowDeleteConfirm(false)
   }, [open, user])
 
   const loadProviders = useCallback(async () => {
@@ -145,9 +147,6 @@ export function EditUserDialog({
 
   async function handleDeleteUser() {
     if (!user || isDeleting) return
-
-    const confirmed = window.confirm(`Delete user "${user.email}"?`)
-    if (!confirmed) return
 
     setActionError(null)
     setIsDeleting(true)
@@ -230,24 +229,32 @@ export function EditUserDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+      <DialogContent className="scrollbar-custom max-h-[90vh] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
-          <DialogTitle>Edit user</DialogTitle>
+          <DialogTitle className="font-[family-name:var(--font-display)] text-xl">
+            Edit user
+          </DialogTitle>
           <DialogDescription>
-            {user ? `${user.email} (${user.slug})` : 'Select a user to manage role and provider access.'}
+            {user ? `${user.email} (/${user.slug})` : 'Select a user to manage role and provider access.'}
           </DialogDescription>
         </DialogHeader>
 
         {!user ? null : (
           <div className="space-y-6">
-            <form className="space-y-3 rounded-xl border border-border/60 bg-card/50 p-4" onSubmit={handleSaveRole}>
-              <h3 className="text-sm font-semibold">Role</h3>
+            {actionError ? (
+              <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                {actionError}
+              </p>
+            ) : null}
+
+            <form className="space-y-4" onSubmit={handleSaveRole}>
+              <h3 className="text-sm font-semibold text-foreground">Role</h3>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-                <div className="w-full space-y-2 sm:max-w-xs">
-                  <Label htmlFor="edit-user-role">Role</Label>
+                <div className="w-full space-y-1.5 sm:max-w-xs">
+                  <Label htmlFor="edit-user-role" className="sr-only">Role</Label>
                   <select
                     id="edit-user-role"
-                    className="flex h-10 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-2"
+                    className="flex h-10 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-2"
                     value={role}
                     onChange={(event) => setRole(event.target.value === 'ADMIN' ? 'ADMIN' : 'USER')}
                   >
@@ -256,15 +263,17 @@ export function EditUserDialog({
                   </select>
                 </div>
 
-                <Button type="submit" disabled={isSavingRole || role === user.role}>
-                  {isSavingRole ? 'Saving role...' : 'Save role'}
+                <Button type="submit" size="sm" disabled={isSavingRole || role === user.role}>
+                  {isSavingRole ? 'Saving...' : 'Save role'}
                 </Button>
               </div>
             </form>
 
-            <div className="space-y-3 rounded-xl border border-border/60 bg-card/50 p-4">
+            <div className="h-px bg-border" />
+
+            <div className="space-y-4">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold">Provider credentials</h3>
+                <h3 className="text-sm font-semibold text-foreground">Provider credentials</h3>
                 {isLoadingProviders ? (
                   <span className="text-xs text-muted-foreground">Loading...</span>
                 ) : null}
@@ -284,10 +293,10 @@ export function EditUserDialog({
                   const canSave = Boolean(providerApiKeys[provider.providerId]?.trim())
 
                   return (
-                    <div key={provider.providerId} className="rounded-lg border border-border/60 p-3">
+                    <div key={provider.providerId} className="rounded-xl border border-border/60 p-4">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div>
-                          <p className="text-sm font-medium">{providerLabel(provider.providerId)}</p>
+                          <p className="text-sm font-medium text-foreground">{providerLabel(provider.providerId)}</p>
                           <p className="text-xs text-muted-foreground">
                             {provider.version ? `Version ${provider.version}` : 'No credential set'}
                           </p>
@@ -331,21 +340,51 @@ export function EditUserDialog({
               </div>
             </div>
 
-            <div className="space-y-3 rounded-xl border border-destructive/30 bg-destructive/5 p-4">
-              <h3 className="text-sm font-semibold text-foreground">Delete user</h3>
+            <div className="h-px bg-border" />
+
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold text-destructive">Delete user</h3>
               <p className="text-sm text-muted-foreground">
                 This permanently removes the user account. The last admin cannot be deleted.
               </p>
-              <Button type="button" variant="destructive" disabled={isDeleting} onClick={handleDeleteUser}>
-                {isDeleting ? 'Deleting...' : 'Delete user'}
-              </Button>
-            </div>
 
-            {actionError ? (
-              <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {actionError}
-              </p>
-            ) : null}
+              {showDeleteConfirm ? (
+                <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-4 space-y-3">
+                  <p className="text-sm text-foreground">
+                    Are you sure you want to delete <span className="font-semibold">{user.email}</span>? This action cannot be undone.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      disabled={isDeleting}
+                      onClick={handleDeleteUser}
+                    >
+                      {isDeleting ? 'Deleting...' : 'Confirm delete'}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={isDeleting}
+                      onClick={() => setShowDeleteConfirm(false)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={() => setShowDeleteConfirm(true)}
+                >
+                  Delete user
+                </Button>
+              )}
+            </div>
           </div>
         )}
       </DialogContent>

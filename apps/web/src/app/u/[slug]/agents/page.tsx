@@ -30,7 +30,7 @@ export default async function AgentsPage({
             </p>
           </div>
           {isAdmin && (
-            <Button asChild>
+            <Button variant="outline" asChild>
               <Link href={`/u/${slug}/agents/new`}>Create agent</Link>
             </Button>
           )}

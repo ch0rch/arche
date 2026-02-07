@@ -15,6 +15,7 @@ import {
   GitDiff,
   Info,
   Lightbulb,
+  MagnifyingGlass,
   PaperPlaneTilt,
   PencilSimple,
   Question,
@@ -849,6 +850,7 @@ export function ChatPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [inputValue, setInputValue] = useState("");
+  const [modelSearch, setModelSearch] = useState("");
 
   // Handle agent mention insertion from left panel
   useEffect(() => {
@@ -1139,40 +1141,69 @@ export function ChatPanel({
                 <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   Model
                 </span>
-                <DropdownMenu>
+                <DropdownMenu onOpenChange={(open) => { if (!open) setModelSearch(""); }}>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
                       className="flex items-center gap-1.5 rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground transition-colors hover:bg-foreground/10"
                     >
                       <span className="max-w-[200px] truncate">
-                        {selectedModel 
+                        {selectedModel
                           ? `${selectedModel.providerName} / ${selectedModel.modelName}`
                           : 'Select model'}
                       </span>
                       <CaretDown size={12} weight="bold" />
                     </button>
                   </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start" className="max-h-64 overflow-y-auto">
-                    {models.map((model) => (
-                      <DropdownMenuItem
-                        key={`${model.providerId}-${model.modelId}`}
-                        onClick={() => onSelectModel?.(model)}
-                        className={cn(
-                          selectedModel?.modelId === model.modelId && 
-                          selectedModel?.providerId === model.providerId && 
-                          "bg-primary/10"
-                        )}
-                      >
-                        <div className="flex flex-col">
-                          <span className="font-medium">{model.modelName}</span>
-                          <span className="text-xs text-muted-foreground">{model.providerName}</span>
-                        </div>
-                        {model.isDefault && (
-                          <span className="ml-auto text-[10px] text-primary">Default</span>
-                        )}
-                      </DropdownMenuItem>
-                    ))}
+                  <DropdownMenuContent align="start" className="w-72 p-0">
+                    <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+                      <MagnifyingGlass size={14} className="shrink-0 text-muted-foreground" />
+                      <input
+                        type="text"
+                        placeholder="Search models..."
+                        value={modelSearch}
+                        onChange={(e) => setModelSearch(e.target.value)}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
+                      />
+                    </div>
+                    <div className="scrollbar-custom max-h-64 overflow-y-auto p-1">
+                      {models
+                        .filter((model) => {
+                          if (!modelSearch) return true;
+                          const q = modelSearch.toLowerCase();
+                          return (
+                            model.modelName.toLowerCase().includes(q) ||
+                            model.providerName.toLowerCase().includes(q) ||
+                            model.modelId.toLowerCase().includes(q)
+                          );
+                        })
+                        .map((model) => (
+                          <DropdownMenuItem
+                            key={`${model.providerId}-${model.modelId}`}
+                            onClick={() => onSelectModel?.(model)}
+                            className={cn(
+                              selectedModel?.modelId === model.modelId &&
+                              selectedModel?.providerId === model.providerId &&
+                              "bg-primary/10"
+                            )}
+                          >
+                            <div className="flex flex-col">
+                              <span className="font-medium">{model.modelName}</span>
+                              <span className="text-xs text-muted-foreground">{model.providerName}</span>
+                            </div>
+                            {model.isDefault && (
+                              <span className="ml-auto text-[10px] text-primary">Default</span>
+                            )}
+                          </DropdownMenuItem>
+                        ))}
+                      {models.length > 0 && modelSearch && models.every((m) => {
+                        const q = modelSearch.toLowerCase();
+                        return !(m.modelName.toLowerCase().includes(q) || m.providerName.toLowerCase().includes(q) || m.modelId.toLowerCase().includes(q));
+                      }) && (
+                        <p className="px-2 py-3 text-center text-xs text-muted-foreground">No models found</p>
+                      )}
+                    </div>
                   </DropdownMenuContent>
                 </DropdownMenu>
               </div>

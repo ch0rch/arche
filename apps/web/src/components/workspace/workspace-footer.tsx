@@ -10,12 +10,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 type ConnectorStatus = "ready" | "pending" | "disabled";
@@ -173,7 +167,7 @@ export function WorkspaceFooter({
                   className="rounded-lg px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
                   aria-label="Open connectors status"
                 >
-                  {isLoadingConnectors ? "Connectors..." : `${activeConnectors} active connectors`}
+                  {isLoadingConnectors ? "Connectors..." : `${activeConnectors} connectors`}
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent side="top" align="center" className="w-72">
@@ -208,53 +202,47 @@ export function WorkspaceFooter({
 
             <span className="text-xs text-muted-foreground/50">|</span>
 
-            <TooltipProvider delayDuration={150}>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <button
-                    type="button"
-                    className="rounded-lg px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-                    aria-label="Open active providers"
-                  >
-                    {isLoadingProviders ? "Providers..." : `${activeProviders.length} active providers`}
-                  </button>
-                </TooltipTrigger>
-                <TooltipContent
-                  side="top"
-                  align="center"
-                  className="w-72 border border-border bg-popover p-1 text-popover-foreground shadow-md"
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="rounded-lg px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                  aria-label="Open providers status"
                 >
-                  <p className="px-2 py-1.5 text-sm font-semibold">Active providers</p>
-                  <div className="-mx-1 my-1 h-px bg-border" />
-                  {isLoadingProviders ? (
-                    <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading providers...</p>
-                  ) : activeProviders.length === 0 ? (
-                    <p className="px-2 py-1.5 text-xs text-muted-foreground">No active providers.</p>
-                  ) : (
-                    <div className="space-y-1 px-1 py-1">
-                      {activeProviders.map((provider) => (
-                        <div
-                          key={provider.providerId}
-                          className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs"
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-sm text-foreground">{providerLabel(provider.providerId)}</p>
-                            <p className="text-[11px] text-muted-foreground">
-                              {provider.type ?? "api"}
-                              {provider.version ? ` · v${provider.version}` : ""}
-                            </p>
-                          </div>
-                          <div className="ml-3 flex items-center gap-1.5 text-muted-foreground">
-                            <span className="h-2 w-2 rounded-full bg-emerald-500" />
-                            <span>Active</span>
-                          </div>
+                  {isLoadingProviders ? "Providers..." : `${activeProviders.length} providers`}
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent side="top" align="center" className="w-72">
+                <DropdownMenuLabel>Provider status</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                {isLoadingProviders ? (
+                  <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading providers...</p>
+                ) : activeProviders.length === 0 ? (
+                  <p className="px-2 py-1.5 text-xs text-muted-foreground">No active providers.</p>
+                ) : (
+                  <div className="space-y-1 px-1 py-1">
+                    {activeProviders.map((provider) => (
+                      <div
+                        key={provider.providerId}
+                        className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-foreground">{providerLabel(provider.providerId)}</p>
+                          <p className="text-[11px] text-muted-foreground">
+                            {provider.type ?? "api"}
+                            {provider.version ? ` · v${provider.version}` : ""}
+                          </p>
                         </div>
-                      ))}
-                    </div>
-                  )}
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+                        <div className="ml-3 flex items-center gap-1.5 text-muted-foreground">
+                          <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                          <span>Active</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
 
