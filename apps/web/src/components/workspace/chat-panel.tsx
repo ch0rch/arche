@@ -994,7 +994,7 @@ export function ChatPanel({
       <div className="flex-1 overflow-y-auto px-6 py-6 scrollbar-custom">
         {isStartingNewSession ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
-            <SpinnerGap size={32} className="animate-spin text-muted-foreground/40" />
+            <div className="h-16 w-16 animate-spin rounded-full border-4 border-muted border-t-primary" />
             <p className="max-w-[260px] text-sm text-muted-foreground">
               Starting a new conversation...
             </p>
