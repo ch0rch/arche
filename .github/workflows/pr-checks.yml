@@ -3,6 +3,9 @@ name: PR Checks
 on:
   pull_request:
     branches: [main]
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/pr-checks.yml"
 
 jobs:
   web-lint-test:
