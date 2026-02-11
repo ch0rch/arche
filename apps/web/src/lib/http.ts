@@ -38,7 +38,9 @@ export function getPublicBaseUrl(headers: Headers, fallbackOrigin: string): stri
   const configured = normalizeBaseUrl(process.env.ARCHE_PUBLIC_BASE_URL ?? '')
   if (configured) return configured
 
-  const proto = firstHeaderValue(headers.get('x-forwarded-proto')) || 'http'
+  const fallback = normalizeBaseUrl(fallbackOrigin)
+  const fallbackProtocol = fallback ? new URL(fallback).protocol.replace(':', '') : 'http'
+  const proto = firstHeaderValue(headers.get('x-forwarded-proto')) || fallbackProtocol
   const forwardedHost = firstHeaderValue(headers.get('x-forwarded-host'))
   if (forwardedHost && !isBindAddress(forwardedHost)) {
     return `${proto}://${forwardedHost}`
@@ -49,7 +51,6 @@ export function getPublicBaseUrl(headers: Headers, fallbackOrigin: string): stri
     return `${proto}://${host}`
   }
 
-  const fallback = normalizeBaseUrl(fallbackOrigin)
   if (fallback) return fallback
 
   return fallbackOrigin

@@ -88,6 +88,21 @@ describe('csrf validateSameOrigin', () => {
     expect(validateSameOrigin(request)).toEqual({ ok: true })
   })
 
+  it('ignores bind-address ARCHE_PUBLIC_BASE_URL and uses request origin fallback', async () => {
+    process.env.ARCHE_PUBLIC_BASE_URL = 'http://0.0.0.0:3000'
+    const { validateSameOrigin } = await import('@/lib/csrf')
+
+    const request = new Request('http://localhost/api/u/alice/connectors', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+      },
+    })
+
+    expect(validateSameOrigin(request)).toEqual({ ok: true })
+  })
+
   it('returns ok=true when Origin matches expected origin', async () => {
     const { validateSameOrigin } = await import('@/lib/csrf')
 

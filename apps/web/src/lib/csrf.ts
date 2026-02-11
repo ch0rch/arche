@@ -1,17 +1,4 @@
-import { firstHeaderValue } from '@/lib/http'
-
-function getConfiguredPublicOrigin(): string | null {
-  const configured = process.env.ARCHE_PUBLIC_BASE_URL?.trim()
-  if (!configured) {
-    return null
-  }
-
-  try {
-    return new URL(configured).origin
-  } catch {
-    return null
-  }
-}
+import { getPublicBaseUrl } from '@/lib/http'
 
 export function validateSameOrigin(request: Request): { ok: true } | { ok: false } {
   const origin = request.headers.get('origin')
@@ -26,11 +13,6 @@ export function validateSameOrigin(request: Request): { ok: true } | { ok: false
     return { ok: false }
   }
 
-  const configuredOrigin = getConfiguredPublicOrigin()
-  if (configuredOrigin) {
-    return originUrl.origin === configuredOrigin ? { ok: true } : { ok: false }
-  }
-
   let requestUrl: URL
   try {
     requestUrl = new URL(request.url)
@@ -38,16 +20,11 @@ export function validateSameOrigin(request: Request): { ok: true } | { ok: false
     return { ok: false }
   }
 
-  const forwardedProto = firstHeaderValue(request.headers.get('x-forwarded-proto'))
-  const expectedProto = forwardedProto || requestUrl.protocol.replace(':', '')
-  const expectedHost =
-    firstHeaderValue(request.headers.get('x-forwarded-host')) ||
-    firstHeaderValue(request.headers.get('host')) ||
-    requestUrl.host
+  const expectedBaseUrl = getPublicBaseUrl(request.headers, requestUrl.origin)
 
   let expectedOrigin: string
   try {
-    expectedOrigin = new URL(`${expectedProto}://${expectedHost}`).origin
+    expectedOrigin = new URL(expectedBaseUrl).origin
   } catch {
     return { ok: false }
   }
