@@ -20,14 +20,19 @@ function session(slug: string, role: 'USER' | 'ADMIN' = 'USER') {
   return { user: { id: 'user-1', email: 'a@b.com', slug, role }, sessionId: 's1' }
 }
 
-async function callPostConnectors(slug = 'alice') {
+async function callPostConnectors(slug = 'alice', includeOrigin = false) {
   const { POST } = await import('@/app/api/u/[slug]/connectors/route')
+  const headers: Record<string, string> = {
+    host: 'localhost',
+    'content-type': 'application/json',
+  }
+  if (includeOrigin) {
+    headers.origin = 'http://localhost'
+  }
+
   const req = new Request(`http://localhost/api/u/${slug}/connectors`, {
     method: 'POST',
-    headers: {
-      host: 'localhost',
-      'content-type': 'application/json',
-    },
+    headers,
     body: JSON.stringify({}),
   })
   const res = await POST(req as never, { params: Promise.resolve({ slug }) })
@@ -98,6 +103,12 @@ describe('CSRF guard for connectors routes', () => {
     const { status, body } = await callPostConnectors('alice')
     expect(status).toBe(403)
     expect(body.error).toBe('forbidden')
+  })
+
+  it('POST /api/u/[slug]/connectors does not fail CSRF when Origin matches', async () => {
+    const { status, body } = await callPostConnectors('alice', true)
+    expect(status).toBe(404)
+    expect(body.error).toBe('user_not_found')
   })
 
   it('PATCH /api/u/[slug]/connectors/[id] returns 403 when Origin is missing', async () => {
