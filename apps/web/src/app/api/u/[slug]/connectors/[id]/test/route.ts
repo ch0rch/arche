@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
 import { getAuthenticatedUser } from '@/lib/auth'
-import { validateSameOrigin } from '@/lib/csrf'
 import { decryptConfig } from '@/lib/connectors/crypto'
 import { getConnectorAuthType, getConnectorOAuthConfig } from '@/lib/connectors/oauth-config'
 import type { ConnectorType } from '@/lib/connectors/types'
 import { validateConnectorType } from '@/lib/connectors/validators'
+import { validateSameOrigin } from '@/lib/csrf'
+import { prisma } from '@/lib/prisma'
+import { validateConnectorTestEndpoint } from '@/lib/security/ssrf'
 
 export interface TestConnectionResult {
   ok: boolean
@@ -46,7 +47,8 @@ function isOAuthPending(type: ConnectorType, config: Record<string, unknown>): b
 
 async function testConnection(
   type: ConnectorType,
-  config: Record<string, unknown>
+  config: Record<string, unknown>,
+  options: { customEndpointUrl?: URL } = {}
 ): Promise<TestConnectionResult> {
   try {
     switch (type) {
@@ -124,9 +126,10 @@ async function testConnection(
           headers.Authorization = `Bearer ${auth}`
         }
 
-        const response = await fetchWithTimeout(endpoint, {
+        const response = await fetchWithTimeout(options.customEndpointUrl ?? endpoint, {
           method: 'GET',
           headers,
+          redirect: 'manual',
         })
 
         if (!response.ok) {
@@ -217,7 +220,19 @@ export async function POST(
     return NextResponse.json({ error: 'unsupported_connector_type' }, { status: 400 })
   }
 
-  const result = await testConnection(connector.type, config)
+  let customEndpointUrl: URL | undefined
+  if (connector.type === 'custom') {
+    const endpoint = typeof config.endpoint === 'string' ? config.endpoint : ''
+    if (endpoint) {
+      const endpointValidation = await validateConnectorTestEndpoint(endpoint)
+      if (!endpointValidation.ok) {
+        return NextResponse.json({ error: endpointValidation.error }, { status: 400 })
+      }
+      customEndpointUrl = endpointValidation.url
+    }
+  }
+
+  const result = await testConnection(connector.type, config, { customEndpointUrl })
 
   return NextResponse.json(result)
 }
