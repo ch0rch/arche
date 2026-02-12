@@ -10,6 +10,25 @@ type AgentsPanelProps = {
   onSelectAgent: (agent: AgentCatalogItem) => void;
 };
 
+const AVATAR_COLORS = [
+  "bg-blue-500/20 text-blue-400",
+  "bg-emerald-500/20 text-emerald-400",
+  "bg-violet-500/20 text-violet-400",
+  "bg-amber-500/20 text-amber-400",
+  "bg-rose-500/20 text-rose-400",
+  "bg-cyan-500/20 text-cyan-400",
+  "bg-pink-500/20 text-pink-400",
+  "bg-teal-500/20 text-teal-400",
+];
+
+function getAvatarColor(id: string): string {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) {
+    hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  }
+  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
+}
+
 export function AgentsPanel({ agents, onSelectAgent }: AgentsPanelProps) {
   if (agents.length === 0) {
     return (
@@ -21,38 +40,39 @@ export function AgentsPanel({ agents, onSelectAgent }: AgentsPanelProps) {
   }
 
   return (
-    <div className="flex-1 overflow-y-auto px-2 pb-4 pt-2 scrollbar-none">
+    <div className="flex-1 overflow-y-auto px-2 py-1.5 scrollbar-none">
       <div className="space-y-0.5">
-        {agents.map((agent) => (
-          <button
-            key={agent.id}
-            type="button"
-            onClick={() => onSelectAgent(agent)}
-            className={cn(
-              "flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left text-[13px] transition-colors",
-              "text-foreground/80 hover:bg-foreground/5"
-            )}
-          >
-            <Robot
-              size={16}
-              weight="bold"
-              className="shrink-0 text-muted-foreground"
-            />
-            <div className="flex flex-1 flex-col gap-0.5 overflow-hidden">
-              <span className="truncate font-medium">{agent.displayName}</span>
-              {agent.model && (
-                <span className="truncate text-[11px] text-muted-foreground/60">
-                  {agent.model}
+        {agents.map((agent) => {
+          const initial = agent.displayName.charAt(0).toUpperCase();
+          return (
+            <button
+              key={agent.id}
+              type="button"
+              onClick={() => onSelectAgent(agent)}
+              className={cn(
+                "flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors",
+                "text-foreground/80 hover:bg-foreground/5"
+              )}
+            >
+              <div
+                className={cn(
+                  "flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
+                  getAvatarColor(agent.id)
+                )}
+              >
+                {initial}
+              </div>
+              <span className="flex-1 truncate font-medium">
+                {agent.displayName}
+              </span>
+              {agent.isPrimary && (
+                <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
+                  Primary
                 </span>
               )}
-            </div>
-            {agent.isPrimary && (
-              <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                Primary
-              </span>
-            )}
-          </button>
-        ))}
+            </button>
+          );
+        })}
       </div>
     </div>
   );

@@ -148,8 +148,12 @@ type FileContentCache = Record<
   }
 >;
 
+const PANEL_ANIM = "200ms ease-out";
+const PANEL_TRANSITION = `width ${PANEL_ANIM}, min-width ${PANEL_ANIM}, opacity ${PANEL_ANIM}, margin ${PANEL_ANIM}, border-width ${PANEL_ANIM}`;
+
 export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const isDragging = useRef(false);
   const layoutStorageKey = `arche.workspace.${slug}.layout`;
   
   // Instance startup state
@@ -744,6 +748,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     const rect = container.getBoundingClientRect();
     const handle = event.currentTarget;
 
+    isDragging.current = true;
     handle.setPointerCapture(event.pointerId);
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -758,6 +763,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     };
 
     const onUp = () => {
+      isDragging.current = false;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       handle.releasePointerCapture(event.pointerId);
@@ -776,6 +782,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     const rect = container.getBoundingClientRect();
     const handle = event.currentTarget;
 
+    isDragging.current = true;
     handle.setPointerCapture(event.pointerId);
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -790,6 +797,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     };
 
     const onUp = () => {
+      isDragging.current = false;
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       handle.releasePointerCapture(event.pointerId);
@@ -961,27 +969,29 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
         {/* Main panels area */}
         <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1 gap-3">
           {/* Left panel - Sessions / Agents / Knowledge (floating) */}
-          {!leftCollapsed && (
-            <div
-              className="glass-panel shrink-0 overflow-hidden rounded-2xl"
-              style={{
-                width: leftWidth,
-                minWidth: MIN_LEFT_PX
-              }}
-            >
-              <LeftPanel
-                sessions={rootSessions}
-                activeSessionId={activeRootSessionId}
-                onSelectSession={handleSelectSession}
-                onCreateSession={handleCreateSession}
-                agents={workspace.agentCatalog}
-                onSelectAgent={handleSelectAgent}
-                fileNodes={workspace.fileTree}
-                activeFilePath={activeFilePath}
-                onSelectFile={handleOpenFile}
-              />
-            </div>
-          )}
+          <div
+            className="shrink-0 overflow-hidden"
+            style={{
+              width: leftCollapsed ? 0 : leftWidth,
+              minWidth: leftCollapsed ? 0 : MIN_LEFT_PX,
+              opacity: leftCollapsed ? 0 : 1,
+              marginRight: leftCollapsed ? -PANEL_GAP : 0,
+              transition: isDragging.current ? "none" : PANEL_TRANSITION,
+            }}
+            aria-hidden={leftCollapsed}
+          >
+            <LeftPanel
+              sessions={rootSessions}
+              activeSessionId={activeRootSessionId}
+              onSelectSession={handleSelectSession}
+              onCreateSession={handleCreateSession}
+              agents={workspace.agentCatalog}
+              onSelectAgent={handleSelectAgent}
+              fileNodes={workspace.fileTree}
+              activeFilePath={activeFilePath}
+              onSelectFile={handleOpenFile}
+            />
+          </div>
 
           {/* Invisible resize handle for left panel - positioned in the gap */}
           {!leftCollapsed && (
@@ -996,8 +1006,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
           )}
 
           {/* Center panel - Chat (floating) */}
-          <div 
-            className="glass-panel flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl" 
+          <div
+            className="glass-panel flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl"
             style={{ minWidth: minCenterWidth }}
           >
             <ChatPanel
@@ -1039,34 +1049,37 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
           )}
 
           {/* Right panel - Inspector (floating) */}
-          {!rightCollapsed && (
-            <div
-              className="glass-panel shrink-0 overflow-hidden rounded-2xl"
-              style={{
-                width: rightWidth,
-                minWidth: MIN_RIGHT_PX
-              }}
-            >
-                <InspectorPanel
-                  slug={slug}
-                  activeTab={rightTab}
-                  onTabChange={setRightTab}
-                  openFiles={openFiles}
-                  activeFilePath={activeFilePath}
-                  onSelectFile={handleSelectFile}
-                  onCloseFile={handleCloseFile}
-                  diffs={workspace.diffs}
-                  isLoadingDiffs={workspace.isLoadingDiffs}
-                  diffsError={workspace.diffsError}
-                  onOpenFile={handleOpenFile}
-                  onReloadFile={handleReloadFile}
-                  onSaveFile={handleSaveFile}
-                  onDiscardFileChanges={handleDiscardFileChanges}
-                  onPublish={handlePublishComplete}
-                  onResolveConflict={handleResolveConflict}
-                />
-            </div>
-          )}
+          <div
+            className="glass-panel shrink-0 overflow-hidden rounded-2xl"
+            style={{
+              width: rightCollapsed ? 0 : rightWidth,
+              minWidth: rightCollapsed ? 0 : MIN_RIGHT_PX,
+              opacity: rightCollapsed ? 0 : 1,
+              marginLeft: rightCollapsed ? -PANEL_GAP : 0,
+              borderWidth: rightCollapsed ? 0 : undefined,
+              transition: isDragging.current ? "none" : PANEL_TRANSITION,
+            }}
+            aria-hidden={rightCollapsed}
+          >
+            <InspectorPanel
+              slug={slug}
+              activeTab={rightTab}
+              onTabChange={setRightTab}
+              openFiles={openFiles}
+              activeFilePath={activeFilePath}
+              onSelectFile={handleSelectFile}
+              onCloseFile={handleCloseFile}
+              diffs={workspace.diffs}
+              isLoadingDiffs={workspace.isLoadingDiffs}
+              diffsError={workspace.diffsError}
+              onOpenFile={handleOpenFile}
+              onReloadFile={handleReloadFile}
+              onSaveFile={handleSaveFile}
+              onDiscardFileChanges={handleDiscardFileChanges}
+              onPublish={handlePublishComplete}
+              onResolveConflict={handleResolveConflict}
+            />
+          </div>
         </div>
 
         {/* Floating footer */}
