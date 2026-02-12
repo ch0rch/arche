@@ -8,18 +8,28 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   md: 'text/markdown',
   mp3: 'audio/mpeg',
   mp4: 'video/mp4',
+  ods: 'application/vnd.oasis.opendocument.spreadsheet',
   pdf: 'application/pdf',
   ppt: 'application/vnd.ms-powerpoint',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
   png: 'image/png',
   svg: 'image/svg+xml',
   txt: 'text/plain',
+  tsv: 'text/tab-separated-values',
   webp: 'image/webp',
   xls: 'application/vnd.ms-excel',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   xml: 'application/xml',
   zip: 'application/zip',
 }
+
+const SPREADSHEET_MIME_TYPES = new Set([
+  'application/vnd.ms-excel',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/csv',
+  'text/tab-separated-values',
+])
 
 const FALLBACK_MIME = 'text/plain'
 const ATTACHMENT_DIR_PREFIX = '.arche/attachments/'
@@ -97,4 +107,8 @@ export function formatAttachmentSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+export function isSpreadsheetMimeType(mime: string): boolean {
+  return SPREADSHEET_MIME_TYPES.has(mime.toLowerCase())
 }

@@ -238,4 +238,61 @@ describe('chat stream attachments forwarding', () => {
     const promptParts = (promptBody?.parts ?? []) as Array<Record<string, unknown>>
     expect(promptParts[1].mime).toBe('text/plain')
   })
+
+  it('routes spreadsheet attachments to spreadsheet tools hints', async () => {
+    let promptBody: Record<string, unknown> | null = null
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+
+      if (url.includes('/prompt_async')) {
+        promptBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response('prompt_failed', { status: 500 })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'Analyze attached data',
+        attachments: [
+          {
+            path: '.arche/attachments/sales.xlsx',
+            filename: 'sales.xlsx',
+            mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          },
+        ],
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    await res.text()
+
+    const promptParts = (promptBody?.parts ?? []) as Array<Record<string, unknown>>
+    expect(promptParts).toHaveLength(3)
+    expect(promptParts[1]).toEqual({
+      type: 'text',
+      text:
+        'Attached spreadsheet file: /workspace/.arche/attachments/sales.xlsx\nYou must use spreadsheet_inspect first to detect sheets and columns, then use spreadsheet_sample/spreadsheet_query/spreadsheet_stats for focused analysis and calculations.',
+    })
+    expect(promptParts[2]).toEqual({
+      type: 'text',
+      text:
+        'Attached workspace files:\n- /workspace/.arche/attachments/sales.xlsx\nIf direct file parsing is unavailable, inspect these paths with available tools.',
+    })
+  })
 })

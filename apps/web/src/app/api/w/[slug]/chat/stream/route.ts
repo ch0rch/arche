@@ -8,6 +8,7 @@ import { getWorkspaceAgentUrl } from '@/lib/workspace-agent/client'
 import {
   inferAttachmentMimeType,
   isWorkspaceAttachmentPath,
+  isSpreadsheetMimeType,
   MAX_ATTACHMENTS_PER_MESSAGE,
   normalizeAttachmentPath,
 } from '@/lib/workspace-attachments'
@@ -82,6 +83,13 @@ function toPdfExtractionFailureText(path: string): string {
   return [
     `Attached PDF could not be extracted automatically: /workspace/${path}`,
     'Continue by using available tools on this path, or ask the user for an OCR-friendly/text PDF if the file is scanned.',
+  ].join('\n')
+}
+
+function toSpreadsheetToolHintText(path: string): string {
+  return [
+    `Attached spreadsheet file: /workspace/${path}`,
+    'You must use spreadsheet_inspect first to detect sheets and columns, then use spreadsheet_sample/spreadsheet_query/spreadsheet_stats for focused analysis and calculations.',
   ].join('\n')
 }
 
@@ -294,6 +302,15 @@ export async function POST(
                   })
                 }
 
+                attachmentPathsForHint.push(attachmentPath)
+                continue
+              }
+
+              if (isSpreadsheetMimeType(mime)) {
+                promptParts.push({
+                  type: 'text',
+                  text: toSpreadsheetToolHintText(attachmentPath),
+                })
                 attachmentPathsForHint.push(attachmentPath)
                 continue
               }
