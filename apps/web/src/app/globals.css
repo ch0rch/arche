@@ -408,6 +408,9 @@
   }
   .markdown-content li.task-list-item {
     @apply my-1 list-none;
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
   }
   .markdown-content ul.contains-task-list {
     @apply list-none pl-0;
@@ -514,7 +517,8 @@
   }
 
   .workspace-tiptap .tiptap-editor li[data-type="taskItem"],
-  .workspace-tiptap .tiptap-editor li.task-list-item {
+  .workspace-tiptap .tiptap-editor li.task-list-item,
+  .workspace-tiptap .tiptap-editor ul[data-type="taskList"] > li {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     align-items: flex-start;
@@ -523,25 +527,30 @@
   }
 
   .workspace-tiptap .tiptap-editor li[data-type="taskItem"] > label,
-  .workspace-tiptap .tiptap-editor li.task-list-item > label {
+  .workspace-tiptap .tiptap-editor li.task-list-item > label,
+  .workspace-tiptap .tiptap-editor ul[data-type="taskList"] > li > label {
     display: inline-flex;
     align-items: center;
     flex: 0 0 auto;
+    margin-top: 0.2rem;
   }
 
   .workspace-tiptap .tiptap-editor li[data-type="taskItem"] > label input,
-  .workspace-tiptap .tiptap-editor li.task-list-item > label input {
+  .workspace-tiptap .tiptap-editor li.task-list-item > label input,
+  .workspace-tiptap .tiptap-editor ul[data-type="taskList"] > li > label input {
     margin: 0;
   }
 
   .workspace-tiptap .tiptap-editor li[data-type="taskItem"] > div,
-  .workspace-tiptap .tiptap-editor li.task-list-item > div {
+  .workspace-tiptap .tiptap-editor li.task-list-item > div,
+  .workspace-tiptap .tiptap-editor ul[data-type="taskList"] > li > div {
     flex: 1 1 auto;
     min-width: 0;
   }
 
   .workspace-tiptap .tiptap-editor li[data-type="taskItem"] > div p,
-  .workspace-tiptap .tiptap-editor li.task-list-item > div p {
+  .workspace-tiptap .tiptap-editor li.task-list-item > div p,
+  .workspace-tiptap .tiptap-editor ul[data-type="taskList"] > li > div p {
     margin: 0;
   }
 
