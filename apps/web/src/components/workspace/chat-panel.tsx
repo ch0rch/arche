@@ -12,16 +12,20 @@ import {
   Copy,
   DotsThree,
   File,
+  FolderOpen,
   GitDiff,
   Info,
   Lightbulb,
   MagnifyingGlass,
+  Paperclip,
   PaperPlaneTilt,
   PencilSimple,
+  Plus,
   Question,
   Robot,
   SpinnerGap,
   TreeStructure,
+  UploadSimple,
   Wrench,
   X,
   XCircle
@@ -37,13 +41,29 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle
+} from "@/components/ui/dialog";
+import { formatAttachmentSize } from "@/lib/workspace-attachments";
 import { cn } from "@/lib/utils";
-import type { ChatMessage, ChatSession } from "@/types/workspace";
+import type {
+  ChatMessage,
+  ChatSession,
+  MessageAttachmentInput,
+  WorkspaceAttachment
+} from "@/types/workspace";
 import type { AvailableModel, MessagePart } from "@/lib/opencode/types";
 
 type ChatPanelProps = {
+  slug: string;
   sessions: ChatSession[];
   messages: ChatMessage[];
   activeSessionId: string | null;
@@ -54,7 +74,11 @@ type ChatPanelProps = {
   onOpenFile: (path: string) => void;
   onShowContext?: () => void;
   // New props for real functionality
-  onSendMessage?: (text: string, model?: { providerId: string; modelId: string }) => Promise<void>;
+  onSendMessage?: (
+    text: string,
+    model?: { providerId: string; modelId: string },
+    options?: { attachments?: MessageAttachmentInput[] }
+  ) => Promise<void>;
   isSending?: boolean;
   isStartingNewSession?: boolean;
   models?: AvailableModel[];
@@ -825,6 +849,7 @@ function StatusIndicator({
 }
 
 export function ChatPanel({
+  slug,
   sessions,
   messages,
   activeSessionId,
@@ -851,8 +876,225 @@ export function ChatPanel({
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const attachmentInputRef = useRef<HTMLInputElement>(null);
   const [inputValue, setInputValue] = useState("");
   const [modelSearch, setModelSearch] = useState("");
+  const [attachments, setAttachments] = useState<WorkspaceAttachment[]>([]);
+  const [isLoadingAttachments, setIsLoadingAttachments] = useState(false);
+  const [isUploadingAttachment, setIsUploadingAttachment] = useState(false);
+  const [attachmentsError, setAttachmentsError] = useState<string | null>(null);
+  const [isAttachmentMenuOpen, setIsAttachmentMenuOpen] = useState(false);
+  const [isManageAttachmentsOpen, setIsManageAttachmentsOpen] = useState(false);
+  const [attachmentSearch, setAttachmentSearch] = useState("");
+  const [selectedAttachmentPaths, setSelectedAttachmentPaths] = useState<string[]>([]);
+  const [isMutatingAttachments, setIsMutatingAttachments] = useState(false);
+
+  const selectedAttachments = useMemo(
+    () =>
+      selectedAttachmentPaths
+        .map((path) => attachments.find((attachment) => attachment.path === path))
+        .filter((attachment): attachment is WorkspaceAttachment => Boolean(attachment)),
+    [attachments, selectedAttachmentPaths]
+  );
+
+  const refreshAttachments = useCallback(async () => {
+    setIsLoadingAttachments(true);
+    try {
+      const response = await fetch(`/api/w/${slug}/attachments`, {
+        cache: "no-store",
+      });
+      const data = (await response
+        .json()
+        .catch(() => null)) as { attachments?: WorkspaceAttachment[]; error?: string } | null;
+
+      if (!response.ok || !data?.attachments) {
+        setAttachmentsError(data?.error ?? "attachments_load_failed");
+        return;
+      }
+
+      const nextAttachments = data.attachments;
+      setAttachments(nextAttachments);
+      setSelectedAttachmentPaths((previous) =>
+        previous.filter((path) =>
+          nextAttachments.some((attachment) => attachment.path === path)
+        )
+      );
+      setAttachmentsError(null);
+    } catch {
+      setAttachmentsError("attachments_load_failed");
+    } finally {
+      setIsLoadingAttachments(false);
+    }
+  }, [slug]);
+
+  useEffect(() => {
+    void refreshAttachments();
+  }, [refreshAttachments]);
+
+  const toggleAttachmentSelection = useCallback((path: string) => {
+    setSelectedAttachmentPaths((previous) => {
+      if (previous.includes(path)) {
+        return previous.filter((entry) => entry !== path);
+      }
+      return [...previous, path];
+    });
+  }, []);
+
+  const handleUploadAttachments = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const formData = new FormData();
+    Array.from(files).forEach((file) => {
+      formData.append("files", file);
+    });
+
+    setIsUploadingAttachment(true);
+    setAttachmentsError(null);
+
+    try {
+      const response = await fetch(`/api/w/${slug}/attachments`, {
+        method: "POST",
+        body: formData,
+      });
+
+      const data = (await response
+        .json()
+        .catch(() => null)) as { uploaded?: WorkspaceAttachment[]; error?: string } | null;
+
+      if (!response.ok || !data?.uploaded) {
+        setAttachmentsError(data?.error ?? "upload_failed");
+        return;
+      }
+
+      const uploaded = data.uploaded;
+      setAttachments((previous) => {
+        const indexed = new Map(previous.map((attachment) => [attachment.path, attachment]));
+        uploaded.forEach((attachment) => indexed.set(attachment.path, attachment));
+        return [...indexed.values()].sort((a, b) => b.uploadedAt - a.uploadedAt);
+      });
+      setSelectedAttachmentPaths((previous) => {
+        const selected = new Set(previous);
+        uploaded.forEach((attachment) => selected.add(attachment.path));
+        return [...selected];
+      });
+      setAttachmentsError(null);
+    } catch {
+      setAttachmentsError("upload_failed");
+    } finally {
+      setIsUploadingAttachment(false);
+    }
+  }, [slug]);
+
+  const handleAttachmentInputChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      await handleUploadAttachments(event.target.files);
+      event.target.value = "";
+    },
+    [handleUploadAttachments]
+  );
+
+  const handleRenameAttachment = useCallback(
+    async (attachment: WorkspaceAttachment) => {
+      const nextName = window.prompt("Rename attachment", attachment.name);
+      if (nextName == null) return;
+
+      const trimmedName = nextName.trim();
+      if (!trimmedName || trimmedName === attachment.name) return;
+
+      setIsMutatingAttachments(true);
+      setAttachmentsError(null);
+
+      try {
+        const response = await fetch(`/api/w/${slug}/attachments`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: attachment.path, name: trimmedName }),
+        });
+        const data = (await response
+          .json()
+          .catch(() => null)) as { attachment?: WorkspaceAttachment; error?: string } | null;
+
+        if (!response.ok || !data?.attachment) {
+          setAttachmentsError(data?.error ?? "rename_failed");
+          return;
+        }
+
+        const updatedAttachment = data.attachment;
+
+        setAttachments((previous) => {
+          const indexed = new Map(previous.map((item) => [item.path, item]));
+          indexed.delete(attachment.path);
+          indexed.set(updatedAttachment.path, updatedAttachment);
+          return [...indexed.values()].sort((a, b) => b.uploadedAt - a.uploadedAt);
+        });
+        setSelectedAttachmentPaths((previous) =>
+          previous.map((path) =>
+            path === attachment.path ? updatedAttachment.path : path
+          )
+        );
+        setAttachmentsError(null);
+      } catch {
+        setAttachmentsError("rename_failed");
+      } finally {
+        setIsMutatingAttachments(false);
+      }
+    },
+    [slug]
+  );
+
+  const handleDeleteAttachment = useCallback(
+    async (attachment: WorkspaceAttachment) => {
+      const confirmed = window.confirm(
+        `Delete attachment "${attachment.name}"? This cannot be undone.`
+      );
+      if (!confirmed) return;
+
+      setIsMutatingAttachments(true);
+      setAttachmentsError(null);
+
+      try {
+        const response = await fetch(`/api/w/${slug}/attachments`, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path: attachment.path }),
+        });
+        const data = (await response
+          .json()
+          .catch(() => null)) as { ok?: boolean; error?: string } | null;
+
+        if (!response.ok || !data?.ok) {
+          setAttachmentsError(data?.error ?? "delete_failed");
+          return;
+        }
+
+        setAttachments((previous) =>
+          previous.filter((item) => item.path !== attachment.path)
+        );
+        setSelectedAttachmentPaths((previous) =>
+          previous.filter((path) => path !== attachment.path)
+        );
+        setAttachmentsError(null);
+      } catch {
+        setAttachmentsError("delete_failed");
+      } finally {
+        setIsMutatingAttachments(false);
+      }
+    },
+    [slug]
+  );
+
+  const recentAttachments = useMemo(
+    () => attachments.slice(0, 5),
+    [attachments]
+  );
+
+  const filteredAttachments = useMemo(() => {
+    const query = attachmentSearch.trim().toLowerCase();
+    if (!query) return attachments;
+    return attachments.filter((attachment) =>
+      attachment.name.toLowerCase().includes(query)
+    );
+  }, [attachmentSearch, attachments]);
 
   // Handle agent mention insertion from left panel
   useEffect(() => {
@@ -897,9 +1139,27 @@ export function ChatPanel({
     const model = selectedModel 
       ? { providerId: selectedModel.providerId, modelId: selectedModel.modelId }
       : undefined;
+
+    const messageAttachments: MessageAttachmentInput[] = selectedAttachments.map(
+      (attachment) => ({
+        path: attachment.path,
+        filename: attachment.name,
+        mime: attachment.mime,
+      })
+    );
     
-    await onSendMessage(text, model);
-  }, [inputValue, onSendMessage, isSending, isStartingNewSession, selectedModel]);
+    await onSendMessage(text, model, {
+      attachments: messageAttachments,
+    });
+    setSelectedAttachmentPaths([]);
+  }, [
+    inputValue,
+    onSendMessage,
+    isSending,
+    isStartingNewSession,
+    selectedModel,
+    selectedAttachments,
+  ]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -1236,21 +1496,160 @@ export function ChatPanel({
             )}
           </div>
         )}
+
+        {selectedAttachments.length > 0 && (
+          <div className="mb-3 flex flex-wrap gap-2">
+            {selectedAttachments.map((attachment) => (
+              <button
+                key={attachment.path}
+                type="button"
+                onClick={() =>
+                  setSelectedAttachmentPaths((previous) =>
+                    previous.filter((path) => path !== attachment.path)
+                  )
+                }
+                className="flex items-center gap-1.5 rounded-lg bg-primary/10 px-2.5 py-1.5 text-xs text-primary transition-colors hover:bg-primary/20"
+                title="Remove attachment"
+              >
+                <File size={12} weight="bold" />
+                <span>{attachment.name}</span>
+                <X size={11} />
+              </button>
+            ))}
+          </div>
+        )}
+
+        {attachmentsError && (
+          <p className="mb-3 text-xs text-destructive">
+            {attachmentsError.replace(/_/g, ' ')}
+          </p>
+        )}
         
-        <div className="flex items-start gap-2.5 rounded-xl border border-white/10 bg-foreground/5 px-2.5 py-2.5">
+        <div className="flex items-end gap-1.5 rounded-xl border border-white/10 bg-foreground/5 px-2 py-2">
+          <input
+            ref={attachmentInputRef}
+            type="file"
+            multiple
+            className="hidden"
+            onChange={handleAttachmentInputChange}
+            disabled={isSending || isStartingNewSession || isUploadingAttachment}
+          />
+          <DropdownMenu
+            open={isAttachmentMenuOpen}
+            onOpenChange={(open) => {
+              setIsAttachmentMenuOpen(open);
+              if (open) {
+                void refreshAttachments();
+              }
+            }}
+          >
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="relative mb-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                aria-label="Manage attachments"
+                disabled={isSending || isStartingNewSession || !onSendMessage}
+              >
+                {isUploadingAttachment ? (
+                  <SpinnerGap size={18} className="animate-spin" />
+                ) : (
+                  <Plus size={18} weight="bold" />
+                )}
+                {selectedAttachmentPaths.length > 0 && (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground">
+                    {selectedAttachmentPaths.length}
+                  </span>
+                )}
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-72 rounded-lg p-1.5">
+              {isLoadingAttachments ? (
+                <div className="flex items-center gap-2 px-2.5 py-3 text-xs text-muted-foreground">
+                  <SpinnerGap size={12} className="animate-spin" />
+                  Loading files...
+                </div>
+              ) : recentAttachments.length === 0 ? (
+                <div className="px-2.5 py-3 text-center text-xs text-muted-foreground">
+                  No uploaded files yet
+                </div>
+              ) : (
+                <>
+                  <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                    Recent files
+                  </DropdownMenuLabel>
+                  {recentAttachments.map((attachment) => {
+                    const isSelected = selectedAttachmentPaths.includes(attachment.path);
+                    return (
+                      <DropdownMenuItem
+                        key={attachment.path}
+                        onSelect={(event) => {
+                          event.preventDefault();
+                          toggleAttachmentSelection(attachment.path);
+                        }}
+                        className={cn(
+                          "gap-2.5 rounded-md px-2.5 py-2",
+                          isSelected && "bg-primary/10"
+                        )}
+                      >
+                        <div className={cn(
+                          "flex h-5 w-5 shrink-0 items-center justify-center rounded",
+                          isSelected ? "text-primary" : "text-muted-foreground"
+                        )}>
+                          {isSelected ? (
+                            <CheckCircle size={16} weight="fill" />
+                          ) : (
+                            <File size={14} />
+                          )}
+                        </div>
+                        <span className="min-w-0 flex-1 truncate text-xs">{attachment.name}</span>
+                        <span className="shrink-0 text-[10px] text-muted-foreground/60">
+                          {formatAttachmentSize(attachment.size)}
+                        </span>
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </>
+              )}
+              <DropdownMenuSeparator className="my-1.5" />
+              <DropdownMenuItem
+                disabled={isUploadingAttachment || isMutatingAttachments}
+                onSelect={(event) => {
+                  event.preventDefault();
+                  attachmentInputRef.current?.click();
+                }}
+                className="gap-2.5 rounded-md px-2.5 py-2"
+              >
+                <UploadSimple size={14} className="text-muted-foreground" />
+                <span className="text-xs">Upload file</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                disabled={isMutatingAttachments}
+                onSelect={(event) => {
+                  event.preventDefault();
+                  setAttachmentSearch("");
+                  setIsAttachmentMenuOpen(false);
+                  setIsManageAttachmentsOpen(true);
+                }}
+                className="gap-2.5 rounded-md px-2.5 py-2"
+              >
+                <FolderOpen size={14} className="text-muted-foreground" />
+                <span className="text-xs">Manage attachments</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <textarea
             ref={textareaRef}
             value={inputValue}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            className="max-h-[200px] flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground/60"
+            className="max-h-[200px] flex-1 resize-none bg-transparent px-1.5 py-1.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground/60"
             placeholder="Type a message..."
             disabled={isSending || isStartingNewSession || !onSendMessage}
             rows={1}
           />
           <Button
             size="icon"
-            className="h-9 w-9 shrink-0 rounded-lg"
+            className="mb-0.5 h-8 w-8 shrink-0 rounded-lg"
             disabled={isSending || isStartingNewSession || !inputValue.trim() || !onSendMessage}
             onClick={handleSend}
             aria-label="Send message"
@@ -1262,6 +1661,114 @@ export function ChatPanel({
             )}
           </Button>
         </div>
+
+        <Dialog open={isManageAttachmentsOpen} onOpenChange={setIsManageAttachmentsOpen}>
+          <DialogContent className="h-[88vh] w-[min(96vw,1100px)] max-w-none p-0">
+            <div className="flex h-full flex-col">
+              <DialogHeader className="border-b border-border px-6 py-4">
+                <DialogTitle>Manage attachments</DialogTitle>
+                <DialogDescription>
+                  Select one or more files to include as context in your next message.
+                </DialogDescription>
+              </DialogHeader>
+
+              <div className="flex-1 overflow-hidden px-6 py-4">
+                <div className="mb-4 flex items-center gap-3">
+                  <div className="flex flex-1 items-center gap-2 rounded-lg border border-border px-3 py-2">
+                    <MagnifyingGlass size={14} className="text-muted-foreground" />
+                    <input
+                      type="text"
+                      value={attachmentSearch}
+                      onChange={(event) => setAttachmentSearch(event.target.value)}
+                      placeholder="Search attachments..."
+                      className="w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => attachmentInputRef.current?.click()}
+                    className="flex items-center gap-1.5 rounded-lg bg-foreground/5 px-3 py-2 text-xs text-foreground transition-colors hover:bg-foreground/10"
+                    disabled={isMutatingAttachments || isUploadingAttachment}
+                  >
+                    <UploadSimple size={14} />
+                    Upload
+                  </button>
+                  <span className="text-xs text-muted-foreground">
+                    {selectedAttachmentPaths.length} selected
+                  </span>
+                </div>
+
+                <div className="scrollbar-custom h-[calc(100%-3rem)] overflow-y-auto pr-1">
+                  {filteredAttachments.length === 0 ? (
+                    <div className="flex h-full items-center justify-center rounded-xl border border-dashed border-border text-sm text-muted-foreground">
+                      No attachments found.
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+                      {filteredAttachments.map((attachment) => {
+                        const isSelected = selectedAttachmentPaths.includes(attachment.path);
+                        return (
+                          <button
+                            key={attachment.path}
+                            type="button"
+                            onClick={() => toggleAttachmentSelection(attachment.path)}
+                            className={cn(
+                              "flex min-h-[120px] flex-col rounded-xl border p-3 text-left transition-colors",
+                              isSelected
+                                ? "border-primary bg-primary/10"
+                                : "border-border bg-card/40 hover:bg-card/60"
+                            )}
+                            disabled={isMutatingAttachments}
+                          >
+                            <div className="flex items-start gap-2">
+                              <File size={16} className={cn(isSelected ? "text-primary" : "text-muted-foreground")} />
+                              <span className="min-w-0 flex-1 break-all text-sm font-medium text-foreground">
+                                {attachment.name}
+                              </span>
+                              {isSelected ? (
+                                <CheckCircle size={14} weight="fill" className="text-primary" />
+                              ) : null}
+                            </div>
+                            <div className="mt-2 flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleRenameAttachment(attachment);
+                                }}
+                                className="rounded p-1 text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+                                title="Rename"
+                                disabled={isMutatingAttachments}
+                              >
+                                <PencilSimple size={12} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void handleDeleteAttachment(attachment);
+                                }}
+                                className="rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+                                title="Delete"
+                                disabled={isMutatingAttachments}
+                              >
+                                <X size={12} />
+                              </button>
+                            </div>
+                            <div className="mt-auto flex items-center justify-between pt-3 text-[11px] text-muted-foreground">
+                              <span>{formatAttachmentSize(attachment.size)}</span>
+                              <span>{new Date(attachment.uploadedAt).toLocaleDateString()}</span>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </div>
   );

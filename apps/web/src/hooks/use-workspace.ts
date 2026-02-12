@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   checkConnectionAction,
   listSessionsAction,
@@ -32,6 +32,7 @@ import type {
 } from "@/lib/opencode/types";
 import { extractTextContent, transformParts } from "@/lib/opencode/transform";
 import { PROVIDERS, type ProviderId } from "@/lib/providers/types";
+import type { MessageAttachmentInput } from "@/types/workspace";
 
 export type WorkspaceDiff = {
   path: string;
@@ -111,7 +112,10 @@ export type UseWorkspaceReturn = {
   sendMessage: (
     text: string,
     model?: { providerId: string; modelId: string },
-    options?: { forceNewSession?: boolean }
+    options?: {
+      forceNewSession?: boolean;
+      attachments?: MessageAttachmentInput[];
+    }
   ) => Promise<void>;
   abortSession: () => Promise<void>;
   refreshMessages: () => Promise<void>;
@@ -630,6 +634,7 @@ export function useWorkspace({
     targetMessageId: string;
     text?: string;
     model?: { providerId: string; modelId: string };
+    attachments?: MessageAttachmentInput[];
   };
 
   const streamChat = useCallback(
@@ -639,6 +644,7 @@ export function useWorkspace({
       targetMessageId,
       text,
       model,
+      attachments,
     }: StreamOptions) => {
       abortActiveStream();
 
@@ -732,6 +738,7 @@ export function useWorkspace({
             sessionId,
             text,
             model,
+            attachments,
             resume: mode === "resume",
             messageId: mode === "resume" ? targetMessageId : undefined,
           }),
@@ -893,7 +900,10 @@ export function useWorkspace({
     async (
       text: string,
       model?: { providerId: string; modelId: string },
-      options?: { forceNewSession?: boolean }
+      options?: {
+        forceNewSession?: boolean;
+        attachments?: MessageAttachmentInput[];
+      }
     ) => {
       console.log("[useWorkspace] sendMessage called", {
         text,
@@ -903,6 +913,12 @@ export function useWorkspace({
       });
 
       if (isSendingRef.current) return;
+
+      const messageAttachments = (options?.attachments ?? []).filter(
+        (attachment) =>
+          typeof attachment.path === "string" &&
+          attachment.path.trim().length > 0
+      );
 
       const forceNewSession = options?.forceNewSession === true;
       if (forceNewSession) {
@@ -929,13 +945,22 @@ export function useWorkspace({
 
       // Add optimistic user message
       const tempUserMsgId = `temp-user-${Date.now()}`;
+      const tempUserParts: MessagePart[] = [
+        { type: "text", text },
+        ...messageAttachments.map((attachment) => ({
+          type: "file" as const,
+          path: attachment.path,
+          filename: attachment.filename,
+          mime: attachment.mime,
+        })),
+      ];
       const tempUserMsg: WorkspaceMessage = {
         id: tempUserMsgId,
         sessionId: sessionId,
         role: "user",
         content: text,
         timestamp: "Just now",
-        parts: [{ type: "text", text }],
+        parts: tempUserParts,
         pending: false,
       };
 
@@ -960,6 +985,7 @@ export function useWorkspace({
         targetMessageId: tempAssistantMsgId,
         text,
         model,
+        attachments: messageAttachments,
       });
     },
     [abortActiveStream, activeSessionId, createSession, streamChat]

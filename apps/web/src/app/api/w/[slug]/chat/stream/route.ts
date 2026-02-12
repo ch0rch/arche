@@ -3,9 +3,45 @@ import { getAuthenticatedUser } from '@/lib/auth'
 import { validateSameOrigin } from '@/lib/csrf'
 import { prisma } from '@/lib/prisma'
 import { decryptPassword } from '@/lib/spawner/crypto'
+import {
+  inferAttachmentMimeType,
+  isWorkspaceAttachmentPath,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  normalizeAttachmentPath,
+} from '@/lib/workspace-attachments'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
+
+type MessageAttachmentInput = {
+  path: string
+  filename?: string
+  mime?: string
+}
+
+function normalizeMessageAttachments(
+  value: unknown,
+): MessageAttachmentInput[] {
+  if (!Array.isArray(value)) return []
+
+  return value
+    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+    .map((item) => ({
+      path: typeof item.path === 'string' ? normalizeAttachmentPath(item.path) : '',
+      filename: typeof item.filename === 'string' ? item.filename : undefined,
+      mime: typeof item.mime === 'string' ? item.mime : undefined,
+    }))
+    .filter((item) => item.path.length > 0)
+}
+
+function toWorkspaceFileUrl(path: string): string {
+  const normalized = normalizeAttachmentPath(path)
+  const encodedPath = normalized
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+  return `file:///workspace/${encodedPath}`
+}
 
 /**
  * SSE streaming endpoint for chat messages.
@@ -68,12 +104,22 @@ export async function POST(
     sessionId: string
     text?: string
     model?: { providerId: string; modelId: string }
+    attachments?: MessageAttachmentInput[]
     resume?: boolean
     messageId?: string
   }
+
+  const attachments = normalizeMessageAttachments((body as { attachments?: unknown }).attachments)
   
-  if (!sessionId || (!resume && !text)) {
+  if (!sessionId || (!resume && !text && attachments.length === 0)) {
     return new Response(JSON.stringify({ error: 'missing_fields' }), { 
+      status: 400,
+      headers: { 'Content-Type': 'application/json' }
+    })
+  }
+
+  if (attachments.length > MAX_ATTACHMENTS_PER_MESSAGE) {
+    return new Response(JSON.stringify({ error: 'too_many_attachments' }), {
       status: 400,
       headers: { 'Content-Type': 'application/json' }
     })
@@ -98,9 +144,54 @@ export async function POST(
         sendEvent('status', { status: 'connecting' })
         
         if (!resume) {
-          // Start the message (async, non-blocking)
+          const promptParts: Array<
+            { type: 'text'; text: string } |
+            { type: 'file'; mime: string; filename?: string; url: string }
+          > = []
+
+          if (typeof text === 'string' && text.trim().length > 0) {
+            promptParts.push({ type: 'text', text })
+          }
+
+          if (attachments.length > 0) {
+            for (const attachment of attachments) {
+              const attachmentPath = normalizeAttachmentPath(attachment.path)
+
+              if (!isWorkspaceAttachmentPath(attachmentPath)) {
+                sendEvent('error', { error: 'invalid_attachment_path' })
+                controller.close()
+                return
+              }
+
+              const fileName =
+                attachment.filename ??
+                attachmentPath.split('/').pop() ??
+                'attachment'
+              const attachmentMime = attachment.mime?.trim()
+              const mime =
+                attachmentMime &&
+                attachmentMime.length > 0 &&
+                attachmentMime !== 'application/octet-stream'
+                  ? attachmentMime
+                  : inferAttachmentMimeType(fileName)
+
+              promptParts.push({
+                type: 'file',
+                mime,
+                filename: fileName,
+                url: toWorkspaceFileUrl(attachmentPath),
+              })
+            }
+          }
+
+          if (promptParts.length === 0) {
+            sendEvent('error', { error: 'missing_fields' })
+            controller.close()
+            return
+          }
+
           const promptBody = {
-            parts: [{ type: 'text', text }],
+            parts: promptParts,
             ...(model && { model: { providerID: model.providerId, modelID: model.modelId } })
           }
           

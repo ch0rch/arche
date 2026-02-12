@@ -601,23 +601,26 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
   // Map workspace messages to UI format
   const uiMessages = useMemo(() => {
-    return workspace.messages.map(m => ({
-      id: m.id,
-      sessionId: m.sessionId,
-      role: m.role as 'user' | 'assistant' | 'system',
-      content: m.content,
+      return workspace.messages.map(m => ({
+        id: m.id,
+        sessionId: m.sessionId,
+        role: m.role as 'user' | 'assistant' | 'system',
+        content: m.content,
       timestamp: m.timestamp,
       timestampRaw: m.timestampRaw,
       parts: m.parts, // Pass all parts for rich rendering
       statusInfo: m.statusInfo,
-      pending: m.pending,
-      attachments: m.parts
-        .filter(p => p.type === 'file')
-        .map(p => ({
-          type: 'file' as const,
-          label: (p as { path: string }).path?.split('/').pop() ?? '',
-          path: (p as { path: string }).path
-        }))
+        pending: m.pending,
+        attachments: m.parts
+          .filter(p => p.type === 'file')
+          .map(p => ({
+            type: 'file' as const,
+            label:
+              (p as { filename?: string }).filename ??
+              (p as { path: string }).path?.split('/').pop() ??
+              '',
+            path: (p as { path: string }).path
+          }))
     }));
   }, [workspace.messages]);
 
@@ -998,6 +1001,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             style={{ minWidth: minCenterWidth }}
           >
             <ChatPanel
+              slug={slug}
               sessions={uiSessions}
               messages={uiMessages}
               activeSessionId={workspace.activeSessionId}
