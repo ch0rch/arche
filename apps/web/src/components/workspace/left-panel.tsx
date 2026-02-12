@@ -40,8 +40,6 @@ type LeftPanelProps = {
   fileNodes: WorkspaceFileNode[];
   activeFilePath?: string | null;
   onSelectFile: (path: string) => void;
-  searchQuery: string;
-  onSearchQueryChange: (value: string) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
 };
 
@@ -85,12 +83,11 @@ export function LeftPanel({
   fileNodes,
   activeFilePath,
   onSelectFile,
-  searchQuery,
-  onSearchQueryChange,
   searchInputRef,
 }: LeftPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [topRatio, setTopRatio] = useState(3 / 8);
   const [midRatio, setMidRatio] = useState(3 / 8);
@@ -238,7 +235,7 @@ export function LeftPanel({
             ref={searchInputRef}
             type="text"
             value={searchQuery}
-            onChange={(event) => onSearchQueryChange(event.target.value)}
+            onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="Search..."
             aria-label="Search chats, knowledge, and agents"
             className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/40"
@@ -249,7 +246,7 @@ export function LeftPanel({
               aria-label="Clear search"
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => {
-                onSearchQueryChange("");
+                setSearchQuery("");
                 searchInputRef.current?.focus();
               }}
               className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"

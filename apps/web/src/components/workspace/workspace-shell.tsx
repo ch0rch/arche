@@ -156,7 +156,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   const [isDragging, setIsDragging] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const layoutStorageKey = `arche.workspace.${slug}.layout`;
-  const [searchQuery, setSearchQuery] = useState("");
   
   // Instance startup state
   const [instanceStatus, setInstanceStatus] = useState<'starting' | 'running' | 'error' | null>(null);
@@ -1019,8 +1018,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               fileNodes={workspace.fileTree}
               activeFilePath={activeFilePath}
               onSelectFile={handleOpenFile}
-              searchQuery={searchQuery}
-              onSearchQueryChange={setSearchQuery}
               searchInputRef={searchInputRef}
             />
           </div>
