@@ -36,6 +36,7 @@ import Image from "next/image";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { workspaceMarkdownComponents } from "@/components/workspace/markdown-components";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -698,7 +699,7 @@ function MessagePartRenderer({
     case 'text':
       return (
         <div className="markdown-content my-3 first:mt-0 last:mb-0">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={workspaceMarkdownComponents}>
             {part.text}
           </ReactMarkdown>
         </div>
@@ -1322,7 +1323,7 @@ export function ChatPanel({
                         </div>
                       ) : message.content ? (
                         <div className="markdown-content">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={workspaceMarkdownComponents}>
                             {message.content}
                           </ReactMarkdown>
                         </div>
