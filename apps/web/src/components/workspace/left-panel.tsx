@@ -1,17 +1,27 @@
 "use client";
 
-import { useCallback, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
-  CaretDown,
-  CaretRight,
   ChatCircle,
-  FolderOpen,
+  Database,
   MagnifyingGlass,
   Plus,
   Robot,
+  SlidersHorizontal,
   X,
 } from "@phosphor-icons/react";
 
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import type { WorkspaceFileNode, WorkspaceSession } from "@/lib/opencode/types";
 import type { AgentCatalogItem } from "@/hooks/use-workspace";
 
@@ -36,28 +46,56 @@ type LeftPanelProps = {
   // Agents
   agents: AgentCatalogItem[];
   onSelectAgent: (agent: AgentCatalogItem) => void;
+  onOpenExpertsSettings: () => void;
 
   // Knowledge (file tree)
   fileNodes: WorkspaceFileNode[];
   activeFilePath?: string | null;
   onSelectFile: (path: string) => void;
+  onCreateKnowledgeFile: (path: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   searchInputRef: RefObject<HTMLInputElement | null>;
 };
+
+type DirectoryOption = {
+  path: string;
+  label: string;
+};
+
+function collectDirectoryOptions(nodes: WorkspaceFileNode[], depth = 0): DirectoryOption[] {
+  const directories = nodes
+    .filter((node) => node.type === "directory")
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const options: DirectoryOption[] = [];
+
+  directories.forEach((directory) => {
+    options.push({
+      path: directory.path,
+      label: `${depth > 0 ? `${"-- ".repeat(depth)}` : ""}${directory.name}`,
+    });
+
+    if (directory.children && directory.children.length > 0) {
+      options.push(...collectDirectoryOptions(directory.children, depth + 1));
+    }
+  });
+
+  return options;
+}
 
 function SectionHeader({
   icon: Icon,
   label,
-  collapsed,
   onToggle,
   onAction,
   actionIcon: ActionIcon,
+  actionLabel,
 }: {
   icon: typeof ChatCircle;
   label: string;
-  collapsed: boolean;
   onToggle: () => void;
   onAction?: () => void;
   actionIcon?: typeof Plus;
+  actionLabel?: string;
 }) {
   return (
     <button
@@ -73,17 +111,13 @@ function SectionHeader({
         <span
           role="button"
           tabIndex={0}
+          aria-label={actionLabel}
           onClick={(e) => { e.stopPropagation(); onAction(); }}
           onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); e.preventDefault(); onAction(); } }}
           className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
         >
           <ActionIcon size={14} weight="bold" />
         </span>
-      )}
-      {collapsed ? (
-        <CaretRight size={12} weight="bold" className="text-muted-foreground" />
-      ) : (
-        <CaretDown size={12} weight="bold" className="text-muted-foreground" />
       )}
     </button>
   );
@@ -96,14 +130,22 @@ export function LeftPanel({
   onCreateSession,
   agents,
   onSelectAgent,
+  onOpenExpertsSettings,
   fileNodes,
   activeFilePath,
   onSelectFile,
+  onCreateKnowledgeFile,
   searchInputRef,
 }: LeftPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const newFileNameRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [isCreateFileDialogOpen, setIsCreateFileDialogOpen] = useState(false);
+  const [newFileName, setNewFileName] = useState("");
+  const [selectedDirectoryPath, setSelectedDirectoryPath] = useState("");
+  const [createFileError, setCreateFileError] = useState<string | null>(null);
+  const [isCreatingFile, setIsCreatingFile] = useState(false);
 
   const [topRatio, setTopRatio] = useState(3 / 8);
   const [midRatio, setMidRatio] = useState(3 / 8);
@@ -111,6 +153,84 @@ export function LeftPanel({
   const [topCollapsed, setTopCollapsed] = useState(false);
   const [midCollapsed, setMidCollapsed] = useState(false);
   const [bottomCollapsed, setBottomCollapsed] = useState(false);
+
+  const directoryOptions = useMemo(
+    () => collectDirectoryOptions(fileNodes),
+    [fileNodes]
+  );
+
+  useEffect(() => {
+    if (!isCreateFileDialogOpen) return;
+
+    const frame = requestAnimationFrame(() => {
+      newFileNameRef.current?.focus();
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [isCreateFileDialogOpen]);
+
+  const resetCreateFileDialog = useCallback(() => {
+    setNewFileName("");
+    setSelectedDirectoryPath("");
+    setCreateFileError(null);
+    setIsCreatingFile(false);
+  }, []);
+
+  const handleCreateFileDialogChange = useCallback(
+    (open: boolean) => {
+      setIsCreateFileDialogOpen(open);
+      if (!open) {
+        resetCreateFileDialog();
+      }
+    },
+    [resetCreateFileDialog]
+  );
+
+  const handleOpenCreateFileDialog = useCallback(() => {
+    resetCreateFileDialog();
+    setIsCreateFileDialogOpen(true);
+  }, [resetCreateFileDialog]);
+
+  const handleCreateKnowledgeFile = useCallback(
+    async (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      if (isCreatingFile) return;
+
+      const trimmedName = newFileName.trim();
+      const baseName = trimmedName.replace(/\.md$/i, "");
+      if (!baseName) {
+        setCreateFileError("File name is required.");
+        return;
+      }
+
+      if (/[\\/]/.test(baseName)) {
+        setCreateFileError("File name cannot contain slashes.");
+        return;
+      }
+
+      const directory = selectedDirectoryPath.replace(/\/+$/, "");
+      const filePath = directory ? `${directory}/${baseName}.md` : `${baseName}.md`;
+
+      setIsCreatingFile(true);
+      setCreateFileError(null);
+
+      const result = await onCreateKnowledgeFile(filePath);
+      if (!result.ok) {
+        setCreateFileError(
+          result.error === "file_exists"
+            ? "A file with that name already exists in that location."
+            : "Unable to create the file. Please try again."
+        );
+        setIsCreatingFile(false);
+        return;
+      }
+
+      setIsCreatingFile(false);
+      setIsCreateFileDialogOpen(false);
+      resetCreateFileDialog();
+    },
+    [isCreatingFile, newFileName, onCreateKnowledgeFile, resetCreateFileDialog, selectedDirectoryPath]
+  );
 
   // Effective ratios — redistribute space proportionally among expanded sections
   const baseBot = 1 - topRatio - midRatio;
@@ -253,7 +373,7 @@ export function LeftPanel({
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="Search..."
-            aria-label="Search chats, knowledge, and agents"
+            aria-label="Search chats, knowledge, and experts"
             className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/40"
           />
           {searchQuery.trim().length > 0 ? (
@@ -284,10 +404,10 @@ export function LeftPanel({
         <SectionHeader
           icon={ChatCircle}
           label="Chats"
-          collapsed={topCollapsed}
           onToggle={() => setTopCollapsed(prev => !prev)}
           onAction={onCreateSession}
           actionIcon={Plus}
+          actionLabel="New chat"
         />
         <div className="min-h-0 flex-1" style={contentStyle(topCollapsed)}>
           <div className="flex flex-col overflow-hidden" style={{ minHeight: 0 }}>
@@ -321,10 +441,12 @@ export function LeftPanel({
         className="glass-panel flex min-h-0 flex-col overflow-hidden rounded-2xl"
       >
         <SectionHeader
-          icon={FolderOpen}
+          icon={Database}
           label="Knowledge"
-          collapsed={midCollapsed}
           onToggle={() => setMidCollapsed(prev => !prev)}
+          onAction={handleOpenCreateFileDialog}
+          actionIcon={Plus}
+          actionLabel="Create file"
         />
         <div className="min-h-0 flex-1" style={contentStyle(midCollapsed)}>
           <div className="flex flex-col overflow-hidden" style={{ minHeight: 0 }}>
@@ -352,16 +474,18 @@ export function LeftPanel({
         </div>
       )}
 
-      {/* Section 3: Agents */}
+      {/* Section 3: Experts */}
       <div
         style={sectionStyle(bottomCollapsed, effectiveBot)}
         className="glass-panel flex min-h-0 flex-col overflow-hidden rounded-2xl"
       >
         <SectionHeader
           icon={Robot}
-          label="Agents"
-          collapsed={bottomCollapsed}
+          label="Experts"
           onToggle={() => setBottomCollapsed(prev => !prev)}
+          onAction={onOpenExpertsSettings}
+          actionIcon={SlidersHorizontal}
+          actionLabel="Edit experts"
         />
         <div className="min-h-0 flex-1" style={contentStyle(bottomCollapsed)}>
           <div className="flex flex-col overflow-hidden" style={{ minHeight: 0 }}>
@@ -369,6 +493,76 @@ export function LeftPanel({
           </div>
         </div>
       </div>
+
+      <Dialog open={isCreateFileDialogOpen} onOpenChange={handleCreateFileDialogChange}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Create knowledge file</DialogTitle>
+            <DialogDescription>
+              Create a new Markdown file in your workspace knowledge tree.
+            </DialogDescription>
+          </DialogHeader>
+
+          <form className="space-y-4" onSubmit={handleCreateKnowledgeFile}>
+            <div className="space-y-2">
+              <Label htmlFor="knowledge-file-name">File name</Label>
+              <Input
+                id="knowledge-file-name"
+                ref={newFileNameRef}
+                value={newFileName}
+                onChange={(event) => {
+                  setNewFileName(event.target.value);
+                  if (createFileError) {
+                    setCreateFileError(null);
+                  }
+                }}
+                placeholder="meeting-notes"
+                autoComplete="off"
+                disabled={isCreatingFile}
+              />
+              <p className="text-[11px] text-muted-foreground">
+                The file will be created as <span className="font-mono">&lt;name&gt;.md</span>.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="knowledge-file-directory">Location</Label>
+              <select
+                id="knowledge-file-directory"
+                value={selectedDirectoryPath}
+                onChange={(event) => setSelectedDirectoryPath(event.target.value)}
+                disabled={isCreatingFile}
+                className="flex h-10 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              >
+                <option value="">Root</option>
+                {directoryOptions.map((option) => (
+                  <option key={option.path} value={option.path}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {createFileError ? (
+              <p className="text-xs text-destructive">{createFileError}</p>
+            ) : null}
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => handleCreateFileDialogChange(false)}
+                disabled={isCreatingFile}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isCreatingFile}>
+                {isCreatingFile ? "Creating..." : "Create"}
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

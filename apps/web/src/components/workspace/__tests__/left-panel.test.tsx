@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
 import { createRef } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { LeftPanel } from "@/components/workspace/left-panel";
@@ -26,6 +26,20 @@ const sessions: WorkspaceSession[] = [
 ];
 
 const fileNodes: WorkspaceFileNode[] = [
+  {
+    id: "d1",
+    name: "docs",
+    path: "docs",
+    type: "directory",
+    children: [
+      {
+        id: "f3",
+        name: "nested.md",
+        path: "docs/nested.md",
+        type: "file",
+      },
+    ],
+  },
   {
     id: "f1",
     name: "alpha.md",
@@ -55,6 +69,8 @@ const agents: AgentCatalogItem[] = [
 
 describe("LeftPanel", () => {
   it("filters sections using internal search state", () => {
+    const onCreateKnowledgeFile = vi.fn().mockResolvedValue({ ok: true as const });
+
     render(
       <LeftPanel
         sessions={sessions}
@@ -63,14 +79,16 @@ describe("LeftPanel", () => {
         onCreateSession={vi.fn()}
         agents={agents}
         onSelectAgent={vi.fn()}
+        onOpenExpertsSettings={vi.fn()}
         fileNodes={fileNodes}
         activeFilePath={null}
         onSelectFile={vi.fn()}
+        onCreateKnowledgeFile={onCreateKnowledgeFile}
         searchInputRef={createRef<HTMLInputElement>()}
       />
     );
 
-    const searchInput = screen.getByLabelText("Search chats, knowledge, and agents");
+    const searchInput = screen.getByLabelText("Search chats, knowledge, and experts");
     if (!(searchInput instanceof HTMLInputElement)) {
       throw new Error("Expected search input element");
     }
@@ -90,6 +108,42 @@ describe("LeftPanel", () => {
     expect(searchInput.value).toBe("");
     expect(screen.getByText("Alpha chat")).toBeTruthy();
     expect(screen.getByText("alpha.md")).toBeTruthy();
-    expect(screen.getByText("Alpha Agent")).toBeTruthy();
+    expect(screen.queryByText("Alpha Agent")).toBeNull();
+    expect(screen.getByText("Beta Agent")).toBeTruthy();
+  });
+
+  it("creates a markdown file in the selected directory", async () => {
+    const onCreateKnowledgeFile = vi.fn().mockResolvedValue({ ok: true as const });
+
+    render(
+      <LeftPanel
+        sessions={sessions}
+        activeSessionId={"s1"}
+        onSelectSession={vi.fn()}
+        onCreateSession={vi.fn()}
+        agents={agents}
+        onSelectAgent={vi.fn()}
+        onOpenExpertsSettings={vi.fn()}
+        fileNodes={fileNodes}
+        activeFilePath={null}
+        onSelectFile={vi.fn()}
+        onCreateKnowledgeFile={onCreateKnowledgeFile}
+        searchInputRef={createRef<HTMLInputElement>()}
+      />
+    );
+
+    const createFileButtons = screen.getAllByRole("button", { name: "Create file" });
+    fireEvent.click(createFileButtons[createFileButtons.length - 1]);
+    fireEvent.change(screen.getByLabelText("File name"), {
+      target: { value: "release-plan" },
+    });
+    fireEvent.change(screen.getByLabelText("Location"), {
+      target: { value: "docs" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(onCreateKnowledgeFile).toHaveBeenCalledWith("docs/release-plan.md");
+    });
   });
 });

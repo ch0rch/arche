@@ -16,20 +16,25 @@ const AGENT_AVATAR_CLASS_NAME = "border border-border/50 bg-muted/80 text-muted-
 
 export function AgentsPanel({ agents, onSelectAgent, query = "" }: AgentsPanelProps) {
   const normalizedQuery = query.trim().toLowerCase();
+  const visibleAgents = useMemo(
+    () => agents.filter((agent) => !agent.isPrimary),
+    [agents]
+  );
+
   const filteredAgents = useMemo(() => {
-    if (!normalizedQuery) return agents;
-    return agents.filter((agent) => {
+    if (!normalizedQuery) return visibleAgents;
+    return visibleAgents.filter((agent) => {
       const displayName = agent.displayName.toLowerCase();
       const model = agent.model?.toLowerCase() ?? "";
       return displayName.includes(normalizedQuery) || model.includes(normalizedQuery);
     });
-  }, [agents, normalizedQuery]);
+  }, [normalizedQuery, visibleAgents]);
 
-  if (agents.length === 0) {
+  if (visibleAgents.length === 0) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-2 py-8 text-center">
         <Robot size={24} weight="bold" className="text-muted-foreground/50" />
-        <p className="text-xs text-muted-foreground">No agents available</p>
+        <p className="text-xs text-muted-foreground">No experts available</p>
       </div>
     );
   }
@@ -38,7 +43,7 @@ export function AgentsPanel({ agents, onSelectAgent, query = "" }: AgentsPanelPr
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-2 py-8 text-center">
         <Robot size={24} weight="bold" className="text-muted-foreground/50" />
-        <p className="text-xs text-muted-foreground">No agents found</p>
+        <p className="text-xs text-muted-foreground">No experts found</p>
       </div>
     );
   }
@@ -54,7 +59,7 @@ export function AgentsPanel({ agents, onSelectAgent, query = "" }: AgentsPanelPr
               type="button"
               onClick={() => onSelectAgent(agent)}
               className={cn(
-                "flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors",
+                "flex w-full items-center gap-2.5 rounded-lg pl-1.5 pr-2 py-1.5 text-left text-[13px] transition-colors",
                 "text-foreground/80 hover:bg-foreground/5"
               )}
             >
@@ -69,11 +74,6 @@ export function AgentsPanel({ agents, onSelectAgent, query = "" }: AgentsPanelPr
               <span className="flex-1 truncate font-medium">
                 {agent.displayName}
               </span>
-              {agent.isPrimary && (
-                <span className="shrink-0 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-medium text-primary">
-                  Primary
-                </span>
-              )}
             </button>
           );
         })}

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 import { ensureInstanceRunningAction } from "@/actions/spawner";
 import type { SyncKbResult } from "@/app/api/instances/[slug]/sync-kb/route";
@@ -152,6 +153,7 @@ const PANEL_ANIM = "200ms ease-out";
 const PANEL_TRANSITION = `width ${PANEL_ANIM}, min-width ${PANEL_ANIM}, opacity ${PANEL_ANIM}, margin ${PANEL_ANIM}, border-width ${PANEL_ANIM}`;
 
 export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
+  const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -672,6 +674,60 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       .filter((f): f is NonNullable<typeof f> => f != null);
   }, [openFilePaths, fileCache]);
 
+  const handleOpenExpertsSettings = useCallback(() => {
+    router.push(`/u/${slug}/agents`);
+  }, [router, slug]);
+
+  const handleCreateKnowledgeFile = useCallback(
+    async (path: string) => {
+      const normalizedPath = normalizePath(path).replace(/^\/+/, "");
+      if (!normalizedPath) {
+        return { ok: false as const, error: "invalid_path" };
+      }
+
+      if (filePathSet.has(normalizedPath)) {
+        return { ok: false as const, error: "file_exists" };
+      }
+
+      if (openFilePaths.includes(normalizedPath) || Boolean(fileCacheRef.current[normalizedPath])) {
+        return { ok: false as const, error: "file_exists" };
+      }
+
+      const result = await workspace.writeFile(normalizedPath, "");
+      if (!result.ok) {
+        return {
+          ok: false as const,
+          error: result.error ?? "create_failed",
+        };
+      }
+
+      setFileCache((prev) => ({
+        ...prev,
+        [normalizedPath]: {
+          content: "",
+          type: "raw",
+          title: normalizedPath.split("/").pop() ?? normalizedPath,
+          updatedAt: "Just now",
+          size: "0.0 KB",
+          hash: result.hash,
+        },
+      }));
+
+      setOpenFilePaths((prev) =>
+        prev.includes(normalizedPath) ? prev : [...prev, normalizedPath]
+      );
+      setActiveFilePath(normalizedPath);
+      setRightTab("preview");
+      setRightCollapsed(false);
+
+      workspace.refreshFiles();
+      workspace.refreshDiffs();
+
+      return { ok: true as const };
+    },
+    [filePathSet, normalizePath, openFilePaths, workspace]
+  );
+
   // File handlers
   const handleOpenFile = useCallback(async (path: string) => {
     const resolvedPath = resolveFilePath(path);
@@ -996,7 +1052,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
         {/* Main panels area */}
         <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1 gap-3">
-          {/* Left panel - Sessions / Agents / Knowledge (floating) */}
+          {/* Left panel - Sessions / Experts / Knowledge (floating) */}
           <div
             className="shrink-0 overflow-hidden"
             style={{
@@ -1015,9 +1071,11 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               onCreateSession={handleCreateSession}
               agents={workspace.agentCatalog}
               onSelectAgent={handleSelectAgent}
+              onOpenExpertsSettings={handleOpenExpertsSettings}
               fileNodes={workspace.fileTree}
               activeFilePath={activeFilePath}
               onSelectFile={handleOpenFile}
+              onCreateKnowledgeFile={handleCreateKnowledgeFile}
               searchInputRef={searchInputRef}
             />
           </div>
