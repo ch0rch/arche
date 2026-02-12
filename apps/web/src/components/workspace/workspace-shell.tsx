@@ -1007,7 +1007,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               activeSessionId={workspace.activeSessionId}
               isStartingNewSession={workspace.isStartingNewSession}
               sessionTabs={activeSessionTabs}
-              openFilesCount={openFilePaths.length}
+              openFilePaths={openFilePaths}
               onCloseSession={handleCloseSession}
               onSelectSessionTab={handleSelectSessionTab}
               onOpenFile={handleOpenFile}

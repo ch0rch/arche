@@ -69,7 +69,7 @@ type ChatPanelProps = {
   messages: ChatMessage[];
   activeSessionId: string | null;
   sessionTabs?: Array<{ id: string; title: string; depth: number }>;
-  openFilesCount: number;
+  openFilePaths: string[];
   onCloseSession: (id: string) => void;
   onSelectSessionTab?: (id: string) => void;
   onOpenFile: (path: string) => void;
@@ -78,7 +78,7 @@ type ChatPanelProps = {
   onSendMessage?: (
     text: string,
     model?: { providerId: string; modelId: string },
-    options?: { attachments?: MessageAttachmentInput[] }
+    options?: { attachments?: MessageAttachmentInput[]; contextPaths?: string[] }
   ) => Promise<void>;
   isSending?: boolean;
   isStartingNewSession?: boolean;
@@ -89,6 +89,10 @@ type ChatPanelProps = {
   pendingInsert?: string | null;
   onPendingInsertConsumed?: () => void;
 };
+
+type ContextMode = "auto" | "manual" | "off";
+
+const MAX_CONTEXT_PATHS_PER_MESSAGE = 20;
 
 /**
  * Check if two timestamps are in the same minute.
@@ -855,7 +859,7 @@ export function ChatPanel({
   messages,
   activeSessionId,
   sessionTabs = [],
-  openFilesCount,
+  openFilePaths,
   onCloseSession,
   onSelectSessionTab,
   onOpenFile,
@@ -889,6 +893,8 @@ export function ChatPanel({
   const [attachmentSearch, setAttachmentSearch] = useState("");
   const [selectedAttachmentPaths, setSelectedAttachmentPaths] = useState<string[]>([]);
   const [isMutatingAttachments, setIsMutatingAttachments] = useState(false);
+  const [contextMode, setContextMode] = useState<ContextMode>("auto");
+  const [manualContextPaths, setManualContextPaths] = useState<string[]>([]);
 
   const selectedAttachments = useMemo(
     () =>
@@ -897,6 +903,89 @@ export function ChatPanel({
         .filter((attachment): attachment is WorkspaceAttachment => Boolean(attachment)),
     [attachments, selectedAttachmentPaths]
   );
+
+  const contextModeStorageKey = useMemo(
+    () => `arche.workspace.${slug}.context-mode`,
+    [slug]
+  );
+
+  const normalizedOpenFilePaths = useMemo(() => {
+    const uniquePaths = new Set<string>();
+    const normalized: string[] = [];
+    for (const path of openFilePaths) {
+      const trimmedPath = path.trim();
+      if (!trimmedPath || uniquePaths.has(trimmedPath)) continue;
+      uniquePaths.add(trimmedPath);
+      normalized.push(trimmedPath);
+    }
+    return normalized;
+  }, [openFilePaths]);
+
+  const openFilePathSet = useMemo(
+    () => new Set(normalizedOpenFilePaths),
+    [normalizedOpenFilePaths]
+  );
+
+  const effectiveContextPaths = useMemo(() => {
+    if (contextMode === "off") return [];
+    if (contextMode === "manual") {
+      return manualContextPaths.filter((path) => openFilePathSet.has(path));
+    }
+    return normalizedOpenFilePaths;
+  }, [contextMode, manualContextPaths, normalizedOpenFilePaths, openFilePathSet]);
+
+  const contextPathsToSend = useMemo(
+    () => effectiveContextPaths.slice(0, MAX_CONTEXT_PATHS_PER_MESSAGE),
+    [effectiveContextPaths]
+  );
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(contextModeStorageKey);
+      if (stored === "auto" || stored === "manual" || stored === "off") {
+        setContextMode(stored);
+      }
+    } catch {
+      // Ignore storage access errors
+    }
+  }, [contextModeStorageKey]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(contextModeStorageKey, contextMode);
+    } catch {
+      // Ignore storage access errors
+    }
+  }, [contextMode, contextModeStorageKey]);
+
+  useEffect(() => {
+    setManualContextPaths((previous) =>
+      previous.filter((path) => openFilePathSet.has(path))
+    );
+  }, [openFilePathSet]);
+
+  const handleContextModeChange = useCallback(
+    (nextMode: ContextMode) => {
+      setContextMode(nextMode);
+      if (nextMode !== "manual") return;
+
+      setManualContextPaths((previous) => {
+        const filtered = previous.filter((path) => openFilePathSet.has(path));
+        if (filtered.length > 0) return filtered;
+        return normalizedOpenFilePaths;
+      });
+    },
+    [normalizedOpenFilePaths, openFilePathSet]
+  );
+
+  const toggleManualContextPath = useCallback((path: string) => {
+    setManualContextPaths((previous) => {
+      if (previous.includes(path)) {
+        return previous.filter((entry) => entry !== path);
+      }
+      return [...previous, path];
+    });
+  }, []);
 
   const refreshAttachments = useCallback(async () => {
     setIsLoadingAttachments(true);
@@ -1148,12 +1237,15 @@ export function ChatPanel({
         mime: attachment.mime,
       })
     );
+    const messageContextPaths = [...contextPathsToSend];
     
     await onSendMessage(text, model, {
       attachments: messageAttachments,
+      contextPaths: messageContextPaths,
     });
     setSelectedAttachmentPaths([]);
   }, [
+    contextPathsToSend,
     inputValue,
     onSendMessage,
     isSending,
@@ -1392,7 +1484,7 @@ export function ChatPanel({
       {/* Input area */}
       <div className="border-t border-white/10 px-6 py-5">
         {/* Model selector and context - same row */}
-        {(models.length > 0 || openFilesCount > 0 || activeAgentName) && (
+        {(models.length > 0 || normalizedOpenFilePaths.length > 0 || activeAgentName) && (
           <div className="mb-3 flex items-center gap-4">
             {activeAgentName && (
               <div className="flex items-center gap-2">
@@ -1480,19 +1572,122 @@ export function ChatPanel({
             )}
 
             {/* Context button */}
-            {openFilesCount > 0 && (
+            {normalizedOpenFilePaths.length > 0 && (
               <div className="flex items-center gap-2">
                 <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                   Context
                 </span>
-                <button
-                  type="button"
-                  onClick={onShowContext}
-                  className="flex items-center gap-1.5 rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground transition-colors hover:bg-foreground/10"
-                >
-                  <File size={12} weight="bold" className="text-primary/70" />
-                  <span>{openFilesCount} {openFilesCount === 1 ? "file" : "files"}</span>
-                </button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="flex items-center gap-1.5 rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground transition-colors hover:bg-foreground/10"
+                    >
+                      <File size={12} weight="bold" className="text-primary/70" />
+                      <span>
+                        {contextMode === "off"
+                          ? "Off"
+                          : `${contextPathsToSend.length} ${contextPathsToSend.length === 1 ? "file" : "files"}`}
+                      </span>
+                      <CaretDown size={12} weight="bold" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-80 rounded-lg p-1.5">
+                    <DropdownMenuLabel className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                      Auto context
+                    </DropdownMenuLabel>
+                    <DropdownMenuItem
+                      onSelect={(event) => {
+                        event.preventDefault();
+                        handleContextModeChange("auto");
+                      }}
+                      className={cn(
+                        "justify-between rounded-md px-2.5 py-2 text-xs",
+                        contextMode === "auto" && "bg-primary/10 text-primary"
+                      )}
+                    >
+                      <span>Use all open files</span>
+                      {contextMode === "auto" && <CheckCircle size={14} weight="fill" />}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={(event) => {
+                        event.preventDefault();
+                        handleContextModeChange("manual");
+                      }}
+                      className={cn(
+                        "justify-between rounded-md px-2.5 py-2 text-xs",
+                        contextMode === "manual" && "bg-primary/10 text-primary"
+                      )}
+                    >
+                      <span>Choose files manually</span>
+                      {contextMode === "manual" && <CheckCircle size={14} weight="fill" />}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={(event) => {
+                        event.preventDefault();
+                        handleContextModeChange("off");
+                      }}
+                      className={cn(
+                        "justify-between rounded-md px-2.5 py-2 text-xs",
+                        contextMode === "off" && "bg-primary/10 text-primary"
+                      )}
+                    >
+                      <span>Disable auto context</span>
+                      {contextMode === "off" && <CheckCircle size={14} weight="fill" />}
+                    </DropdownMenuItem>
+
+                    {contextMode === "manual" && (
+                      <>
+                        <DropdownMenuSeparator className="my-1.5" />
+                        <div className="flex items-center justify-between px-2.5 py-1 text-[11px] text-muted-foreground">
+                          <span>Open files</span>
+                          <span>
+                            {effectiveContextPaths.length}/{normalizedOpenFilePaths.length} selected
+                          </span>
+                        </div>
+                        <div className="scrollbar-custom max-h-44 overflow-y-auto px-0.5 pb-0.5">
+                          {normalizedOpenFilePaths.map((path) => {
+                            const isSelected = manualContextPaths.includes(path);
+
+                            return (
+                              <DropdownMenuItem
+                                key={path}
+                                onSelect={(event) => {
+                                  event.preventDefault();
+                                  toggleManualContextPath(path);
+                                }}
+                                className={cn(
+                                  "justify-between gap-2 rounded-md px-2.5 py-2",
+                                  isSelected && "bg-primary/10 text-primary"
+                                )}
+                              >
+                                <span className="min-w-0 flex-1 truncate text-xs">{path}</span>
+                                {isSelected && <CheckCircle size={14} weight="fill" className="shrink-0" />}
+                              </DropdownMenuItem>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+
+                    <DropdownMenuSeparator className="my-1.5" />
+                    <p className="px-2.5 pb-1 text-[11px] text-muted-foreground">
+                      References only via @path. File contents are never auto-attached.
+                    </p>
+                    {effectiveContextPaths.length > contextPathsToSend.length && (
+                      <p className="px-2.5 pb-1 text-[11px] text-muted-foreground">
+                        Sending first {contextPathsToSend.length} references only.
+                      </p>
+                    )}
+                    <DropdownMenuItem
+                      onSelect={() => onShowContext?.()}
+                      className="gap-2.5 rounded-md px-2.5 py-2"
+                    >
+                      <FolderOpen size={14} className="text-muted-foreground" />
+                      <span className="text-xs">Open files panel</span>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             )}
           </div>

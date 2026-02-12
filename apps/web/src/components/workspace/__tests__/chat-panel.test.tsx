@@ -23,7 +23,7 @@ describe('ChatPanel', () => {
           },
         ]}
         activeSessionId={'s1'}
-        openFilesCount={0}
+        openFilePaths={[]}
         onCloseSession={() => {}}
         onOpenFile={() => {}}
         onSendMessage={async () => {}}

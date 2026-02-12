@@ -49,6 +49,114 @@ describe('chat stream attachments forwarding', () => {
     vi.unstubAllGlobals()
   })
 
+  it('adds auto-context references as @path text without attaching file contents', async () => {
+    let promptBody: Record<string, unknown> | null = null
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+
+      if (url.includes('/prompt_async')) {
+        promptBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response('prompt_failed', { status: 500 })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'Please help with these files',
+        contextPaths: [
+          '/src/app/page.tsx',
+          'src/app/page.tsx',
+          'src/lib/utils.ts',
+          '.arche/secrets.txt',
+          '../etc/passwd',
+          '',
+        ],
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    await res.text()
+
+    const promptParts = (promptBody?.parts ?? []) as Array<Record<string, unknown>>
+    expect(promptParts).toHaveLength(2)
+    expect(promptParts[0]).toEqual({
+      type: 'text',
+      text: 'Please help with these files',
+    })
+    expect(promptParts[1]).toEqual({
+      type: 'text',
+      text:
+        'Workspace context references (open files):\n@src/app/page.tsx\n@src/lib/utils.ts\nThese are references only; inspect files with tools when needed.',
+    })
+  })
+
+  it('limits auto-context references to 20 paths', async () => {
+    let promptBody: Record<string, unknown> | null = null
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+
+      if (url.includes('/prompt_async')) {
+        promptBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response('prompt_failed', { status: 500 })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const contextPaths = Array.from({ length: 25 }, (_, index) => `src/file-${index + 1}.ts`)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'Scope this change',
+        contextPaths,
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    await res.text()
+
+    const promptParts = (promptBody?.parts ?? []) as Array<Record<string, unknown>>
+    const contextText = String(promptParts[1]?.text ?? '')
+    const referencedPaths = contextText
+      .split('\n')
+      .filter((line) => line.startsWith('@'))
+
+    expect(referencedPaths).toHaveLength(20)
+    expect(referencedPaths[0]).toBe('@src/file-1.ts')
+    expect(referencedPaths[19]).toBe('@src/file-20.ts')
+    expect(contextText).not.toContain('@src/file-21.ts')
+  })
+
   it('extracts PDF attachments before sending prompt parts', async () => {
     let promptBody: Record<string, unknown> | null = null
 

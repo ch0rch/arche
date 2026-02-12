@@ -31,6 +31,55 @@ type WorkspaceAgentReadResponse = {
 
 const MAX_PDF_BYTES_FOR_EXTRACTION = 8 * 1024 * 1024
 const MAX_PDF_TEXT_CHARS = 24_000
+const MAX_CONTEXT_REFERENCES_PER_MESSAGE = 20
+
+function normalizeWorkspacePath(path: string): string {
+  return path
+    .replace(/\\/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/^\/+/, '')
+    .replace(/\/+/g, '/')
+}
+
+function isValidContextReferencePath(path: string): boolean {
+  if (!path) return false
+  if (path === '.arche' || path.startsWith('.arche/')) return false
+
+  const segments = path.split('/').filter((segment) => segment.length > 0)
+  if (segments.length === 0) return false
+
+  return segments.every((segment) => segment !== '.' && segment !== '..')
+}
+
+function normalizeContextPaths(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+
+  const unique = new Set<string>()
+  const normalized: string[] = []
+
+  for (const item of value) {
+    if (typeof item !== 'string') continue
+    const path = normalizeWorkspacePath(item.trim())
+    if (!isValidContextReferencePath(path) || unique.has(path)) continue
+
+    unique.add(path)
+    normalized.push(path)
+
+    if (normalized.length >= MAX_CONTEXT_REFERENCES_PER_MESSAGE) {
+      break
+    }
+  }
+
+  return normalized
+}
+
+function toContextReferenceText(paths: string[]): string {
+  return [
+    'Workspace context references (open files):',
+    ...paths.map((path) => `@${path}`),
+    'These are references only; inspect files with tools when needed.',
+  ].join('\n')
+}
 
 function normalizeMessageAttachments(
   value: unknown,
@@ -198,11 +247,13 @@ export async function POST(
     text?: string
     model?: { providerId: string; modelId: string }
     attachments?: MessageAttachmentInput[]
+    contextPaths?: string[]
     resume?: boolean
     messageId?: string
   }
 
   const attachments = normalizeMessageAttachments((body as { attachments?: unknown }).attachments)
+  const contextPaths = normalizeContextPaths((body as { contextPaths?: unknown }).contextPaths)
   
   if (!sessionId || (!resume && !text && attachments.length === 0)) {
     return new Response(JSON.stringify({ error: 'missing_fields' }), { 
@@ -245,6 +296,13 @@ export async function POST(
 
           if (typeof text === 'string' && text.trim().length > 0) {
             promptParts.push({ type: 'text', text })
+          }
+
+          if (contextPaths.length > 0) {
+            promptParts.push({
+              type: 'text',
+              text: toContextReferenceText(contextPaths),
+            })
           }
 
           if (attachments.length > 0) {

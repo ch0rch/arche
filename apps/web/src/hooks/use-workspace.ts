@@ -115,6 +115,7 @@ export type UseWorkspaceReturn = {
     options?: {
       forceNewSession?: boolean;
       attachments?: MessageAttachmentInput[];
+      contextPaths?: string[];
     }
   ) => Promise<void>;
   abortSession: () => Promise<void>;
@@ -635,6 +636,7 @@ export function useWorkspace({
     text?: string;
     model?: { providerId: string; modelId: string };
     attachments?: MessageAttachmentInput[];
+    contextPaths?: string[];
   };
 
   const streamChat = useCallback(
@@ -645,6 +647,7 @@ export function useWorkspace({
       text,
       model,
       attachments,
+      contextPaths,
     }: StreamOptions) => {
       abortActiveStream();
 
@@ -739,6 +742,7 @@ export function useWorkspace({
             text,
             model,
             attachments,
+            contextPaths,
             resume: mode === "resume",
             messageId: mode === "resume" ? targetMessageId : undefined,
           }),
@@ -903,6 +907,7 @@ export function useWorkspace({
       options?: {
         forceNewSession?: boolean;
         attachments?: MessageAttachmentInput[];
+        contextPaths?: string[];
       }
     ) => {
       console.log("[useWorkspace] sendMessage called", {
@@ -918,6 +923,14 @@ export function useWorkspace({
         (attachment) =>
           typeof attachment.path === "string" &&
           attachment.path.trim().length > 0
+      );
+      const messageContextPaths = Array.from(
+        new Set(
+          (options?.contextPaths ?? [])
+            .filter((path): path is string => typeof path === "string")
+            .map((path) => path.trim())
+            .filter((path) => path.length > 0)
+        )
       );
 
       const forceNewSession = options?.forceNewSession === true;
@@ -986,6 +999,7 @@ export function useWorkspace({
         text,
         model,
         attachments: messageAttachments,
+        contextPaths: messageContextPaths,
       });
     },
     [abortActiveStream, activeSessionId, createSession, streamChat]
