@@ -162,29 +162,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   const [instanceStatus, setInstanceStatus] = useState<'starting' | 'running' | 'error' | null>(null);
   const [instanceError, setInstanceError] = useState<string | null>(null);
 
-  const focusSearchInput = useCallback(() => {
-    const input = searchInputRef.current;
-    if (!input) return;
-    input.focus();
-    input.select();
-  }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
-      if (event.key.toLowerCase() !== "k") return;
-
-      event.preventDefault();
-      focusSearchInput();
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [focusSearchInput]);
-
   // Auto-start instance on mount
   useEffect(() => {
     let cancelled = false;
@@ -323,6 +300,30 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const [rightTab, setRightTab] = useState<"preview" | "review">("preview");
   const [hasHydrated, setHasHydrated] = useState(false);
+
+  const focusSearchInput = useCallback(() => {
+    if (leftCollapsed) setLeftCollapsed(false);
+    requestAnimationFrame(() => {
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    });
+  }, [leftCollapsed]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing) return;
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if (event.key.toLowerCase() !== "k") return;
+
+      event.preventDefault();
+      focusSearchInput();
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [focusSearchInput]);
 
   // File viewing state
   const [openFilePaths, setOpenFilePaths] = useState<string[]>(
@@ -874,9 +875,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
           <WorkspaceHeader
             slug={slug}
             status={instanceStatus === 'starting' ? 'provisioning' : 'offline'}
-            searchQuery={searchQuery}
-            onSearchQueryChange={setSearchQuery}
-            searchInputRef={searchInputRef}
           />
           
           <div className="relative z-10 flex flex-1 items-center justify-center">
@@ -950,9 +948,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
           <WorkspaceHeader
             slug={slug}
             status="provisioning"
-            searchQuery={searchQuery}
-            onSearchQueryChange={setSearchQuery}
-            searchInputRef={searchInputRef}
           />
           
           <div className="relative z-10 flex flex-1 items-center justify-center">
@@ -998,9 +993,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             slug={slug}
             status="active"
             onSyncComplete={handleSyncComplete}
-            searchQuery={searchQuery}
-            onSearchQueryChange={setSearchQuery}
-            searchInputRef={searchInputRef}
           />
 
         {/* Main panels area */}
@@ -1028,6 +1020,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               activeFilePath={activeFilePath}
               onSelectFile={handleOpenFile}
               searchQuery={searchQuery}
+              onSearchQueryChange={setSearchQuery}
+              searchInputRef={searchInputRef}
             />
           </div>
 

@@ -1,12 +1,14 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useRef, useState, type RefObject } from "react";
 import {
   CaretDown,
   CaretRight,
   ChatCircle,
   FolderOpen,
+  MagnifyingGlass,
   Robot,
+  X,
 } from "@phosphor-icons/react";
 
 import type { WorkspaceFileNode, WorkspaceSession } from "@/lib/opencode/types";
@@ -39,6 +41,8 @@ type LeftPanelProps = {
   activeFilePath?: string | null;
   onSelectFile: (path: string) => void;
   searchQuery: string;
+  onSearchQueryChange: (value: string) => void;
+  searchInputRef: RefObject<HTMLInputElement | null>;
 };
 
 function SectionHeader({
@@ -82,6 +86,8 @@ export function LeftPanel({
   activeFilePath,
   onSelectFile,
   searchQuery,
+  onSearchQueryChange,
+  searchInputRef,
 }: LeftPanelProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -225,6 +231,38 @@ export function LeftPanel({
       className="flex h-full flex-col text-card-foreground"
       style={{ gap: SECTION_GAP }}
     >
+      {/* Search bar */}
+      <label className="glass-panel flex shrink-0 items-center gap-2 rounded-2xl px-3 py-2 transition-colors hover:bg-foreground/5 focus-within:bg-foreground/5">
+          <MagnifyingGlass size={14} className="shrink-0 text-muted-foreground/50" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            onChange={(event) => onSearchQueryChange(event.target.value)}
+            placeholder="Search..."
+            aria-label="Search chats, knowledge, and agents"
+            className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/40"
+          />
+          {searchQuery.trim().length > 0 ? (
+            <button
+              type="button"
+              aria-label="Clear search"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => {
+                onSearchQueryChange("");
+                searchInputRef.current?.focus();
+              }}
+              className="shrink-0 rounded p-1 text-muted-foreground/60 transition-colors hover:text-foreground"
+            >
+              <X size={11} weight="bold" />
+            </button>
+          ) : (
+            <span className="hidden shrink-0 rounded border border-border/40 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/40 sm:inline-flex">
+              &#8984;K
+            </span>
+          )}
+      </label>
+
       {/* Section 1: Chats */}
       <div
         style={sectionStyle(topCollapsed, effectiveTop)}
