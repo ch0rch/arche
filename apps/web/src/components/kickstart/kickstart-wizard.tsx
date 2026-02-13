@@ -28,6 +28,11 @@ type AgentOverride = {
   temperature?: number
 }
 
+type ModelOption = {
+  id: string
+  label: string
+}
+
 const STEPS = [
   'Company details',
   'Template selection',
@@ -56,6 +61,7 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
   const [applyError, setApplyError] = useState<string | null>(null)
 
   const [catalog, setCatalog] = useState<KickstartTemplatesResponse | null>(null)
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
   const [companyName, setCompanyName] = useState('')
   const [companyDescription, setCompanyDescription] = useState('')
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
@@ -70,9 +76,20 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
       setLoadError(null)
 
       try {
-        const response = await fetch(`/api/u/${slug}/kickstart/templates`, {
-          cache: 'no-store',
-        })
+        const [templatesResponse, modelsResponse] = await Promise.all([
+          fetch(`/api/u/${slug}/kickstart/templates`, {
+            cache: 'no-store',
+          }).catch(() => null),
+          fetch(`/api/u/${slug}/agents/models`, {
+            cache: 'no-store',
+          }).catch(() => null),
+        ])
+
+        const response = templatesResponse
+        if (!response) {
+          setLoadError('Failed to load kickstart templates')
+          return
+        }
 
         const data = (await response.json().catch(() => null)) as KickstartTemplatesResponse | { error?: string } | null
         if (cancelled) return
@@ -83,6 +100,15 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
         }
 
         setCatalog(data)
+
+        if (modelsResponse?.ok) {
+          const modelData = (await modelsResponse.json().catch(() => null)) as
+            | { models?: ModelOption[] }
+            | null
+          setModelOptions(modelData?.models ?? [])
+        } else {
+          setModelOptions([])
+        }
 
         const firstTemplate = data.templates[0]
         if (!firstTemplate) {
@@ -124,6 +150,11 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
   const agentById = useMemo(() => {
     return new Map((catalog?.agents ?? []).map((agent) => [agent.id, agent]))
   }, [catalog])
+
+  const modelOptionById = useMemo(
+    () => new Map(modelOptions.map((option) => [option.id, option])),
+    [modelOptions]
+  )
 
   const agentOrder = useMemo(() => {
     return new Map((catalog?.agents ?? []).map((agent, index) => [agent.id, index]))
@@ -495,6 +526,7 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
                       <div className="space-y-2">
                         <Label>Model</Label>
                         <Input
+                          list="kickstart-model-options"
                           value={resolved.model}
                           onChange={(event) => {
                             setAgentOverride(agent.id, {
@@ -503,6 +535,27 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
                           }}
                           placeholder="provider/model"
                         />
+                        {resolved.model.trim() ? (
+                          modelOptions.length > 0 ? (
+                            modelOptionById.has(resolved.model.trim()) ? (
+                              <p className="text-xs text-muted-foreground">
+                                {modelOptionById.get(resolved.model.trim())?.label}
+                              </p>
+                            ) : (
+                              <p className="text-xs text-amber-700">
+                                No exact match found in models.dev catalog.
+                              </p>
+                            )
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              models.dev catalog unavailable; validate manually.
+                            </p>
+                          )
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            Search {modelOptions.length} models from models.dev.
+                          </p>
+                        )}
                       </div>
 
                       <div className="space-y-2">
@@ -552,6 +605,14 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
             {applyError}
           </div>
         )}
+
+        <datalist id="kickstart-model-options">
+          {modelOptions.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.label}
+            </option>
+          ))}
+        </datalist>
 
         <div className="mt-8 flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
           <Button
