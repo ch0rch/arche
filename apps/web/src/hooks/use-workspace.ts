@@ -55,6 +55,8 @@ export type AgentCatalogItem = {
   isPrimary: boolean;
 };
 
+const STALE_PENDING_ASSISTANT_MS = 5_000;
+
 function normalizeAgentId(value: string): string {
   return value.trim().toLowerCase();
 }
@@ -1053,6 +1055,21 @@ export function useWorkspace({
 
       if (!sessionId) return;
 
+      let resolvedModel = model;
+      if (!resolvedModel) {
+        const primaryModel = parseModelString(
+          agentCatalog.find((agent) => agent.isPrimary)?.model
+        );
+        if (primaryModel) {
+          resolvedModel = primaryModel;
+        } else if (selectedModel) {
+          resolvedModel = {
+            providerId: selectedModel.providerId,
+            modelId: selectedModel.modelId,
+          };
+        }
+      }
+
       // Add optimistic user message
       const tempUserMsgId = `temp-user-${Date.now()}`;
       const tempUserParts: MessagePart[] = [
@@ -1094,12 +1111,19 @@ export function useWorkspace({
         mode: "send",
         targetMessageId: tempAssistantMsgId,
         text,
-        model,
+        model: resolvedModel,
         attachments: messageAttachments,
         contextPaths: messageContextPaths,
       });
     },
-    [abortActiveStream, activeSessionId, createSession, streamChat]
+    [
+      abortActiveStream,
+      activeSessionId,
+      agentCatalog,
+      createSession,
+      selectedModel,
+      streamChat,
+    ]
   );
 
   // Abort session
@@ -1332,6 +1356,28 @@ export function useWorkspace({
     if (isSendingRef.current) return;
 
     const now = Date.now();
+    const sessionBusy = activeSession?.status === "busy";
+
+    const stalePendingWithoutParts = [...messages].reverse().find((m) => {
+      if (m.role !== "assistant" || !m.pending) return false;
+      if (m.parts.length > 0) return false;
+      if (typeof m.timestampRaw !== "number") return false;
+      return now - m.timestampRaw >= STALE_PENDING_ASSISTANT_MS;
+    });
+
+    if (stalePendingWithoutParts && !sessionBusy) {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== stalePendingWithoutParts.id) return m;
+          return {
+            ...m,
+            pending: false,
+            statusInfo: { status: "error", detail: "stream_incomplete" },
+          };
+        })
+      );
+      return;
+    }
 
     const pendingAssistant = [...messages]
       .reverse()
@@ -1348,6 +1394,10 @@ export function useWorkspace({
         return allowed;
       });
     if (pendingAssistant) {
+      if (!sessionBusy && pendingAssistant.parts.length === 0) {
+        return;
+      }
+
       const activeStream = activeStreamRef.current;
       if (
         !activeStream ||
@@ -1371,7 +1421,14 @@ export function useWorkspace({
     ) {
       abortActiveStream();
     }
-  }, [abortActiveStream, activeSessionId, isConnected, messages, streamChat]);
+  }, [
+    abortActiveStream,
+    activeSession?.status,
+    activeSessionId,
+    isConnected,
+    messages,
+    streamChat,
+  ]);
 
   // Refresh diffs when triggered by message completion
   useEffect(() => {
