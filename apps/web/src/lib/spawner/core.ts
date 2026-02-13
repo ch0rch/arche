@@ -156,7 +156,11 @@ export async function startInstance(slug: string, userId: string): Promise<Start
 
     // Provider credentials are per workspace owner (slug), not per actor.
     const syncUserId = owner?.id ?? userId
-    const syncResult = await syncProviderAccessForInstance({ slug, userId: syncUserId })
+    const syncResult = await syncProviderAccessForInstance({
+      slug,
+      userId: syncUserId,
+      disposeInstance: false,
+    })
     if (!syncResult.ok) {
       console.error('[spawner] Failed to sync OpenCode providers', syncResult.error)
     }

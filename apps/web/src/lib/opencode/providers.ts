@@ -10,6 +10,7 @@ export type SyncProviderAccessResult =
 type SyncProviderAccessInput = {
   slug: string
   userId: string
+  disposeInstance?: boolean
 }
 
 export async function syncProviderAccessForInstance(
@@ -68,15 +69,17 @@ export async function syncProviderAccessForInstance(
       })
     }
 
-    // OpenCode caches provider discovery; dispose to reload with updated auth.
-    await fetch(`${instance.baseUrl}/instance/dispose`, {
-      method: 'POST',
-      headers: {
-        Authorization: instance.authHeader,
-        Accept: 'application/json',
-      },
-      cache: 'no-store',
-    }).catch(() => {})
+    if (input.disposeInstance !== false) {
+      // OpenCode caches provider discovery; dispose to reload with updated auth.
+      await fetch(`${instance.baseUrl}/instance/dispose`, {
+        method: 'POST',
+        headers: {
+          Authorization: instance.authHeader,
+          Accept: 'application/json',
+        },
+        cache: 'no-store',
+      }).catch(() => {})
+    }
 
     return { ok: true }
   } catch (error) {

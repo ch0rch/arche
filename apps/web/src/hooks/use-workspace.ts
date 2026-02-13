@@ -734,11 +734,12 @@ export function useWorkspace({
         mode === "resume" ? targetMessageId : null;
       const bufferedParts = new Map<string, MessagePart[]>();
       let streamCompleted = false;
-      let receivedAnyPart = false;
+      let receivedAssistantPart = false;
 
       const flushBufferedParts = (messageId: string) => {
         const buffered = bufferedParts.get(messageId);
         if (!buffered || buffered.length === 0) return;
+        receivedAssistantPart = true;
         buffered.forEach((part) => upsertMessagePart(targetMessageId, part));
         bufferedParts.delete(messageId);
       };
@@ -747,16 +748,17 @@ export function useWorkspace({
         if (!messageId) return;
         const transformed = transformParts([part]);
         if (transformed.length === 0) return;
-        receivedAnyPart = true;
 
         if (mode === "resume") {
           if (messageId !== targetMessageId) return;
+          receivedAssistantPart = true;
           transformed.forEach((p) => upsertMessagePart(targetMessageId, p));
           return;
         }
 
         if (assistantMessageId) {
           if (messageId !== assistantMessageId) return;
+          receivedAssistantPart = true;
           transformed.forEach((p) => upsertMessagePart(targetMessageId, p));
           return;
         }
@@ -925,7 +927,7 @@ export function useWorkspace({
         const isLatest = streamCounterRef.current === token;
 
         if (mode === "resume") {
-          if (streamCompleted || receivedAnyPart) {
+          if (streamCompleted || receivedAssistantPart) {
             resumeFailureStateRef.current.delete(targetMessageId);
           } else {
             const nextState = recordResumeFailure(
@@ -944,7 +946,34 @@ export function useWorkspace({
 
         if (isLatest) {
           await new Promise((resolve) => setTimeout(resolve, 120));
-          const result = await listMessagesAction(slug, sessionId);
+          const loadLatestMessages = async () => {
+            const attempts =
+              mode === "send" && assistantMessageId ? 3 : 1;
+            let latestResult = await listMessagesAction(slug, sessionId);
+
+            for (let attempt = 1; attempt < attempts; attempt += 1) {
+              if (!latestResult.ok || !latestResult.messages) {
+                return latestResult;
+              }
+
+              const assistant = latestResult.messages.find(
+                (message) =>
+                  message.id === assistantMessageId &&
+                  message.role === "assistant"
+              );
+
+              if (assistant) {
+                return latestResult;
+              }
+
+              await new Promise((resolve) => setTimeout(resolve, 120));
+              latestResult = await listMessagesAction(slug, sessionId);
+            }
+
+            return latestResult;
+          };
+
+          const result = await loadLatestMessages();
           if (result.ok && result.messages) {
             const pendingIds = new Set(
               result.messages.filter((message) => message.pending).map((message) => message.id)
@@ -955,7 +984,7 @@ export function useWorkspace({
               }
             }
 
-            const hydratedMessages: WorkspaceMessage[] = result.messages.map(
+            let hydratedMessages: WorkspaceMessage[] = result.messages.map(
               (message): WorkspaceMessage => {
                 const resumeState = resumeFailureStateRef.current.get(message.id);
                 if (
@@ -974,8 +1003,32 @@ export function useWorkspace({
               }
             );
 
+            if (mode === "send" && assistantMessageId && !receivedAssistantPart) {
+              const assistantMessage = hydratedMessages.find(
+                (message) =>
+                  message.id === assistantMessageId &&
+                  message.role === "assistant"
+              );
+
+              if (
+                assistantMessage &&
+                !assistantMessage.pending &&
+                assistantMessage.parts.length === 0 &&
+                assistantMessage.content.trim().length === 0
+              ) {
+                hydratedMessages = hydratedMessages.map((message) => {
+                  if (message.id !== assistantMessageId) return message;
+                  return {
+                    ...message,
+                    pending: false,
+                    statusInfo: { status: "error", detail: "stream_incomplete" },
+                  };
+                });
+              }
+            }
+
             setMessages(hydratedMessages);
-          } else if (!streamCompleted && !receivedAnyPart) {
+          } else if (!streamCompleted && !receivedAssistantPart) {
             updateStatus("error", undefined, "stream_incomplete");
           }
           scheduleWorkspaceRefresh();

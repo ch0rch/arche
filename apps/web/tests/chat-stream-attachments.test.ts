@@ -490,6 +490,144 @@ describe('chat stream attachments forwarding', () => {
     expect(eventIndex).toBeLessThan(promptIndex)
   })
 
+  it('returns stream_no_assistant_message when session idles before assistant message', async () => {
+    const encoder = new TextEncoder()
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('/prompt_async')) {
+        return new Response(null, { status: 204 })
+      }
+
+      if (url.endsWith('/event')) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                [
+                  'event: message',
+                  'data: {"type":"message.updated","properties":{"info":{"id":"msg-user","role":"user","sessionID":"session-1"}}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"message.part.updated","properties":{"part":{"id":"part-user","type":"text","text":"hello","messageID":"msg-user","sessionID":"session-1"}}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"session.status","properties":{"status":{"type":"idle"},"sessionID":"session-1"}}',
+                  '',
+                  '',
+                ].join('\n'),
+              ),
+            )
+            controller.close()
+          },
+        })
+
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'hello',
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    const sseOutput = await res.text()
+
+    expect(sseOutput).toContain('event: error')
+    expect(sseOutput).toContain('stream_no_assistant_message')
+    expect(sseOutput).not.toContain('event: done')
+    expect(sseOutput).toContain('"messageId":"msg-user"')
+  })
+
+  it('returns stream_incomplete when assistant message has no streamed parts', async () => {
+    const encoder = new TextEncoder()
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('/prompt_async')) {
+        return new Response(null, { status: 204 })
+      }
+
+      if (url.endsWith('/event')) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                [
+                  'event: message',
+                  'data: {"type":"message.updated","properties":{"info":{"id":"msg-assistant","role":"assistant","sessionID":"session-1"}}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"session.status","properties":{"status":{"type":"idle"},"sessionID":"session-1"}}',
+                  '',
+                  '',
+                ].join('\n'),
+              ),
+            )
+            controller.close()
+          },
+        })
+
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'hello',
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    const sseOutput = await res.text()
+
+    expect(sseOutput).toContain('event: error')
+    expect(sseOutput).toContain('stream_incomplete')
+    expect(sseOutput).not.toContain('event: done')
+  })
+
   it('parses multi-line SSE events and forwards assistant parts', async () => {
     const encoder = new TextEncoder()
 
@@ -565,6 +703,76 @@ describe('chat stream attachments forwarding', () => {
 
     expect(sseOutput).toContain('event: part')
     expect(sseOutput).toContain('"messageId":"msg-1"')
+    expect(sseOutput).toContain('event: done')
+  })
+
+  it('keeps assistant part when part arrives before message metadata', async () => {
+    const encoder = new TextEncoder()
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('/prompt_async')) {
+        return new Response(null, { status: 204 })
+      }
+
+      if (url.endsWith('/event')) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                [
+                  'event: message',
+                  'data: {"type":"message.part.updated","properties":{"part":{"id":"part-1","type":"text","text":"Hello","messageID":"msg-o1","sessionID":"session-1"},"delta":"Hello"}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"message.updated","properties":{"info":{"id":"msg-o1","role":"assistant","sessionID":"session-1"}}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"session.status","properties":{"status":{"type":"idle"},"sessionID":"session-1"}}',
+                  '',
+                  '',
+                ].join('\n'),
+              ),
+            )
+            controller.close()
+          },
+        })
+
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'hello',
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    const sseOutput = await res.text()
+
+    expect(sseOutput).toContain('event: part')
+    expect(sseOutput).toContain('"messageId":"msg-o1"')
     expect(sseOutput).toContain('event: done')
   })
 })

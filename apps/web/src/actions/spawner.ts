@@ -117,22 +117,28 @@ export async function ensureInstanceRunningAction(slug: string): Promise<{
   
   // Ya está corriendo o iniciando
   if (instance?.status === 'running') {
+    const startedRecently =
+      instance.startedAt instanceof Date &&
+      Date.now() - instance.startedAt.getTime() < 30_000
+
     // Best-effort: keep provider access in sync even when instance was already running.
     // This is important when provider keys are created/rotated after the workspace was started.
-    try {
-      const syncUserId =
-        session.user.slug === slug
-          ? session.user.id
-          : (await prisma.user.findUnique({ where: { slug }, select: { id: true } }))?.id
+    if (!startedRecently) {
+      try {
+        const syncUserId =
+          session.user.slug === slug
+            ? session.user.id
+            : (await prisma.user.findUnique({ where: { slug }, select: { id: true } }))?.id
 
-      if (syncUserId) {
-        const syncResult = await syncProviderAccessForInstance({ slug, userId: syncUserId })
-        if (!syncResult.ok) {
-          console.error('[ensureInstanceRunning] Failed to sync OpenCode providers', syncResult.error)
+        if (syncUserId) {
+          const syncResult = await syncProviderAccessForInstance({ slug, userId: syncUserId })
+          if (!syncResult.ok) {
+            console.error('[ensureInstanceRunning] Failed to sync OpenCode providers', syncResult.error)
+          }
         }
+      } catch (err) {
+        console.error('[ensureInstanceRunning] Failed to sync OpenCode providers', err)
       }
-    } catch (err) {
-      console.error('[ensureInstanceRunning] Failed to sync OpenCode providers', err)
     }
 
     return { status: 'running' }

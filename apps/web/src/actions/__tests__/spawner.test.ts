@@ -175,6 +175,19 @@ describe('ensureInstanceRunningAction', () => {
     expect(mockPrisma.user.findUnique).not.toHaveBeenCalled()
   })
 
+  it('skips provider sync when instance just started', async () => {
+    mockGetSession.mockResolvedValue(fakeSession)
+    mockStatus.mockResolvedValue({
+      status: 'running',
+      startedAt: new Date(),
+    } as never)
+
+    const result = await ensureInstanceRunningAction('alice')
+
+    expect(result).toEqual({ status: 'running' })
+    expect(mockSync).not.toHaveBeenCalled()
+  })
+
   it('syncs providers against the workspace owner when admin opens another slug', async () => {
     mockGetSession.mockResolvedValue(adminSession)
     mockStatus.mockResolvedValue({ status: 'running' } as never)

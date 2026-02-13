@@ -110,7 +110,7 @@ describe('startInstance', () => {
     expect(typeof agentsMd).toBe('string')
     expect(gitAuthor).toEqual({ name: 'alice', email: 'alice@example.com' })
     expect(mockDocker.startContainer).toHaveBeenCalledWith('container-123')
-    expect(mockSync).toHaveBeenCalledWith({ slug: 'alice', userId: 'owner-1' })
+    expect(mockSync).toHaveBeenCalledWith({ slug: 'alice', userId: 'owner-1', disposeInstance: false })
     expect(mockAudit).toHaveBeenCalledWith({
       actorUserId: 'user-1',
       action: 'instance.started',
