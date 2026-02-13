@@ -192,6 +192,23 @@ Do not modify the spawner without understanding the full flow: create container 
 - Singleton: `src/lib/prisma.ts`
 - For schema changes: create a migration with `pnpm db:migrate`; never edit existing migrations.
 
+### Seguridad de migraciones (zero-downtime deploys)
+
+Durante un despliegue, la version antigua y la nueva del codigo corren simultaneamente contra la misma base de datos. Por eso, **todas las migraciones deben ser forward-compatible (aditivas)**.
+
+| Seguro (un solo deploy) | NO seguro (requiere dos deploys) |
+|------------------------|----------------------------------|
+| `CREATE TABLE` | `DROP TABLE` |
+| `ADD COLUMN` (nullable o con default) | `DROP COLUMN` |
+| `CREATE INDEX` | `RENAME COLUMN` |
+| `ADD COLUMN NOT NULL DEFAULT x` | `ALTER COLUMN TYPE` |
+
+Para cambios destructivos, usa el patron **expand-contract**:
+1. **Deploy 1 (expand):** Anade la nueva columna/tabla. El codigo escribe en ambas (vieja y nueva) y lee de la nueva con fallback a la vieja.
+2. **Deploy 2 (contract):** Elimina la columna/tabla vieja y el codigo de fallback.
+
+**Nunca** hagas `DROP COLUMN`, `RENAME COLUMN` o `ALTER COLUMN TYPE` en una sola migracion mientras haya despliegues blue-green activos.
+
 ---
 
 ## Security
