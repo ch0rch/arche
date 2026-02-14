@@ -233,6 +233,191 @@ if [[ ${#ERRORS[@]} -gt 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# DNS Record Management
+# ---------------------------------------------------------------------------
+ensure_dns_record() {
+  log "Checking DNS configuration for $DEPLOY_DOMAIN..."
+
+  # Check if domain already resolves to the VPS IP
+  CURRENT_IP=$(dig +short "$DEPLOY_DOMAIN" 2>/dev/null | head -1)
+  if [[ "$CURRENT_IP" == "$DEPLOY_IP" ]]; then
+    log "DNS record already points to $DEPLOY_IP ✓"
+    return 0
+  fi
+
+  warn "DNS record for $DEPLOY_DOMAIN does not point to $DEPLOY_IP"
+  warn "Current IP: ${CURRENT_IP:-(not set)}"
+  log "Attempting to create/update DNS record automatically..."
+
+  case "$DNS_PROVIDER" in
+    cloudflare)
+      ensure_cloudflare_record
+      ;;
+    route53)
+      ensure_route53_record
+      ;;
+    digitalocean)
+      ensure_digitalocean_record
+      ;;
+    *)
+      err "Cannot auto-configure DNS for provider: $DNS_PROVIDER"
+      err "Please manually create an A record: $DEPLOY_DOMAIN → $DEPLOY_IP"
+      exit 1
+      ;;
+  esac
+
+  # Wait for DNS propagation
+  log "Waiting for DNS propagation (this may take 30-60 seconds)..."
+  RETRIES=30
+  until [[ "$(dig +short "$DEPLOY_DOMAIN" 2>/dev/null | head -1)" == "$DEPLOY_IP" ]]; do
+    RETRIES=$((RETRIES - 1))
+    if [[ $RETRIES -le 0 ]]; then
+      warn "DNS propagation timeout. The record was created but may not be visible yet."
+      warn "You can continue, but the deployment may fail if Let's Encrypt cannot resolve the domain."
+      read -p "Continue anyway? (y/N) " -n 1 -r
+      echo
+      if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        exit 1
+      fi
+      return 0
+    fi
+    sleep 2
+  done
+  log "DNS propagated successfully ✓"
+}
+
+ensure_cloudflare_record() {
+  log "Creating Cloudflare DNS record..."
+
+  # Extract domain parts
+  DOMAIN="$DEPLOY_DOMAIN"
+
+  # Get zone ID
+  ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$DOMAIN" \
+    -H "Authorization: Bearer $CF_DNS_API_TOKEN" \
+    -H "Content-Type: application/json" | python3 -c "import sys,json; print(json.load(sys.stdin)['result'][0]['id'])" 2>/dev/null)
+
+  if [[ -z "$ZONE_ID" ]]; then
+    # Try without subdomain (e.g., arche.example.com -> example.com)
+    BASE_DOMAIN=$(echo "$DOMAIN" | sed 's/^[^.]*\.//')
+    ZONE_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones?name=$BASE_DOMAIN" \
+      -H "Authorization: Bearer $CF_DNS_API_TOKEN" \
+      -H "Content-Type: application/json" | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['result'][0]['id'] if data['result'] else '')" 2>/dev/null)
+
+    if [[ -z "$ZONE_ID" ]]; then
+      err "Could not find Cloudflare zone for $DOMAIN or $BASE_DOMAIN"
+      err "Please ensure:"
+      err "  1. Your domain is added to Cloudflare"
+      err "  2. CF_DNS_API_TOKEN has Zone:Read and DNS:Edit permissions"
+      exit 1
+    fi
+  fi
+
+  # Check if record already exists
+  RECORD_ID=$(curl -s -X GET "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records?type=A&name=$DOMAIN" \
+    -H "Authorization: Bearer $CF_DNS_API_TOKEN" \
+    -H "Content-Type: application/json" | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['result'][0]['id'] if data['result'] else '')" 2>/dev/null)
+
+  if [[ -n "$RECORD_ID" ]]; then
+    # Update existing record
+    curl -s -X PUT "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records/$RECORD_ID" \
+      -H "Authorization: Bearer $CF_DNS_API_TOKEN" \
+      -H "Content-Type: application/json" \
+      --data "{\"type\":\"A\",\"name\":\"$DOMAIN\",\"content\":\"$DEPLOY_IP\",\"ttl\":120,\"proxied\":false}" > /dev/null
+    log "Updated existing Cloudflare DNS record ✓"
+  else
+    # Create new record
+    curl -s -X POST "https://api.cloudflare.com/client/v4/zones/$ZONE_ID/dns_records" \
+      -H "Authorization: Bearer $CF_DNS_API_TOKEN" \
+      -H "Content-Type: application/json" \
+      --data "{\"type\":\"A\",\"name\":\"$DOMAIN\",\"content\":\"$DEPLOY_IP\",\"ttl\":120,\"proxied\":false}" > /dev/null
+    log "Created new Cloudflare DNS record ✓"
+  fi
+}
+
+ensure_route53_record() {
+  log "Creating Route53 DNS record..."
+  
+  # Check if aws CLI is available
+  if ! command -v aws &>/dev/null; then
+    err "AWS CLI not found. Install it or manually create the DNS record:"
+    err "  $DEPLOY_DOMAIN A $DEPLOY_IP"
+    exit 1
+  fi
+
+  # Extract hosted zone ID
+  HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name "$DEPLOY_DOMAIN" --query 'HostedZones[0].Id' --output text 2>/dev/null | cut -d'/' -f3)
+  
+  if [[ -z "$HOSTED_ZONE_ID" || "$HOSTED_ZONE_ID" == "None" ]]; then
+    # Try base domain
+    BASE_DOMAIN=$(echo "$DEPLOY_DOMAIN" | sed 's/^[^.]*\.//')
+    HOSTED_ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name "$BASE_DOMAIN" --query 'HostedZones[0].Id' --output text 2>/dev/null | cut -d'/' -f3)
+  fi
+
+  if [[ -z "$HOSTED_ZONE_ID" || "$HOSTED_ZONE_ID" == "None" ]]; then
+    err "Could not find Route53 hosted zone for $DEPLOY_DOMAIN"
+    exit 1
+  fi
+
+  # Create change batch
+  aws route53 change-resource-record-sets \
+    --hosted-zone-id "$HOSTED_ZONE_ID" \
+    --change-batch '{
+      "Changes": [{
+        "Action": "UPSERT",
+        "ResourceRecordSet": {
+          "Name": "'$DEPLOY_DOMAIN'",
+          "Type": "A",
+          "TTL": 300,
+          "ResourceRecords": [{"Value": "'$DEPLOY_IP'"}]
+        }
+      }]
+    }' > /dev/null
+
+  log "Created/updated Route53 DNS record ✓"
+}
+
+ensure_digitalocean_record() {
+  log "Creating DigitalOcean DNS record..."
+
+  # Extract domain
+  DOMAIN="$DEPLOY_DOMAIN"
+  
+  # Get domain name (remove subdomain if present)
+  BASE_DOMAIN=$(echo "$DOMAIN" | sed 's/^[^.]*\.//')
+  
+  # Check if domain exists in DO
+  DOMAIN_CHECK=$(curl -s -X GET "https://api.digitalocean.com/v2/domains/$BASE_DOMAIN" \
+    -H "Authorization: Bearer $DO_AUTH_TOKEN" | python3 -c "import sys,json; data=json.load(sys.stdin); print('ok' if 'domain' in data else '')" 2>/dev/null)
+
+  if [[ -z "$DOMAIN_CHECK" ]]; then
+    err "Domain $BASE_DOMAIN not found in DigitalOcean"
+    err "Please add your domain to DigitalOcean DNS first"
+    exit 1
+  fi
+
+  # Check if record exists
+  RECORD_ID=$(curl -s -X GET "https://api.digitalocean.com/v2/domains/$BASE_DOMAIN/records?type=A&name=$DOMAIN" \
+    -H "Authorization: Bearer $DO_AUTH_TOKEN" | python3 -c "import sys,json; data=json.load(sys.stdin); print(str(data['domain_records'][0]['id']) if data.get('domain_records') else '')" 2>/dev/null)
+
+  if [[ -n "$RECORD_ID" ]]; then
+    # Update existing
+    curl -s -X PUT "https://api.digitalocean.com/v2/domains/$BASE_DOMAIN/records/$RECORD_ID" \
+      -H "Authorization: Bearer $DO_AUTH_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"type":"A","name":"'$DOMAIN'","data":"'$DEPLOY_IP'","ttl":300}' > /dev/null
+    log "Updated existing DigitalOcean DNS record ✓"
+  else
+    # Create new
+    curl -s -X POST "https://api.digitalocean.com/v2/domains/$BASE_DOMAIN/records" \
+      -H "Authorization: Bearer $DO_AUTH_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{"type":"A","name":"'$DOMAIN'","data":"'$DEPLOY_IP'","ttl":300}' > /dev/null
+    log "Created new DigitalOcean DNS record ✓"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Remote mode
 # ---------------------------------------------------------------------------
 deploy_remote() {
@@ -251,6 +436,9 @@ deploy_remote() {
     exit 1
   fi
   log "SSH connection OK"
+
+  # Ensure DNS record points to VPS IP
+  ensure_dns_record
 
   # Generate temporary inventory and extra-vars file
   INVENTORY=$(mktemp)
