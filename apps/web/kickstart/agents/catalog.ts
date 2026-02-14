@@ -1,14 +1,17 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { loadDefinitions } from '@/kickstart/definition-loader'
+import {
+  hasOnlyAllowedKeys,
+  isRecord,
+  parseNonEmptyString,
+  parseOrder,
+} from '@/kickstart/parse-utils'
+import type { KickstartAgentDefinition, KickstartAgentSummary } from '@/kickstart/types'
 import {
   OPENCODE_AGENT_TOOLS,
   type OpenCodeAgentToolId,
 } from '@/lib/agent-capabilities'
-import type {
-  KickstartAgentDefinition,
-  KickstartAgentSummary,
-} from '@/kickstart/types'
 
 type ParsedAgentDefinition = {
   definition: KickstartAgentDefinition
@@ -33,24 +36,8 @@ const AGENT_DEFINITION_DIR_CANDIDATES = [
 
 const AGENT_TOOL_SET = new Set<string>(OPENCODE_AGENT_TOOLS)
 
-function hasOnlyAllowedKeys(value: Record<string, unknown>): boolean {
-  return Object.keys(value).every((key) => AGENT_DEFINITION_KEYS.has(key))
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
 function isOpenCodeAgentToolId(value: string): value is OpenCodeAgentToolId {
   return AGENT_TOOL_SET.has(value)
-}
-
-function parseNonEmptyString(value: unknown, fieldName: string, fileName: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`Invalid ${fieldName} in kickstart agent definition: ${fileName}`)
-  }
-
-  return value.trim()
 }
 
 function parseSystemPrompt(value: unknown, fileName: string): string {
@@ -64,18 +51,6 @@ function parseSystemPrompt(value: unknown, fileName: string): string {
 function parseTemperature(value: unknown, fileName: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 2) {
     throw new Error(`Invalid temperature in kickstart agent definition: ${fileName}`)
-  }
-
-  return value
-}
-
-function parseOrder(value: unknown, fileName: string): number {
-  if (value === undefined) {
-    return 1000
-  }
-
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new Error(`Invalid order in kickstart agent definition: ${fileName}`)
   }
 
   return value
@@ -118,82 +93,39 @@ function parseAgentDefinition(raw: string, fileName: string): ParsedAgentDefinit
     throw new Error(`Invalid JSON in kickstart agent definition: ${fileName}`)
   }
 
-  if (!isRecord(parsedValue) || !hasOnlyAllowedKeys(parsedValue)) {
+  if (!isRecord(parsedValue) || !hasOnlyAllowedKeys(parsedValue, AGENT_DEFINITION_KEYS)) {
     throw new Error(`Invalid object shape in kickstart agent definition: ${fileName}`)
   }
 
+  const context = `kickstart agent definition: ${fileName}`
+
   const definition: KickstartAgentDefinition = {
-    id: parseNonEmptyString(parsedValue.id, 'id', fileName),
-    displayName: parseNonEmptyString(parsedValue.displayName, 'displayName', fileName),
-    description: parseNonEmptyString(parsedValue.description, 'description', fileName),
+    id: parseNonEmptyString(parsedValue.id, 'id', context),
+    displayName: parseNonEmptyString(parsedValue.displayName, 'displayName', context),
+    description: parseNonEmptyString(parsedValue.description, 'description', context),
     systemPrompt: parseSystemPrompt(parsedValue.systemPrompt, fileName),
-    recommendedModel: parseNonEmptyString(parsedValue.recommendedModel, 'recommendedModel', fileName),
+    recommendedModel: parseNonEmptyString(
+      parsedValue.recommendedModel,
+      'recommendedModel',
+      context
+    ),
     temperature: parseTemperature(parsedValue.temperature, fileName),
     tools: parseTools(parsedValue.tools, fileName),
   }
 
   return {
     definition,
-    order: parseOrder(parsedValue.order, fileName),
+    order: parseOrder(parsedValue.order, context),
   }
-}
-
-function resolveAgentDefinitionDirectory(): string {
-  for (const candidate of AGENT_DEFINITION_DIR_CANDIDATES) {
-    if (existsSync(candidate)) {
-      return candidate
-    }
-  }
-
-  throw new Error(
-    `Kickstart agent definitions directory not found. Tried: ${AGENT_DEFINITION_DIR_CANDIDATES.join(', ')}`
-  )
 }
 
 function loadKickstartAgentCatalog(): KickstartAgentDefinition[] {
-  const definitionsDirectory = resolveAgentDefinitionDirectory()
-  const definitionFiles = readdirSync(definitionsDirectory)
-    .filter((fileName) => fileName.endsWith('.json'))
-    .sort((left, right) => left.localeCompare(right))
-
-  if (definitionFiles.length === 0) {
-    throw new Error('No kickstart agent definitions were found')
-  }
-
-  const loadedDefinitions = definitionFiles.map((fileName) => {
-    const filePath = join(definitionsDirectory, fileName)
-    const parsed = parseAgentDefinition(readFileSync(filePath, 'utf-8'), fileName)
-
-    if (`${parsed.definition.id}.json` !== fileName) {
-      throw new Error(
-        `Kickstart agent file name must match agent id: ${fileName} -> ${parsed.definition.id}`
-      )
-    }
-
-    return parsed
+  return loadDefinitions({
+    directoryCandidates: AGENT_DEFINITION_DIR_CANDIDATES,
+    definitionKind: 'Kickstart agent',
+    idKind: 'agent',
+    parse: parseAgentDefinition,
   })
-
-  loadedDefinitions.sort((left, right) => {
-    if (left.order !== right.order) {
-      return left.order - right.order
-    }
-
-    return left.definition.id.localeCompare(right.definition.id)
-  })
-
-  const seenIds = new Set<string>()
-  const catalog: KickstartAgentDefinition[] = []
-
-  for (const { definition } of loadedDefinitions) {
-    if (seenIds.has(definition.id)) {
-      throw new Error(`Duplicate kickstart agent id: ${definition.id}`)
-    }
-
-    seenIds.add(definition.id)
-    catalog.push(definition)
-  }
-
-  return catalog
 }
 
 export const KICKSTART_AGENT_CATALOG: KickstartAgentDefinition[] =
@@ -207,14 +139,8 @@ export function getKickstartAgentById(id: string): KickstartAgentDefinition | nu
   return KICKSTART_AGENT_BY_ID.get(id) ?? null
 }
 
+const KICKSTART_AGENT_SUMMARIES: KickstartAgentSummary[] = KICKSTART_AGENT_CATALOG
+
 export function getKickstartAgentSummaries(): KickstartAgentSummary[] {
-  return KICKSTART_AGENT_CATALOG.map((agent) => ({
-    id: agent.id,
-    displayName: agent.displayName,
-    description: agent.description,
-    systemPrompt: agent.systemPrompt,
-    recommendedModel: agent.recommendedModel,
-    temperature: agent.temperature,
-    tools: [...agent.tools],
-  }))
+  return KICKSTART_AGENT_SUMMARIES
 }

@@ -11,11 +11,12 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { cn } from '@/lib/utils'
+import { getRequiredAgentIdsForTemplate } from '@/kickstart/required-agent-ids'
 import type {
   KickstartStatus,
   KickstartTemplatesResponse,
 } from '@/kickstart/types'
+import { cn } from '@/lib/utils'
 
 type KickstartWizardProps = {
   slug: string
@@ -39,13 +40,6 @@ const STEPS = [
   'Agent selection',
   'Review and apply',
 ]
-
-function mandatoryAgentIds(templateId: string): string[] {
-  if (templateId === 'blank') {
-    return ['assistant', 'knowledge-curator']
-  }
-  return ['assistant']
-}
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values))
@@ -119,7 +113,7 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
         setSelectedTemplateId(firstTemplate.id)
         setSelectedAgentIds(
           unique([
-            ...mandatoryAgentIds(firstTemplate.id),
+            ...getRequiredAgentIdsForTemplate(firstTemplate.id),
             ...firstTemplate.recommendedAgentIds,
           ])
         )
@@ -169,7 +163,7 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
   )
 
   const requiredIds = useMemo(
-    () => (selectedTemplate ? mandatoryAgentIds(selectedTemplate.id) : []),
+    () => (selectedTemplate ? getRequiredAgentIdsForTemplate(selectedTemplate.id) : []),
     [selectedTemplate]
   )
 
@@ -230,7 +224,7 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
     setSelectedTemplateId(template.id)
     setSelectedAgentIds(
       unique([
-        ...mandatoryAgentIds(template.id),
+        ...getRequiredAgentIdsForTemplate(template.id),
         ...template.recommendedAgentIds,
       ])
     )
@@ -240,7 +234,7 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
   function toggleAgent(agentId: string) {
     if (!selectedTemplate) return
 
-    const required = mandatoryAgentIds(selectedTemplate.id)
+    const required = getRequiredAgentIdsForTemplate(selectedTemplate.id)
     if (required.includes(agentId)) return
 
     setSelectedAgentIds((current) => {

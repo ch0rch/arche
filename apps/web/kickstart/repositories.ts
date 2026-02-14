@@ -4,6 +4,7 @@ import { tmpdir } from 'os'
 import path from 'path'
 import { promisify } from 'util'
 
+import { normalizeRepoPath } from '@/kickstart/parse-utils'
 import type { KickstartRenderedFile } from '@/kickstart/types'
 
 const CONFIG_REPO_ENV = 'ARCHE_CONFIG_REPO_PATH'
@@ -27,20 +28,9 @@ export type KickstartRepoWriteResult =
   | { ok: true }
   | { ok: false; error: 'conflict' | 'kb_unavailable' | 'write_failed' }
 
-function normalizeRepoPath(rawPath: string): string | null {
-  const normalized = rawPath
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-    .replace(/\/+$/g, '')
-
-  if (!normalized) return null
-
-  const parts = normalized.split('/')
-  if (parts.some((part) => !part || part === '.' || part === '..')) {
-    return null
-  }
-
-  return normalized
+export type KickstartRepoPathRequirement = {
+  path: string
+  type: 'file' | 'dir'
 }
 
 function isPushConflict(stderr: string): boolean {
@@ -325,53 +315,165 @@ async function writeContentTree(
   return true
 }
 
-async function pathExists(
-  root: string,
-  mode: RepoMode,
-  rawPath: string,
-  expectedType: 'file' | 'dir'
-): Promise<boolean> {
-  const safePath = normalizeRepoPath(rawPath)
-  if (!safePath) return false
+async function fileMatchesContent(filePath: string, expectedContent: string): Promise<boolean> {
+  try {
+    const actualContent = await fs.readFile(filePath, 'utf-8')
+    return actualContent === expectedContent
+  } catch {
+    return false
+  }
+}
 
-  const check = async (basePath: string): Promise<boolean> => {
+async function textFilesMatch(root: string, files: Record<string, string>): Promise<boolean> {
+  const entries = Object.entries(files).sort(([a], [b]) => a.localeCompare(b))
+
+  for (const [rawPath, expectedContent] of entries) {
+    const safePath = normalizeRepoPath(rawPath)
+    if (!safePath) {
+      return false
+    }
+
+    const absolutePath = path.join(root, safePath)
+    const matches = await fileMatchesContent(absolutePath, expectedContent)
+    if (!matches) {
+      return false
+    }
+  }
+
+  return true
+}
+
+async function contentTreeMatches(
+  root: string,
+  directories: string[],
+  files: KickstartRenderedFile[]
+): Promise<boolean> {
+  for (const rawDirectory of directories) {
+    const safePath = normalizeRepoPath(rawDirectory)
+    if (!safePath) {
+      return false
+    }
+
     try {
-      const stats = await fs.stat(path.join(basePath, safePath))
-      return expectedType === 'file' ? stats.isFile() : stats.isDirectory()
+      const stats = await fs.stat(path.join(root, safePath))
+      if (!stats.isDirectory()) {
+        return false
+      }
     } catch {
       return false
     }
   }
 
-  if (mode !== 'bare') {
-    return check(root)
+  for (const file of files) {
+    const safePath = normalizeRepoPath(file.path)
+    if (!safePath) {
+      return false
+    }
+
+    const absolutePath = path.join(root, safePath)
+    const matches = await fileMatchesContent(absolutePath, file.content)
+    if (!matches) {
+      return false
+    }
   }
 
+  return true
+}
+
+async function worktreePathsExist(
+  root: string,
+  requiredPaths: KickstartRepoPathRequirement[]
+): Promise<boolean> {
+  for (const requiredPath of requiredPaths) {
+    const safePath = normalizeRepoPath(requiredPath.path)
+    if (!safePath) return false
+
+    try {
+      const stats = await fs.stat(path.join(root, safePath))
+      const validType = requiredPath.type === 'file' ? stats.isFile() : stats.isDirectory()
+      if (!validType) {
+        return false
+      }
+    } catch {
+      return false
+    }
+  }
+
+  return true
+}
+
+export async function bareRepoPathsExist(
+  repoPath: string,
+  requiredPaths: KickstartRepoPathRequirement[]
+): Promise<boolean> {
   if (!(await isGitAvailable())) {
     return false
   }
 
-  const clone = await cloneRepoToTemp(root)
-  if (!clone.ok) {
+  const normalized = requiredPaths
+    .map((requiredPath) => {
+      const safePath = normalizeRepoPath(requiredPath.path)
+      if (!safePath) return null
+      return {
+        safePath,
+        type: requiredPath.type,
+      }
+    })
+    .filter((entry): entry is { safePath: string; type: 'file' | 'dir' } => Boolean(entry))
+
+  if (normalized.length !== requiredPaths.length) {
     return false
   }
 
-  try {
-    return await check(clone.dir)
-  } finally {
-    await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
+  const tree = await runGit(['--git-dir', repoPath, 'ls-tree', '-r', '--name-only', 'HEAD'])
+  if (!tree.ok) {
+    return false
   }
+
+  const trackedFiles = tree.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+  const trackedFileSet = new Set(trackedFiles)
+
+  for (const requiredPath of normalized) {
+    if (requiredPath.type === 'file') {
+      if (!trackedFileSet.has(requiredPath.safePath)) {
+        return false
+      }
+      continue
+    }
+
+    if (
+      !trackedFileSet.has(requiredPath.safePath) &&
+      !trackedFiles.some((trackedPath) => trackedPath.startsWith(`${requiredPath.safePath}/`))
+    ) {
+      return false
+    }
+  }
+
+  return true
+}
+
+export async function contentRepoPathsExist(
+  requiredPaths: KickstartRepoPathRequirement[]
+): Promise<boolean> {
+  const root = await resolveKickstartContentRepoRoot()
+  if (!root) return false
+
+  const mode = await detectRepoMode(root)
+  if (mode === 'bare') {
+    return bareRepoPathsExist(root, requiredPaths)
+  }
+
+  return worktreePathsExist(root, requiredPaths)
 }
 
 export async function contentRepoPathExists(
   repoPath: string,
   expectedType: 'file' | 'dir'
 ): Promise<boolean> {
-  const root = await resolveKickstartContentRepoRoot()
-  if (!root) return false
-
-  const mode = await detectRepoMode(root)
-  return pathExists(root, mode, repoPath, expectedType)
+  return contentRepoPathsExist([{ path: repoPath, type: expectedType }])
 }
 
 export async function writeKickstartConfigRepo(
@@ -385,6 +487,10 @@ export async function writeKickstartConfigRepo(
   const mode = await detectRepoMode(root)
   if (mode !== 'bare') {
     try {
+      if (await textFilesMatch(root, files)) {
+        return { ok: true }
+      }
+
       const written = await writeTextFiles(root, files)
       if (!written) {
         return { ok: false, error: 'write_failed' }
@@ -396,6 +502,10 @@ export async function writeKickstartConfigRepo(
   }
 
   const result = await withBareRepoCheckout(root, async ({ dir, branch }) => {
+    if (await textFilesMatch(dir, files)) {
+      return { ok: true as const }
+    }
+
     const written = await writeTextFiles(dir, files)
     if (!written) {
       return { ok: false as const, error: 'write_failed' as const }
@@ -427,6 +537,10 @@ export async function replaceKickstartContentRepo(args: {
   const mode = await detectRepoMode(root)
   if (mode !== 'bare') {
     try {
+      if (await contentTreeMatches(root, args.directories, args.files)) {
+        return { ok: true }
+      }
+
       await clearDirectoryExceptGit(root)
       const written = await writeContentTree(root, args.directories, args.files)
       if (!written) {
@@ -439,6 +553,10 @@ export async function replaceKickstartContentRepo(args: {
   }
 
   const result = await withBareRepoCheckout(root, async ({ dir, branch }) => {
+    if (await contentTreeMatches(dir, args.directories, args.files)) {
+      return { ok: true as const }
+    }
+
     await clearDirectoryExceptGit(dir)
     const written = await writeContentTree(dir, args.directories, args.files)
     if (!written) {

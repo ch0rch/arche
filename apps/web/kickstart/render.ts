@@ -1,3 +1,4 @@
+import { normalizeRepoPath } from '@/kickstart/parse-utils'
 import type {
   KickstartPlaceholderContext,
   KickstartRenderedFile,
@@ -6,15 +7,11 @@ import type {
 
 const PLACEHOLDER_PATTERN = /{{\s*(companyName|companyDescription)\s*}}/g
 
-function normalizeRepoPath(rawPath: string): string {
-  return rawPath
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-    .replace(/\/+$/g, '')
-}
-
 function collectParentDirectories(filePath: string): string[] {
-  const segments = normalizeRepoPath(filePath).split('/').filter(Boolean)
+  const normalizedPath = normalizeRepoPath(filePath)
+  if (!normalizedPath) return []
+
+  const segments = normalizedPath.split('/').filter(Boolean)
   const directories: string[] = []
 
   for (let index = 1; index < segments.length; index += 1) {

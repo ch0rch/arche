@@ -265,6 +265,8 @@ export async function POST(
       }
       
       let aborted = false
+      let promptSent = Boolean(resume)
+      let promptAcknowledged = Boolean(resume)
       
       try {
         sendEvent('status', { status: 'connecting' })
@@ -432,6 +434,8 @@ export async function POST(
             await cancelReader()
             return
           }
+
+          promptSent = true
         }
         
         sendEvent('status', { status: 'thinking' })
@@ -542,10 +546,21 @@ export async function POST(
                   eventType === 'file.created' ||
                   eventType === 'file.deleted' ||
                   eventType === 'todo.updated'
+
+                const isSessionScopedEvent =
+                  eventType === 'session.status' ||
+                  eventType === 'session.idle' ||
+                  eventType === 'session.error'
                 
                 // Filter events for our session only
-                if (!isWorkspaceEvent && eventSessionId && eventSessionId !== sessionId) {
-                  continue
+                if (!isWorkspaceEvent) {
+                  if (isSessionScopedEvent && eventSessionId !== sessionId) {
+                    continue
+                  }
+
+                  if (!isSessionScopedEvent && eventSessionId && eventSessionId !== sessionId) {
+                    continue
+                  }
                 }
                 
                 console.log('[stream] Event:', eventType)
@@ -558,10 +573,17 @@ export async function POST(
                     console.log('[stream] Session status:', status?.type)
 
                     if (status?.type === 'busy') {
+                      promptSent = true
+                      promptAcknowledged = true
                       emitStatus('thinking')
                     } else if (status?.type === 'retry') {
+                      promptAcknowledged = true
                       emitStatus('thinking', undefined, status?.message)
                     } else if (status?.type === 'idle') {
+                      if (!promptSent || !promptAcknowledged) {
+                        console.log('[stream] Ignoring pre-prompt idle session.status event')
+                        break
+                      }
                       finalizeFromIdle()
                     }
                     break
@@ -570,6 +592,10 @@ export async function POST(
                   case 'session.idle': {
                     markRelevantEvent()
                     console.log('[stream] Session idle event')
+                    if (!promptSent || !promptAcknowledged) {
+                      console.log('[stream] Ignoring pre-prompt session.idle event')
+                      break
+                    }
                     finalizeFromIdle()
                     break
                   }
@@ -594,6 +620,7 @@ export async function POST(
                       assistantMessageId = info.id
                     }
                     if (info.role === 'assistant') {
+                      promptAcknowledged = true
                       assistantMessageSeen = true
                       if (seenPartMessageIds.has(info.id)) {
                         assistantPartSeen = true
@@ -631,6 +658,7 @@ export async function POST(
 
                     if (!isAssistantPart) break
 
+                    promptAcknowledged = true
                     assistantPartSeen = true
 
                     switch (part.type) {

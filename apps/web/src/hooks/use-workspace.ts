@@ -735,6 +735,7 @@ export function useWorkspace({
       const bufferedParts = new Map<string, MessagePart[]>();
       let streamCompleted = false;
       let receivedAssistantPart = false;
+      let receivedStreamData = false;
 
       const flushBufferedParts = (messageId: string) => {
         const buffered = bufferedParts.get(messageId);
@@ -836,6 +837,7 @@ export function useWorkspace({
               eventData = line.slice(5).trim();
             } else if (line === "" && eventData) {
               try {
+                receivedStreamData = true;
                 const data = JSON.parse(eventData);
 
                 switch (eventType) {
@@ -1028,8 +1030,16 @@ export function useWorkspace({
             }
 
             setMessages(hydratedMessages);
-          } else if (!streamCompleted && !receivedAssistantPart) {
-            updateStatus("error", undefined, "stream_incomplete");
+          } else {
+            if (mode === "send" && !receivedStreamData) {
+              setMessages((prev) =>
+                prev.filter((message) => !message.id.startsWith("temp-"))
+              );
+            }
+
+            if (!streamCompleted && !receivedAssistantPart) {
+              updateStatus("error", undefined, "stream_incomplete");
+            }
           }
           scheduleWorkspaceRefresh();
         }

@@ -1,13 +1,54 @@
-import { auditEvent } from '@/lib/auth'
 import { buildKickstartArtifacts } from '@/kickstart/build'
 import { acquireKickstartApplyLock } from '@/kickstart/lock'
 import {
   replaceKickstartContentRepo,
+  type KickstartRepoWriteResult,
   writeKickstartConfigRepo,
 } from '@/kickstart/repositories'
 import { getKickstartStatus } from '@/kickstart/status'
-import type { KickstartApplyResult } from '@/kickstart/types'
+import type {
+  KickstartApplyError,
+  KickstartApplyResult,
+} from '@/kickstart/types'
 import { parseKickstartApplyPayload } from '@/kickstart/validation'
+import { auditEvent } from '@/lib/auth'
+
+function mapRepoWriteError(result: KickstartRepoWriteResult): KickstartApplyError {
+  if (result.ok) {
+    return 'apply_failed'
+  }
+
+  if (result.error === 'kb_unavailable') {
+    return 'kb_unavailable'
+  }
+
+  if (result.error === 'conflict') {
+    return 'conflict'
+  }
+
+  return 'apply_failed'
+}
+
+async function auditWriteFailure(args: {
+  actorUserId: string
+  metadataBase: {
+    templateId: string
+    companyName: string
+    agentIds: string[]
+  }
+  stage: 'config_write' | 'kb_write'
+  error: KickstartApplyError
+}): Promise<void> {
+  await auditEvent({
+    actorUserId: args.actorUserId,
+    action: 'kickstart.apply_failed',
+    metadata: {
+      ...args.metadataBase,
+      error: args.error,
+      stage: args.stage,
+    },
+  })
+}
 
 export async function applyKickstart(
   payload: unknown,
@@ -64,54 +105,49 @@ export async function applyKickstart(
       metadata: metadataBase,
     })
 
-    const configWrite = await writeKickstartConfigRepo({
-      'CommonWorkspaceConfig.json': built.artifacts.configContent,
-      'AGENTS.md': built.artifacts.agentsMdContent,
-    })
+    const [configWrite, kbWrite] = await Promise.all([
+      writeKickstartConfigRepo({
+        'CommonWorkspaceConfig.json': built.artifacts.configContent,
+        'AGENTS.md': built.artifacts.agentsMdContent,
+      }),
+      replaceKickstartContentRepo({
+        directories: built.artifacts.kbDirectories,
+        files: built.artifacts.kbFiles,
+      }),
+    ])
+
+    const writeFailures: Array<{
+      stage: 'config_write' | 'kb_write'
+      error: KickstartApplyError
+    }> = []
+
     if (!configWrite.ok) {
-      const error =
-        configWrite.error === 'kb_unavailable'
-          ? 'kb_unavailable'
-          : configWrite.error === 'conflict'
-            ? 'conflict'
-            : 'apply_failed'
-
-      await auditEvent({
-        actorUserId,
-        action: 'kickstart.apply_failed',
-        metadata: {
-          ...metadataBase,
-          error,
-          stage: 'config_write',
-        },
+      writeFailures.push({
+        stage: 'config_write',
+        error: mapRepoWriteError(configWrite),
       })
-
-      return { ok: false, error }
     }
 
-    const kbWrite = await replaceKickstartContentRepo({
-      directories: built.artifacts.kbDirectories,
-      files: built.artifacts.kbFiles,
-    })
     if (!kbWrite.ok) {
-      const error =
-        kbWrite.error === 'kb_unavailable'
-          ? 'kb_unavailable'
-          : kbWrite.error === 'conflict'
-            ? 'conflict'
-            : 'apply_failed'
-
-      await auditEvent({
-        actorUserId,
-        action: 'kickstart.apply_failed',
-        metadata: {
-          ...metadataBase,
-          error,
-          stage: 'kb_write',
-        },
+      writeFailures.push({
+        stage: 'kb_write',
+        error: mapRepoWriteError(kbWrite),
       })
+    }
 
-      return { ok: false, error }
+    if (writeFailures.length > 0) {
+      await Promise.all(
+        writeFailures.map((failure) =>
+          auditWriteFailure({
+            actorUserId,
+            metadataBase,
+            stage: failure.stage,
+            error: failure.error,
+          })
+        )
+      )
+
+      return { ok: false, error: writeFailures[0].error }
     }
 
     await auditEvent({

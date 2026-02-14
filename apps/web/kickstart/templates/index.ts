@@ -1,6 +1,12 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { loadDefinitions } from '@/kickstart/definition-loader'
+import {
+  hasOnlyAllowedKeys,
+  isRecord,
+  parseNonEmptyString,
+  parseOrder,
+} from '@/kickstart/parse-utils'
 import type {
   KickstartKbSkeletonEntry,
   KickstartTemplateDefinition,
@@ -31,37 +37,9 @@ const TEMPLATE_DEFINITION_DIR_CANDIDATES = [
   join(process.cwd(), 'apps/web/kickstart/templates/definitions'),
 ]
 
-function hasOnlyAllowedKeys(value: Record<string, unknown>, allowed: Set<string>): boolean {
-  return Object.keys(value).every((key) => allowed.has(key))
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function parseNonEmptyString(value: unknown, fieldName: string, fileName: string): string {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`Invalid ${fieldName} in kickstart template definition: ${fileName}`)
-  }
-
-  return value.trim()
-}
-
 function parseTemplateMarkdown(value: unknown, fieldName: string, fileName: string): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error(`Invalid ${fieldName} in kickstart template definition: ${fileName}`)
-  }
-
-  return value
-}
-
-function parseOrder(value: unknown, fileName: string): number {
-  if (value === undefined) {
-    return 1000
-  }
-
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
-    throw new Error(`Invalid order in kickstart template definition: ${fileName}`)
   }
 
   return value
@@ -73,6 +51,7 @@ function parseKbSkeleton(value: unknown, fileName: string): KickstartKbSkeletonE
   }
 
   const entries: KickstartKbSkeletonEntry[] = []
+  const context = `kickstart template definition: ${fileName}`
 
   for (const entry of value) {
     if (!isRecord(entry)) {
@@ -86,7 +65,7 @@ function parseKbSkeleton(value: unknown, fileName: string): KickstartKbSkeletonE
 
       entries.push({
         type: 'dir',
-        path: parseNonEmptyString(entry.path, 'kbSkeleton.path', fileName),
+        path: parseNonEmptyString(entry.path, 'kbSkeleton.path', context),
       })
       continue
     }
@@ -102,7 +81,7 @@ function parseKbSkeleton(value: unknown, fileName: string): KickstartKbSkeletonE
 
       entries.push({
         type: 'file',
-        path: parseNonEmptyString(entry.path, 'kbSkeleton.path', fileName),
+        path: parseNonEmptyString(entry.path, 'kbSkeleton.path', context),
         content: entry.content,
       })
       continue
@@ -121,9 +100,10 @@ function parseRecommendedAgentIds(value: unknown, fileName: string): string[] {
 
   const recommendedAgentIds: string[] = []
   const seenIds = new Set<string>()
+  const context = `kickstart template definition: ${fileName}`
 
   for (const agentId of value) {
-    const parsedAgentId = parseNonEmptyString(agentId, 'recommendedAgentIds', fileName)
+    const parsedAgentId = parseNonEmptyString(agentId, 'recommendedAgentIds', context)
     if (seenIds.has(parsedAgentId)) {
       continue
     }
@@ -145,9 +125,10 @@ function parseRecommendedModels(
   }
 
   const recommendedModels: Record<string, string> = {}
+  const context = `kickstart template definition: ${fileName}`
 
   for (const [agentId, model] of Object.entries(value)) {
-    recommendedModels[agentId] = parseNonEmptyString(model, 'recommendedModels', fileName)
+    recommendedModels[agentId] = parseNonEmptyString(model, 'recommendedModels', context)
   }
 
   for (const recommendedAgentId of recommendedAgentIds) {
@@ -175,11 +156,12 @@ function parseTemplateDefinition(raw: string, fileName: string): ParsedTemplateD
   }
 
   const recommendedAgentIds = parseRecommendedAgentIds(parsedValue.recommendedAgentIds, fileName)
+  const context = `kickstart template definition: ${fileName}`
 
   const definition: KickstartTemplateDefinition = {
-    id: parseNonEmptyString(parsedValue.id, 'id', fileName),
-    label: parseNonEmptyString(parsedValue.label, 'label', fileName),
-    description: parseNonEmptyString(parsedValue.description, 'description', fileName),
+    id: parseNonEmptyString(parsedValue.id, 'id', context),
+    label: parseNonEmptyString(parsedValue.label, 'label', context),
+    description: parseNonEmptyString(parsedValue.description, 'description', context),
     kbSkeleton: parseKbSkeleton(parsedValue.kbSkeleton, fileName),
     agentsMdTemplate: parseTemplateMarkdown(parsedValue.agentsMdTemplate, 'agentsMdTemplate', fileName),
     recommendedAgentIds,
@@ -192,66 +174,17 @@ function parseTemplateDefinition(raw: string, fileName: string): ParsedTemplateD
 
   return {
     definition,
-    order: parseOrder(parsedValue.order, fileName),
+    order: parseOrder(parsedValue.order, context),
   }
-}
-
-function resolveTemplateDefinitionDirectory(): string {
-  for (const candidate of TEMPLATE_DEFINITION_DIR_CANDIDATES) {
-    if (existsSync(candidate)) {
-      return candidate
-    }
-  }
-
-  throw new Error(
-    `Kickstart template definitions directory not found. Tried: ${TEMPLATE_DEFINITION_DIR_CANDIDATES.join(', ')}`
-  )
 }
 
 function loadKickstartTemplates(): KickstartTemplateDefinition[] {
-  const definitionsDirectory = resolveTemplateDefinitionDirectory()
-  const definitionFiles = readdirSync(definitionsDirectory)
-    .filter((fileName) => fileName.endsWith('.json'))
-    .sort((left, right) => left.localeCompare(right))
-
-  if (definitionFiles.length === 0) {
-    throw new Error('No kickstart template definitions were found')
-  }
-
-  const loadedDefinitions = definitionFiles.map((fileName) => {
-    const filePath = join(definitionsDirectory, fileName)
-    const parsed = parseTemplateDefinition(readFileSync(filePath, 'utf-8'), fileName)
-
-    if (`${parsed.definition.id}.json` !== fileName) {
-      throw new Error(
-        `Kickstart template file name must match template id: ${fileName} -> ${parsed.definition.id}`
-      )
-    }
-
-    return parsed
+  return loadDefinitions({
+    directoryCandidates: TEMPLATE_DEFINITION_DIR_CANDIDATES,
+    definitionKind: 'Kickstart template',
+    idKind: 'template',
+    parse: parseTemplateDefinition,
   })
-
-  loadedDefinitions.sort((left, right) => {
-    if (left.order !== right.order) {
-      return left.order - right.order
-    }
-
-    return left.definition.id.localeCompare(right.definition.id)
-  })
-
-  const seenIds = new Set<string>()
-  const templates: KickstartTemplateDefinition[] = []
-
-  for (const { definition } of loadedDefinitions) {
-    if (seenIds.has(definition.id)) {
-      throw new Error(`Duplicate kickstart template id: ${definition.id}`)
-    }
-
-    seenIds.add(definition.id)
-    templates.push(definition)
-  }
-
-  return templates
 }
 
 export const KICKSTART_TEMPLATES: KickstartTemplateDefinition[] = loadKickstartTemplates()
@@ -266,12 +199,16 @@ export function getKickstartTemplateById(
   return templateMap.get(templateId) ?? null
 }
 
-export function getKickstartTemplateSummaries(): KickstartTemplateSummary[] {
-  return KICKSTART_TEMPLATES.map((template) => ({
+const KICKSTART_TEMPLATE_SUMMARIES: KickstartTemplateSummary[] = KICKSTART_TEMPLATES.map(
+  (template) => ({
     id: template.id,
     label: template.label,
     description: template.description,
-    recommendedAgentIds: [...template.recommendedAgentIds],
-    recommendedModels: { ...template.recommendedModels },
-  }))
+    recommendedAgentIds: template.recommendedAgentIds,
+    recommendedModels: template.recommendedModels,
+  })
+)
+
+export function getKickstartTemplateSummaries(): KickstartTemplateSummary[] {
+  return KICKSTART_TEMPLATE_SUMMARIES
 }

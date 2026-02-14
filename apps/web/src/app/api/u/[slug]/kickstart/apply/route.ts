@@ -8,7 +8,7 @@ type KickstartApplyResponse =
   | { ok: true }
   | { error: string; message?: string }
 
-function toStatusCode(error: string): number {
+export function toStatusCode(error: string): number {
   switch (error) {
     case 'invalid_payload':
       return 400

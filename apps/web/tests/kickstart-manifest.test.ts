@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import { KICKSTART_AGENT_BY_ID } from '@/kickstart/agents/catalog'
 import { buildKickstartArtifacts } from '@/kickstart/build'
+import { renderKickstartText } from '@/kickstart/render'
 import { getKickstartTemplateById } from '@/kickstart/templates'
 import { parseKickstartApplyPayload } from '@/kickstart/validation'
 
@@ -70,5 +71,18 @@ describe('kickstart artifact generation', () => {
     )
     expect(profileFile?.content).toContain('Acme Labs')
     expect(profileFile?.content).toContain('Analytics tools for operations teams')
+  })
+
+  it('keeps unknown placeholders untouched', () => {
+    const output = renderKickstartText(
+      'Known {{ companyName }} unknown {{ malicious }}',
+      {
+        companyName: 'Acme Labs',
+        companyDescription: 'Analytics tools',
+      }
+    )
+
+    expect(output).toContain('Known Acme Labs')
+    expect(output).toContain('{{ malicious }}')
   })
 })

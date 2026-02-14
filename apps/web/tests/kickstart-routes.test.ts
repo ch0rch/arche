@@ -65,6 +65,21 @@ async function callApply(slug = 'alice', body: unknown = {}) {
   return { status: response.status, body: await response.json() }
 }
 
+async function callApplyRaw(slug = 'alice', rawBody = '{}') {
+  const { POST } = await import('@/app/api/u/[slug]/kickstart/apply/route')
+  const request = new Request(`http://localhost/api/u/${slug}/kickstart/apply`, {
+    method: 'POST',
+    headers: {
+      host: 'localhost',
+      origin: 'http://localhost',
+      'content-type': 'application/json',
+    },
+    body: rawBody,
+  })
+  const response = await POST(request as never, { params: Promise.resolve({ slug }) })
+  return { status: response.status, body: await response.json() }
+}
+
 describe('kickstart routes', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -164,6 +179,22 @@ describe('kickstart routes', () => {
 
     expect(status).toBe(409)
     expect(body.error).toBe('conflict')
+  })
+
+  it.each([
+    ['invalid_payload', 400],
+    ['kb_unavailable', 503],
+    ['already_configured', 409],
+    ['something_else', 500],
+  ])('toStatusCode maps %s to %s', async (error, expectedStatus) => {
+    const { toStatusCode } = await import('@/app/api/u/[slug]/kickstart/apply/route')
+    expect(toStatusCode(error)).toBe(expectedStatus)
+  })
+
+  it('POST apply returns 400 for malformed JSON payload', async () => {
+    const { status, body } = await callApplyRaw('alice', '{"companyName":')
+    expect(status).toBe(400)
+    expect(body.error).toBe('invalid_payload')
   })
 
   it('POST apply delegates to applyKickstart with actor id', async () => {

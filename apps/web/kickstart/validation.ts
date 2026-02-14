@@ -2,6 +2,8 @@ import {
   KICKSTART_AGENT_BY_ID,
   getKickstartAgentById,
 } from '@/kickstart/agents/catalog'
+import { hasOnlyAllowedKeys, isRecord } from '@/kickstart/parse-utils'
+import { getRequiredAgentIdsForTemplate } from '@/kickstart/required-agent-ids'
 import { getKickstartTemplateById } from '@/kickstart/templates'
 import type {
   KickstartNormalizedAgentSelection,
@@ -29,14 +31,6 @@ type ValidationResult<T> =
 export type KickstartPayloadValidationResult =
   | { ok: true; input: KickstartNormalizedApplyInput }
   | { ok: false; error: 'invalid_payload'; message: string }
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function hasOnlyKeys(payload: Record<string, unknown>, allowed: Set<string>): boolean {
-  return Object.keys(payload).every((key) => allowed.has(key))
-}
 
 function parseRequiredString(
   value: unknown,
@@ -126,13 +120,6 @@ function parseOptionalTemperature(value: unknown): ValidationResult<number | und
   return { ok: true, value }
 }
 
-function requiredAgentIds(templateId: string): string[] {
-  if (templateId === 'blank') {
-    return ['assistant', 'knowledge-curator']
-  }
-  return ['assistant']
-}
-
 function parseAgents(
   value: unknown,
   templateId: string
@@ -157,7 +144,7 @@ function parseAgents(
       return { ok: false, message: 'agent entry must be an object' }
     }
 
-    if (!hasOnlyKeys(item, AGENT_KEYS)) {
+    if (!hasOnlyAllowedKeys(item, AGENT_KEYS)) {
       return { ok: false, message: 'agent entry has unsupported fields' }
     }
 
@@ -192,7 +179,7 @@ function parseAgents(
     })
   }
 
-  for (const requiredId of requiredAgentIds(templateId)) {
+  for (const requiredId of getRequiredAgentIdsForTemplate(templateId)) {
     if (!seen.has(requiredId)) {
       return {
         ok: false,
@@ -211,7 +198,7 @@ export function parseKickstartApplyPayload(
     return { ok: false, error: 'invalid_payload', message: 'payload must be an object' }
   }
 
-  if (!hasOnlyKeys(payload, TOP_LEVEL_KEYS)) {
+  if (!hasOnlyAllowedKeys(payload, TOP_LEVEL_KEYS)) {
     return {
       ok: false,
       error: 'invalid_payload',

@@ -7,7 +7,7 @@ import {
   validateCommonWorkspaceConfig,
 } from '@/lib/workspace-config'
 import { isKickstartApplyLocked } from '@/kickstart/lock'
-import { contentRepoPathExists } from '@/kickstart/repositories'
+import { contentRepoPathsExist } from '@/kickstart/repositories'
 import type { KickstartStatus } from '@/kickstart/types'
 
 const REQUIRED_KB_PATHS: Array<{ path: string; type: 'file' | 'dir' }> = [
@@ -37,14 +37,7 @@ async function isConfigReady(): Promise<boolean> {
 }
 
 async function isKbReady(): Promise<boolean> {
-  for (const required of REQUIRED_KB_PATHS) {
-    const present = await contentRepoPathExists(required.path, required.type)
-    if (!present) {
-      return false
-    }
-  }
-
-  return true
+  return contentRepoPathsExist(REQUIRED_KB_PATHS)
 }
 
 export async function getKickstartStatus(

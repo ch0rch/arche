@@ -17,15 +17,7 @@ export type KickstartAgentDefinition = {
   tools: OpenCodeAgentToolId[]
 }
 
-export type KickstartAgentSummary = {
-  id: string
-  displayName: string
-  description: string
-  systemPrompt: string
-  recommendedModel: string
-  temperature: number
-  tools: OpenCodeAgentToolId[]
-}
+export type KickstartAgentSummary = KickstartAgentDefinition
 
 export type KickstartKbSkeletonEntry =
   | {
