@@ -6,6 +6,11 @@ on:
     paths:
       - "apps/web/**"
       - ".github/workflows/build-push.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/web/**"
+      - ".github/workflows/build-push.yml"
 
 env:
   REGISTRY: ghcr.io
@@ -17,6 +22,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      pull-requests: read
 
     steps:
       - name: Checkout
@@ -25,10 +31,62 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u ${{ github.actor }} --password-stdin
 
+      - name: Determine image tags
+        id: tags
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "PR_NUMBER=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "TAG=pr-${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+            echo "Building PR image with tag: pr-${{ github.event.pull_request.number }}"
+          else
+            echo "TAG=latest" >> $GITHUB_OUTPUT
+            echo "SHA_TAG=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+            echo "Building main branch image with tags: latest, $(git rev-parse --short HEAD)"
+          fi
+
       - name: Build image
-        run: podman build -t $REGISTRY/$IMAGE_NAME:latest -t $REGISTRY/$IMAGE_NAME:$(git rev-parse --short HEAD) -f apps/web/Containerfile apps/web
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            podman build --build-arg GIT_SHA=$(git rev-parse --short HEAD) \
+              -t $REGISTRY/$IMAGE_NAME:${{ steps.tags.outputs.TAG }} \
+              -f apps/web/Containerfile apps/web
+          else
+            podman build --build-arg GIT_SHA=$(git rev-parse --short HEAD) \
+              -t $REGISTRY/$IMAGE_NAME:latest \
+              -t $REGISTRY/$IMAGE_NAME:$(git rev-parse --short HEAD) \
+              -f apps/web/Containerfile apps/web
+          fi
 
       - name: Push image
         run: |
-          podman push $REGISTRY/$IMAGE_NAME:latest
-          podman push $REGISTRY/$IMAGE_NAME:$(git rev-parse --short HEAD)
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            podman push $REGISTRY/$IMAGE_NAME:${{ steps.tags.outputs.TAG }}
+            echo "Pushed PR image: $REGISTRY/$IMAGE_NAME:${{ steps.tags.outputs.TAG }}"
+          else
+            podman push $REGISTRY/$IMAGE_NAME:latest
+            podman push $REGISTRY/$IMAGE_NAME:$(git rev-parse --short HEAD)
+          fi
+
+      - name: Comment PR with image info
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const image = `ghcr.io/${{ github.repository }}/web:pr-${{ github.event.pull_request.number }}`;
+            const sha = '${{ github.sha }}'.substring(0, 7);
+            const body = `📦 **PR Image Built Successfully**
+
+            **Image:** \`${image}\`
+            **Commit:** \`${sha}\`
+
+            To test this PR deployment:
+            \`\`\`bash
+            WEB_VERSION=pr-${{ github.event.pull_request.number }} ./infra/deploy/deploy.sh ...
+            \`\`\``;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });
