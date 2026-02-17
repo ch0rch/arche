@@ -19,6 +19,11 @@ export type KickstartAgentDefinition = {
 
 export type KickstartAgentSummary = KickstartAgentDefinition
 
+export type KickstartTemplateAgentOverride = {
+  model?: string
+  prompt?: string
+}
+
 export type KickstartKbSkeletonEntry =
   | {
       type: 'dir'
@@ -37,7 +42,7 @@ export type KickstartTemplateDefinition = {
   kbSkeleton: KickstartKbSkeletonEntry[]
   agentsMdTemplate: string
   recommendedAgentIds: string[]
-  recommendedModels: Record<string, string>
+  agentOverrides: Record<string, KickstartTemplateAgentOverride>
 }
 
 export type KickstartTemplateSummary = {
@@ -45,7 +50,7 @@ export type KickstartTemplateSummary = {
   label: string
   description: string
   recommendedAgentIds: string[]
-  recommendedModels: Record<string, string>
+  agentOverrides: Record<string, KickstartTemplateAgentOverride>
 }
 
 export type KickstartTemplatesResponse = {

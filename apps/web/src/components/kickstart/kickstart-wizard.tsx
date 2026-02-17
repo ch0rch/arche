@@ -199,9 +199,12 @@ export function KickstartWizard({ slug, initialStatus }: KickstartWizardProps) {
     return {
       model:
         overrides?.model ??
-        selectedTemplate?.recommendedModels[agentId] ??
+        selectedTemplate?.agentOverrides[agentId]?.model ??
         agent.recommendedModel,
-      prompt: overrides?.prompt ?? agent.systemPrompt,
+      prompt:
+        overrides?.prompt ??
+        selectedTemplate?.agentOverrides[agentId]?.prompt ??
+        agent.systemPrompt,
       temperature: overrides?.temperature ?? agent.temperature,
     }
   }

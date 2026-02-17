@@ -94,10 +94,7 @@ describe('kickstart routes', () => {
         label: 'Blank',
         description: 'Minimal template',
         recommendedAgentIds: ['assistant', 'knowledge-curator'],
-        recommendedModels: {
-          assistant: 'opencode/kimi-k2.5-free',
-          'knowledge-curator': 'opencode/kimi-k2.5-free',
-        },
+        agentOverrides: {},
       },
     ])
     mockGetKickstartAgentSummaries.mockReturnValue([

@@ -1,5 +1,6 @@
 import { join } from 'node:path'
 
+import { getKickstartAgentById } from '@/kickstart/agents/catalog'
 import { loadDefinitions } from '@/kickstart/definition-loader'
 import {
   hasOnlyAllowedKeys,
@@ -9,6 +10,7 @@ import {
 } from '@/kickstart/parse-utils'
 import type {
   KickstartKbSkeletonEntry,
+  KickstartTemplateAgentOverride,
   KickstartTemplateDefinition,
   KickstartTemplateSummary,
 } from '@/kickstart/types'
@@ -25,12 +27,14 @@ const TEMPLATE_DEFINITION_KEYS = new Set([
   'kbSkeleton',
   'agentsMdTemplate',
   'recommendedAgentIds',
-  'recommendedModels',
+  'agentOverrides',
   'order',
 ])
 
+const AGENT_OVERRIDE_KEYS = new Set(['model', 'prompt'])
 const KB_SKELETON_DIR_KEYS = new Set(['type', 'path'])
 const KB_SKELETON_FILE_KEYS = new Set(['type', 'path', 'content'])
+const CORE_AGENT_PROMPT_OVERRIDE_BLOCKLIST = new Set(['assistant', 'knowledge-curator'])
 
 const TEMPLATE_DEFINITION_DIR_CANDIDATES = [
   join(process.cwd(), 'kickstart/templates/definitions'),
@@ -104,6 +108,13 @@ function parseRecommendedAgentIds(value: unknown, fileName: string): string[] {
 
   for (const agentId of value) {
     const parsedAgentId = parseNonEmptyString(agentId, 'recommendedAgentIds', context)
+
+    if (!getKickstartAgentById(parsedAgentId)) {
+      throw new Error(
+        `Unknown agent id in recommendedAgentIds (${parsedAgentId}) in kickstart template definition: ${fileName}`
+      )
+    }
+
     if (seenIds.has(parsedAgentId)) {
       continue
     }
@@ -115,31 +126,54 @@ function parseRecommendedAgentIds(value: unknown, fileName: string): string[] {
   return recommendedAgentIds
 }
 
-function parseRecommendedModels(
+function parseAgentOverrides(
   value: unknown,
-  recommendedAgentIds: string[],
   fileName: string
-): Record<string, string> {
+): Record<string, KickstartTemplateAgentOverride> {
   if (!isRecord(value)) {
-    throw new Error(`Invalid recommendedModels in kickstart template definition: ${fileName}`)
+    throw new Error(`Invalid agentOverrides in kickstart template definition: ${fileName}`)
   }
 
-  const recommendedModels: Record<string, string> = {}
   const context = `kickstart template definition: ${fileName}`
+  const agentOverrides: Record<string, KickstartTemplateAgentOverride> = {}
 
-  for (const [agentId, model] of Object.entries(value)) {
-    recommendedModels[agentId] = parseNonEmptyString(model, 'recommendedModels', context)
-  }
+  for (const [agentId, override] of Object.entries(value)) {
+    const parsedAgentId = parseNonEmptyString(agentId, 'agentOverrides key', context)
 
-  for (const recommendedAgentId of recommendedAgentIds) {
-    if (!recommendedModels[recommendedAgentId]) {
+    if (!getKickstartAgentById(parsedAgentId)) {
       throw new Error(
-        `Missing recommended model for agent ${recommendedAgentId} in ${fileName}`
+        `Unknown agent id in agentOverrides (${parsedAgentId}) in kickstart template definition: ${fileName}`
       )
     }
+
+    if (!isRecord(override) || !hasOnlyAllowedKeys(override, AGENT_OVERRIDE_KEYS)) {
+      throw new Error(`Invalid agentOverrides entry shape in kickstart template definition: ${fileName}`)
+    }
+
+    const parsedOverride: KickstartTemplateAgentOverride = {}
+
+    if (override.model !== undefined) {
+      parsedOverride.model = parseNonEmptyString(override.model, 'agentOverrides.model', context)
+    }
+
+    if (override.prompt !== undefined) {
+      if (CORE_AGENT_PROMPT_OVERRIDE_BLOCKLIST.has(parsedAgentId)) {
+        throw new Error(
+          `Prompt overrides are not allowed for core agent ${parsedAgentId} in ${fileName}`
+        )
+      }
+
+      parsedOverride.prompt = parseTemplateMarkdown(override.prompt, 'agentOverrides.prompt', fileName)
+    }
+
+    if (!parsedOverride.model && !parsedOverride.prompt) {
+      throw new Error(`Invalid agentOverrides entry in kickstart template definition: ${fileName}`)
+    }
+
+    agentOverrides[parsedAgentId] = parsedOverride
   }
 
-  return recommendedModels
+  return agentOverrides
 }
 
 function parseTemplateDefinition(raw: string, fileName: string): ParsedTemplateDefinition {
@@ -165,11 +199,7 @@ function parseTemplateDefinition(raw: string, fileName: string): ParsedTemplateD
     kbSkeleton: parseKbSkeleton(parsedValue.kbSkeleton, fileName),
     agentsMdTemplate: parseTemplateMarkdown(parsedValue.agentsMdTemplate, 'agentsMdTemplate', fileName),
     recommendedAgentIds,
-    recommendedModels: parseRecommendedModels(
-      parsedValue.recommendedModels,
-      recommendedAgentIds,
-      fileName
-    ),
+    agentOverrides: parseAgentOverrides(parsedValue.agentOverrides, fileName),
   }
 
   return {
@@ -204,8 +234,13 @@ const KICKSTART_TEMPLATE_SUMMARIES: KickstartTemplateSummary[] = KICKSTART_TEMPL
     id: template.id,
     label: template.label,
     description: template.description,
-    recommendedAgentIds: template.recommendedAgentIds,
-    recommendedModels: template.recommendedModels,
+    recommendedAgentIds: [...template.recommendedAgentIds],
+    agentOverrides: Object.fromEntries(
+      Object.entries(template.agentOverrides).map(([agentId, override]) => [
+        agentId,
+        { ...override },
+      ])
+    ),
   })
 )
 

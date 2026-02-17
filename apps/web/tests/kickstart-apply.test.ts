@@ -47,10 +47,7 @@ const parsedInput: KickstartNormalizedApplyInput = {
     kbSkeleton: [],
     agentsMdTemplate: '# AGENTS',
     recommendedAgentIds: ['assistant', 'knowledge-curator'],
-    recommendedModels: {
-      assistant: 'opencode/kimi-k2.5-free',
-      'knowledge-curator': 'opencode/kimi-k2.5-free',
-    },
+    agentOverrides: {},
   },
   agents: [
     { id: 'assistant' },

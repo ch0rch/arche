@@ -54,11 +54,6 @@
     "support",
     "requirements"
   ],
-  "recommendedModels": {
-    "assistant": "opencode/kimi-k2.5-free",
-    "knowledge-curator": "opencode/kimi-k2.5-free",
-    "support": "opencode/kimi-k2.5-free",
-    "requirements": "opencode/kimi-k2.5-free"
-  },
+  "agentOverrides": {},
   "order": 100
 }

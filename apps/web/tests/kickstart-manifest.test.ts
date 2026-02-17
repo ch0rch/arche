@@ -3,7 +3,10 @@ import { describe, expect, it } from 'vitest'
 import { KICKSTART_AGENT_BY_ID } from '@/kickstart/agents/catalog'
 import { buildKickstartArtifacts } from '@/kickstart/build'
 import { renderKickstartText } from '@/kickstart/render'
-import { getKickstartTemplateById } from '@/kickstart/templates'
+import {
+  getKickstartTemplateById,
+  getKickstartTemplateSummaries,
+} from '@/kickstart/templates'
 import { parseKickstartApplyPayload } from '@/kickstart/validation'
 
 describe('kickstart manifests', () => {
@@ -29,6 +32,29 @@ describe('kickstart manifests', () => {
 
     expect(curator?.systemPrompt.toLowerCase()).toContain('confirmation')
     expect(curator?.systemPrompt.toLowerCase()).toContain('before creating or updating')
+  })
+
+  it('marketing template exposes curated prompt overrides for specialist agents', () => {
+    const marketing = getKickstartTemplateById('marketing-studio')
+    expect(marketing).not.toBeNull()
+    if (!marketing) return
+
+    expect(marketing.agentOverrides['performance-marketing']?.prompt).toContain('Hypothesis')
+    expect(marketing.agentOverrides.copywriter?.prompt).toContain('Awareness Levels')
+    expect(marketing.agentOverrides['ads-scripts']?.prompt).toContain('Hook')
+    expect(marketing.agentOverrides.seo?.prompt).toContain('E-E-A-T')
+
+    expect(marketing.agentOverrides.assistant).toBeUndefined()
+    expect(marketing.agentOverrides['knowledge-curator']).toBeUndefined()
+  })
+
+  it('template summaries include prompt overrides for client preview', () => {
+    const marketingSummary = getKickstartTemplateSummaries().find(
+      (template) => template.id === 'marketing-studio'
+    )
+    expect(marketingSummary).toBeDefined()
+
+    expect(marketingSummary?.agentOverrides.copywriter?.prompt).toContain('Awareness Levels')
   })
 })
 
@@ -71,6 +97,32 @@ describe('kickstart artifact generation', () => {
     )
     expect(profileFile?.content).toContain('Acme Labs')
     expect(profileFile?.content).toContain('Analytics tools for operations teams')
+  })
+
+  it('uses template prompt overrides when agent prompt is not customized', () => {
+    const parsed = parseKickstartApplyPayload({
+      companyName: 'Acme Labs',
+      companyDescription: 'Growth studio for SaaS',
+      templateId: 'marketing-studio',
+      agents: [{ id: 'assistant' }, { id: 'copywriter' }],
+    })
+
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) {
+      return
+    }
+
+    const built = buildKickstartArtifacts(parsed.input)
+    expect(built.ok).toBe(true)
+    if (!built.ok) {
+      return
+    }
+
+    const config = JSON.parse(built.artifacts.configContent) as {
+      agent: Record<string, { prompt: string }>
+    }
+
+    expect(config.agent.copywriter.prompt).toContain('Awareness Levels')
   })
 
   it('keeps unknown placeholders untouched', () => {

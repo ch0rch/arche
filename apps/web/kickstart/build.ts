@@ -47,10 +47,13 @@ function resolveAgentSelection(input: KickstartNormalizedApplyInput): ResolvedAg
 
     const model =
       selection.modelOverride ??
-      input.template.recommendedModels[selection.id] ??
+      input.template.agentOverrides[selection.id]?.model ??
       definition.recommendedModel
 
-    const promptSource = selection.promptOverride ?? definition.systemPrompt
+    const promptSource =
+      selection.promptOverride ??
+      input.template.agentOverrides[selection.id]?.prompt ??
+      definition.systemPrompt
     const prompt = renderKickstartText(promptSource, input.context)
 
     return [
