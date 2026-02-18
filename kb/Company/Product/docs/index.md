@@ -1,12 +1,12 @@
-# Help Center
+# Centro de ayuda
 
-Welcome to the help center in this {{COMPANY NAME}} KB.
+Bienvenido al centro de ayuda de esta KB de {{COMPANY NAME}}.
 
-## Sections
+## Secciones
 
-- [[Company/Product/docs/faqs|Frequently asked questions]]
+- [[Company/Product/docs/faqs|Preguntas frecuentes]]
 
-## More Information
+## Más información
 
-- [[Company/Product/00 - Overview|Product overview]]
-- [[Company/Product/01 - Support - KB Index|Internal KB]]
+- [[Company/Product/00 - Overview|Overview del producto]]
+- [[Company/Product/01 - Soporte - Indice KB|KB interno]]

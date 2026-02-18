@@ -1,36 +1,36 @@
 # Alberto Perdomo
 
-## Role
+## Rol
 
-- Infrastructure and deployment
+- Infraestructura y despliegue
 
 ## Bio
 
-- Primary owner of infrastructure, deployment, and environment hardening.
+- Responsable principal de infraestructura, despliegue y hardening del entorno.
 
 ## GitHub
 
 - https://github.com/albertoperdomo2
 
-## Responsibilities (Arche)
+## Responsabilidades (Arche)
 
-- Reverse proxy (Traefik), TLS, and subdomain routing
-- Docker hardening (including `docker-socket-proxy`) and internal networking
-- Operability: logs, backups (definition), and runbooks
+- Reverse proxy (Traefik), TLS y routing por subdominio
+- Docker hardening (incl. `docker-socket-proxy`) y networking interno
+- Operabilidad: logs, backups (definición) y runbooks
 
-## Signature (communications)
+## Firma (comunicaciones)
 
 - Alberto Perdomo  
-  Infrastructure and deployment
+  Infraestructura y despliegue
 
-## Channels (for CTA use)
+## Canales (para uso en CTA)
 
-- See [[Company/05 - Channels and Contact]].
+- Ver [[Company/05 - Canales y contacto]].
 
-## Vault References
+## Referencias en el vault
 
-- [[Arche/Tasks/Alberto Perdomo - Infra y edge|Tasks (Arche)]]
+- [[Arche/Tasks/Alberto Perdomo - Infra y edge|Tareas (Arche)]]
 
 ## TODO
 
-- TODO: signature preferences by channel
+- TODO: preferencias de firma por canal

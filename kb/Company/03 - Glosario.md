@@ -1,6 +1,6 @@
-# Glossary
+# Glosario
 
-Internal terms to keep language consistent.
+Términos internos para mantener consistencia.
 
 - {{TERM_1}}: {{DEFINITION_1}}
 - {{TERM_2}}: {{DEFINITION_2}}

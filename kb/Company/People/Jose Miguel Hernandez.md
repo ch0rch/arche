@@ -1,35 +1,36 @@
-# Jose Miguel Hernandez
+# José Miguel Hernández
 
-## Role
+## Rol
 
-- Backend developer
+- Back-end developer
 
 ## Bio
 
-- Primary owner of backend: internal services, runtime, and orchestration.
+- Responsable principal de backend: servicios internos, runtime y orquestación.
 
 ## GitHub
 
 - https://github.com/ixjosemi
 
-## Responsibilities (Arche)
+## Responsabilidades (Arche)
 
-- Spawner: start/stop/status per user
-- OpenCode runtime (headless): credentials, internal network, and health/status
-- Integration with persistence (DB) and instance state
+- Spawner: start/stop/status por usuario
+- Runtime OpenCode (headless): credenciales, red interna y health/status
+- Integración con persistencia (DB) y estados de instancia
 
-## Signature (communications)
+## Firma (comunicaciones)
 
-- Jose Miguel Hernandez - Backend developer
+- José Miguel Hernández  
+  Back-end developer
 
-## Channels (for CTA use)
+## Canales (para uso en CTA)
 
-- See [[Company/05 - Channels and Contact]].
+- Ver [[Company/05 - Canales y contacto]].
 
-## Vault References
+## Referencias en el vault
 
-- [[Arche/Tasks/Jose Miguel Hernandez - Spawner y runtime|Tasks (Arche)]]
+- [[Arche/Tasks/Jose Miguel Hernandez - Spawner y runtime|Tareas (Arche)]]
 
 ## TODO
 
-- TODO: signature preferences by channel
+- TODO: preferencias de firma por canal
