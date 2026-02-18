@@ -3,7 +3,6 @@
 import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import {
   ArrowClockwise,
-  Brain,
   CaretDown,
   CaretRight,
   ChatCircle,
@@ -26,7 +25,6 @@ import {
   SpinnerGap,
   TreeStructure,
   UploadSimple,
-  Wrench,
   X,
   XCircle
 } from "@phosphor-icons/react";
@@ -36,6 +34,7 @@ import Image from "next/image";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { StatusIndicator } from "@/components/workspace/bitmap-status-indicator";
 import { workspaceMarkdownComponents } from "@/components/workspace/markdown-components";
 import { Button } from "@/components/ui/button";
 import {
@@ -803,54 +802,6 @@ function MessagePartRenderer({
     default:
       return null;
   }
-}
-
-function StatusIndicator({
-  currentStatus,
-}: {
-  currentStatus: { status: string; toolName?: string; detail?: string } | null;
-}) {
-  if (!currentStatus) return null;
-
-  const { status, toolName, detail } = currentStatus;
-
-  const statusConfig: Record<string, { icon: React.ReactNode; label: string; className: string }> = {
-    thinking: {
-      icon: <Brain size={14} className="animate-pulse" />,
-      label: "Thinking...",
-      className: "text-primary",
-    },
-    reasoning: {
-      icon: <Lightbulb size={14} className="animate-pulse" />,
-      label: "Reasoning...",
-      className: "text-primary",
-    },
-    "tool-calling": {
-      icon: <Wrench size={14} className="animate-spin" />,
-      label: toolName ? `Using ${toolName}...` : "Running tool...",
-      className: "text-primary",
-    },
-    writing: {
-      icon: <PencilSimple size={14} className="animate-pulse" />,
-      label: detail ? `Writing ${detail}...` : "Writing...",
-      className: "text-primary",
-    },
-    error: {
-      icon: <XCircle size={14} />,
-      label: detail || "Failed to process",
-      className: "text-destructive",
-    },
-  };
-
-  const config = statusConfig[status];
-  if (!config) return null;
-
-  return (
-    <div className={cn("flex items-center gap-2 text-xs py-1.5 px-3 rounded-lg bg-muted/30 w-fit", config.className)}>
-      {config.icon}
-      <span>{config.label}</span>
-    </div>
-  );
 }
 
 export function ChatPanel({
