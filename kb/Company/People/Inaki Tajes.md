@@ -1,36 +1,35 @@
-# Iñaki Tajes
+# Inaki Tajes
 
-## Rol
+## Role
 
-- UI y front-end developer (generalista)
+- UI and front-end developer (generalist)
 
 ## Bio
 
-- Responsable principal de UI y front-end; también cubre backend “BFF” cuando hace falta.
+- Primary owner of UI and front-end; also covers BFF backend when needed.
 
 ## GitHub
 
 - https://github.com/Inakitajes
 
-## Responsabilidades (Arche)
+## Responsibilities (Arche)
 
-- UI web (Next.js) y estados de experiencia (incl. streaming)
-- BFF: auth, sesiones y autorización por host (`forwardAuth`)
-- Integración con DB (Prisma) y flujos end-to-end
+- Web UI (Next.js) and experience states (including streaming)
+- BFF: auth, sessions, and host-based authorization (`forwardAuth`)
+- Integration with DB (Prisma) and end-to-end flows
 
-## Firma (comunicaciones)
+## Signature (communications)
 
-- Iñaki Tajes  
-  UI y front-end developer (generalista)
+- Inaki Tajes - UI and front-end developer (generalist)
 
-## Canales (para uso en CTA)
+## Channels (for CTA use)
 
-- Ver [[Company/05 - Canales y contacto]].
+- See [[Company/05 - Channels and Contact]].
 
-## Referencias en el vault
+## Vault References
 
-- [[Arche/Tasks/Inaki Tajes - Auth y sesiones|Tareas (Arche)]]
+- [[Arche/Tasks/Inaki Tajes - Auth and Sessions|Tasks (Arche)]]
 
 ## TODO
 
-- TODO: preferencias de firma por canal
+- TODO: signature preferences by channel

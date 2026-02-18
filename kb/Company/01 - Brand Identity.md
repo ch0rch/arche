@@ -1,16 +1,16 @@
-# Identidad de marca
+# Brand Identity
 
-Contexto: Peaberry Studio es un estudio que desarrolla Arche.
+Context: Peaberry Studio is a studio that develops Arche.
 
-## Misión
+## Mission
 
 {{MISSION_STATEMENT}}
 
-## Visión
+## Vision
 
 {{VISION_STATEMENT}}
 
-## Valores
+## Values
 
 - {{VALUE_1}}
 - {{VALUE_2}}
@@ -18,17 +18,17 @@ Contexto: Peaberry Studio es un estudio que desarrolla Arche.
 - {{VALUE_4}}
 - {{VALUE_5}}
 
-## Público objetivo
+## Target Audience
 
 - {{TARGET_AUDIENCE_1}}
 - {{TARGET_AUDIENCE_2}}
 - {{TARGET_AUDIENCE_3}}
 
-## Promesa principal (1 frase)
+## Main Promise (1 sentence)
 
 {{MAIN_PROMISE}}
 
-## Diferenciadores (3-5)
+## Differentiators (3-5)
 
 - {{DIFFERENTIATOR_1}}
 - {{DIFFERENTIATOR_2}}
@@ -41,9 +41,9 @@ Contexto: Peaberry Studio es un estudio que desarrolla Arche.
 > {{SLOGAN_1}}
 > {{SLOGAN_2}}
 
-Enlaces:
+Links:
 
-- [[Company/02 - Voz y tono]]
-- [[Company/03 - Glosario]]
-- [[Company/05 - Canales y contacto]]
-- [[Company/People/00 - Indice|People]]
+- [[Company/02 - Voice and Tone]]
+- [[Company/03 - Glossary]]
+- [[Company/05 - Channels and Contact]]
+- [[Company/People/00 - Index|People]]

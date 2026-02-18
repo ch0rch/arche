@@ -1,6 +1,6 @@
 # {{EMPLOYEE_NAME}}
 
-## Rol
+## Role
 
 - {{ROLE}}
 
@@ -8,20 +8,20 @@
 
 - {{BIO_SHORT}}
 
-## Firma (comunicaciones)
+## Signature (communications)
 
 - {{EMPLOYEE_NAME}}  
   {{ROLE}}
 
-## Canales (para uso en CTA)
+## Channels (for CTA use)
 
-- Ver [[Company/05 - Canales y contacto]].
+- See [[Company/05 - Channels and Contact]].
 
-## Referencias en el vault
+## Vault References
 
-- (Añadir enlaces a documentos donde aparece esta persona)
+- (Add links to documents where this person appears)
 
 ## TODO
 
-- TODO: responsabilidades / áreas
-- TODO: idiomas y preferencias de firma (si cambia por canal)
+- TODO: responsibilities / areas
+- TODO: languages and signature preferences (if they vary by channel)

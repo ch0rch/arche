@@ -1,14 +1,14 @@
 # KB - Overview
 
-## Qué es
+## What It Is
 
 - {{COMPANY_DESCRIPTION}}
 
-## Documentación (centro de ayuda)
+## Documentation (help center)
 
-- [[Company/Product/docs/index|Docs - Centro de ayuda (inicio)]]
+- [[Company/Product/docs/index|Docs - Help Center (home)]]
 - [[Company/Product/docs/faqs|FAQs]]
 
-## Enlaces
+## Links
 
-- [[Company/Product/01 - Soporte - Indice KB]]
+- [[Company/Product/01 - Support - KB Index]]
