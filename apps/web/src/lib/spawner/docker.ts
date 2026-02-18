@@ -150,9 +150,7 @@ export async function createContainer(
     `${opencodeStateVolumeName}:/home/workspace/.local/state/opencode`,
   ];
   const kbContentHostPath = getKbContentHostPath();
-  if (kbContentHostPath) {
-    binds.push(`${kbContentHostPath}:/kb-content`);
-  }
+  binds.push(`${kbContentHostPath}:/kb-content`);
 
   // Persist runtime files in host user-data directory.
   // We mount files individually into /tmp inside the container so the workspace

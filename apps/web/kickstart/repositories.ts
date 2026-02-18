@@ -14,8 +14,6 @@ const execFileAsync = promisify(execFile)
 
 let gitAvailabilityCache: boolean | null = null
 
-type RepoMode = 'bare' | 'worktree' | 'directory'
-
 type GitResult =
   | { ok: true; stdout: string }
   | { ok: false; stderr: string }
@@ -82,18 +80,6 @@ async function hasBareRepoLayout(root: string): Promise<boolean> {
   }
 }
 
-async function isWorktreeRepository(root: string): Promise<boolean> {
-  const result = await runGit(['-C', root, 'rev-parse', '--show-toplevel'])
-  if (!result.ok) return false
-  return path.resolve(result.stdout.trim()) === path.resolve(root)
-}
-
-async function detectRepoMode(root: string): Promise<RepoMode> {
-  if (await hasBareRepoLayout(root)) return 'bare'
-  if (await isWorktreeRepository(root)) return 'worktree'
-  return 'directory'
-}
-
 async function resolveRepoRoot(root: string): Promise<string | null> {
   try {
     const stats = await fs.stat(root)
@@ -135,18 +121,6 @@ async function detectDefaultBranch(repoDir: string): Promise<string> {
       return ref.slice('origin/'.length)
     }
   }
-
-  const hasMain = await runGit(
-    ['show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'],
-    { cwd: repoDir }
-  )
-  if (hasMain.ok) return 'main'
-
-  const hasMaster = await runGit(
-    ['show-ref', '--verify', '--quiet', 'refs/remotes/origin/master'],
-    { cwd: repoDir }
-  )
-  if (hasMaster.ok) return 'master'
 
   return 'main'
 }
@@ -359,28 +333,6 @@ async function contentTreeMatches(
   return true
 }
 
-async function worktreePathsExist(
-  root: string,
-  requiredPaths: KickstartRepoPathRequirement[]
-): Promise<boolean> {
-  for (const requiredPath of requiredPaths) {
-    const safePath = normalizeRepoPath(requiredPath.path)
-    if (!safePath) return false
-
-    try {
-      const stats = await fs.stat(path.join(root, safePath))
-      const validType = requiredPath.type === 'file' ? stats.isFile() : stats.isDirectory()
-      if (!validType) {
-        return false
-      }
-    } catch {
-      return false
-    }
-  }
-
-  return true
-}
-
 export async function bareRepoPathsExist(
   repoPath: string,
   requiredPaths: KickstartRepoPathRequirement[]
@@ -440,12 +392,11 @@ export async function contentRepoPathsExist(
   const root = await resolveKickstartContentRepoRoot()
   if (!root) return false
 
-  const mode = await detectRepoMode(root)
-  if (mode === 'bare') {
-    return bareRepoPathsExist(root, requiredPaths)
+  if (!(await hasBareRepoLayout(root))) {
+    return false
   }
 
-  return worktreePathsExist(root, requiredPaths)
+  return bareRepoPathsExist(root, requiredPaths)
 }
 
 export async function contentRepoPathExists(
@@ -463,21 +414,8 @@ export async function writeKickstartConfigRepo(
     return { ok: false, error: 'kb_unavailable' }
   }
 
-  const mode = await detectRepoMode(root)
-  if (mode !== 'bare') {
-    try {
-      if (await textFilesMatch(root, files)) {
-        return { ok: true }
-      }
-
-      const written = await writeTextFiles(root, files)
-      if (!written) {
-        return { ok: false, error: 'write_failed' }
-      }
-      return { ok: true }
-    } catch {
-      return { ok: false, error: 'write_failed' }
-    }
+  if (!(await hasBareRepoLayout(root))) {
+    return { ok: false, error: 'write_failed' }
   }
 
   const result = await withBareRepoCheckout(root, async ({ dir, branch }) => {
@@ -513,22 +451,8 @@ export async function replaceKickstartContentRepo(args: {
     return { ok: false, error: 'kb_unavailable' }
   }
 
-  const mode = await detectRepoMode(root)
-  if (mode !== 'bare') {
-    try {
-      if (await contentTreeMatches(root, args.directories, args.files)) {
-        return { ok: true }
-      }
-
-      await clearDirectoryExceptGit(root)
-      const written = await writeContentTree(root, args.directories, args.files)
-      if (!written) {
-        return { ok: false, error: 'write_failed' }
-      }
-      return { ok: true }
-    } catch {
-      return { ok: false, error: 'write_failed' }
-    }
+  if (!(await hasBareRepoLayout(root))) {
+    return { ok: false, error: 'write_failed' }
   }
 
   const result = await withBareRepoCheckout(root, async ({ dir, branch }) => {

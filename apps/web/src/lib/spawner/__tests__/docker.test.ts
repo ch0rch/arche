@@ -46,14 +46,11 @@ describe('docker', () => {
   beforeEach(() => {
     process.env = { ...originalEnv }
     delete process.env.CONTAINER_SOCKET_PATH
-    delete process.env.CONTAINER_HOST
-    // Keep unit tests deterministic even when running inside containerized
-    // local stacks that inject KB mount paths.
-    delete process.env.KB_CONTENT_HOST_PATH
     process.env.CONTAINER_PROXY_HOST = 'test-proxy'
     process.env.CONTAINER_PROXY_PORT = '2375'
     process.env.OPENCODE_IMAGE = 'test-image:latest'
     process.env.OPENCODE_NETWORK = 'test-network'
+    process.env.KB_CONTENT_HOST_PATH = '/opt/arche/kb-content'
   })
 
   afterEach(() => {
@@ -128,6 +125,7 @@ describe('docker', () => {
             'arche-workspace-user-slug:/workspace',
             'arche-opencode-share-user-slug:/home/workspace/.local/share/opencode',
             'arche-opencode-state-user-slug:/home/workspace/.local/state/opencode',
+            '/opt/arche/kb-content:/kb-content',
             '/opt/arche/users/user-slug/opencode-config.json:/tmp/arche-user-data/opencode-config.json:ro',
           ],
         },

@@ -63,6 +63,33 @@ describe('config', () => {
     })
   })
 
+  describe('getContainerSocketPath', () => {
+    it('returns socket path from CONTAINER_SOCKET_PATH', async () => {
+      process.env.CONTAINER_SOCKET_PATH = '/run/podman/podman.sock'
+
+      const { getContainerSocketPath } = await import('../config')
+
+      expect(getContainerSocketPath()).toBe('/run/podman/podman.sock')
+    })
+
+    it('returns undefined when CONTAINER_SOCKET_PATH is missing', async () => {
+      delete process.env.CONTAINER_SOCKET_PATH
+
+      const { getContainerSocketPath } = await import('../config')
+
+      expect(getContainerSocketPath()).toBeUndefined()
+    })
+
+    it('does not use legacy CONTAINER_HOST env var', async () => {
+      delete process.env.CONTAINER_SOCKET_PATH
+      process.env.CONTAINER_HOST = 'unix:///run/podman/podman.sock'
+
+      const { getContainerSocketPath } = await import('../config')
+
+      expect(getContainerSocketPath()).toBeUndefined()
+    })
+  })
+
   describe('getOpencodeImage', () => {
     it('returns default image when OPENCODE_IMAGE not set', async () => {
       delete process.env.OPENCODE_IMAGE
@@ -174,6 +201,24 @@ describe('config', () => {
       const { getIdleTimeoutMinutes } = await import('../config')
 
       expect(getIdleTimeoutMinutes()).toBe(45)
+    })
+  })
+
+  describe('getKbContentHostPath', () => {
+    it('throws when KB_CONTENT_HOST_PATH is missing', async () => {
+      delete process.env.KB_CONTENT_HOST_PATH
+
+      const { getKbContentHostPath } = await import('../config')
+
+      expect(() => getKbContentHostPath()).toThrow('KB_CONTENT_HOST_PATH is required')
+    })
+
+    it('returns trimmed KB_CONTENT_HOST_PATH', async () => {
+      process.env.KB_CONTENT_HOST_PATH = '  /opt/arche/kb-content  '
+
+      const { getKbContentHostPath } = await import('../config')
+
+      expect(getKbContentHostPath()).toBe('/opt/arche/kb-content')
     })
   })
 })

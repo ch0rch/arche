@@ -7,13 +7,7 @@ const DEFAULT_USERNAME = 'opencode'
 export function getWorkspaceAgentUrl(slug: string): string {
   const containerName = `opencode-${slug}`
   const port = getWorkspaceAgentPort()
-  const isContainer = process.env.CONTAINER_PROXY_HOST !== undefined || process.env.CONTAINER_SOCKET_PATH !== undefined
-
-  if (isContainer) {
-    return `http://${containerName}:${port}`
-  }
-
-  return `http://localhost:${port}`
+  return `http://${containerName}:${port}`
 }
 
 export async function createWorkspaceAgentClient(slug: string): Promise<{
