@@ -88,9 +88,6 @@ services:
       KB_CONTENT_HOST_PATH: ${KB_CONTENT_HOST_PATH:-}
       # Path to KB config bare repo on host
       KB_CONFIG_HOST_PATH: ${KB_CONFIG_HOST_PATH:-}
-      # Paths mounted in web for Git reads
-      ARCHE_KB_CONTENT_PATH: /kb-content
-      ARCHE_CONFIG_REPO_PATH: /kb-config
       # Path for persistent user data
       ARCHE_USERS_PATH: ${ARCHE_USERS_PATH:-/tmp/arche-users}
     networks:

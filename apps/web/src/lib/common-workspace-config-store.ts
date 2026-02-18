@@ -20,8 +20,8 @@ export type KbRecentFileUpdate = {
   committedAt: string
 }
 
-const CONFIG_REPO_ENV = 'ARCHE_CONFIG_REPO_PATH'
-const CONTENT_REPO_ENV = 'ARCHE_KB_CONTENT_PATH'
+const CONFIG_REPO_ROOT = '/kb-config'
+const CONTENT_REPO_ROOT = '/kb-content'
 const CONFIG_FILE_NAME = 'CommonWorkspaceConfig.json'
 const execFileAsync = promisify(execFile)
 
@@ -51,32 +51,21 @@ function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex')
 }
 
-async function resolveRepoRoot(envName: string, fallbacks: string[]): Promise<string | null> {
-  const explicit = process.env[envName]
-  if (explicit) return explicit
-
-  for (const fallback of fallbacks) {
-    try {
-      const stats = await fs.stat(fallback)
-      if (stats.isDirectory()) return fallback
-    } catch {
-      continue
-    }
+async function resolveRepoRoot(root: string): Promise<string | null> {
+  try {
+    const stats = await fs.stat(root)
+    return stats.isDirectory() ? root : null
+  } catch {
+    return null
   }
-
-  return null
 }
 
 async function resolveConfigRepoRoot(): Promise<string | null> {
-  return resolveRepoRoot(CONFIG_REPO_ENV, [
-    path.resolve(process.cwd(), '..', '..', 'config')
-  ])
+  return resolveRepoRoot(CONFIG_REPO_ROOT)
 }
 
 async function resolveContentRepoRoot(): Promise<string | null> {
-  return resolveRepoRoot(CONTENT_REPO_ENV, [
-    path.resolve(process.cwd(), '..', '..', 'kb')
-  ])
+  return resolveRepoRoot(CONTENT_REPO_ROOT)
 }
 
 async function runGit(

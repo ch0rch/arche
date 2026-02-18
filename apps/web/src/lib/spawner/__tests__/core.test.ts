@@ -30,6 +30,28 @@ vi.mock('@/lib/opencode/providers', () => ({
   syncProviderAccessForInstance: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
+// Mock workspace config store
+vi.mock('@/lib/common-workspace-config-store', () => ({
+  getCommonWorkspaceConfigHash: vi.fn().mockResolvedValue({
+    ok: true,
+    hash: 'hash',
+  }),
+  readCommonWorkspaceConfig: vi.fn().mockResolvedValue({
+    ok: true,
+    content: JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      default_agent: 'assistant',
+      agent: {},
+    }),
+    hash: 'hash',
+    path: '/kb-config/CommonWorkspaceConfig.json',
+  }),
+  readConfigRepoFile: vi.fn().mockResolvedValue({
+    ok: true,
+    content: '# AGENTS.md',
+  }),
+}))
+
 // Mock docker
 vi.mock('../docker', () => ({
   createContainer: vi.fn(),

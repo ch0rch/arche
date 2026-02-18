@@ -47,9 +47,9 @@ describe('docker', () => {
     process.env = { ...originalEnv }
     delete process.env.CONTAINER_SOCKET_PATH
     delete process.env.CONTAINER_HOST
-    // Keep unit tests deterministic even when running inside local-dev compose,
-    // where KB_HOST_PATH is typically set.
-    delete process.env.KB_HOST_PATH
+    // Keep unit tests deterministic even when running inside containerized
+    // local stacks that inject KB mount paths.
+    delete process.env.KB_CONTENT_HOST_PATH
     process.env.CONTAINER_PROXY_HOST = 'test-proxy'
     process.env.CONTAINER_PROXY_PORT = '2375'
     process.env.OPENCODE_IMAGE = 'test-image:latest'

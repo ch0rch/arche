@@ -7,8 +7,8 @@ import { promisify } from 'util'
 import { normalizeRepoPath } from '@/kickstart/parse-utils'
 import type { KickstartRenderedFile } from '@/kickstart/types'
 
-const CONFIG_REPO_ENV = 'ARCHE_CONFIG_REPO_PATH'
-const CONTENT_REPO_ENV = 'ARCHE_KB_CONTENT_PATH'
+const CONFIG_REPO_ROOT = '/kb-config'
+const CONTENT_REPO_ROOT = '/kb-content'
 
 const execFileAsync = promisify(execFile)
 
@@ -94,42 +94,21 @@ async function detectRepoMode(root: string): Promise<RepoMode> {
   return 'directory'
 }
 
-async function resolveRepoRoot(
-  envName: string,
-  fallbacks: string[]
-): Promise<string | null> {
-  const explicit = process.env[envName]
-  if (explicit) {
-    try {
-      const stats = await fs.stat(explicit)
-      if (stats.isDirectory()) return explicit
-    } catch {
-      return null
-    }
+async function resolveRepoRoot(root: string): Promise<string | null> {
+  try {
+    const stats = await fs.stat(root)
+    return stats.isDirectory() ? root : null
+  } catch {
+    return null
   }
-
-  for (const fallback of fallbacks) {
-    try {
-      const stats = await fs.stat(fallback)
-      if (stats.isDirectory()) return fallback
-    } catch {
-      continue
-    }
-  }
-
-  return null
 }
 
 export async function resolveKickstartConfigRepoRoot(): Promise<string | null> {
-  return resolveRepoRoot(CONFIG_REPO_ENV, [
-    path.resolve(process.cwd(), '..', '..', 'config'),
-  ])
+  return resolveRepoRoot(CONFIG_REPO_ROOT)
 }
 
 export async function resolveKickstartContentRepoRoot(): Promise<string | null> {
-  return resolveRepoRoot(CONTENT_REPO_ENV, [
-    path.resolve(process.cwd(), '..', '..', 'kb'),
-  ])
+  return resolveRepoRoot(CONTENT_REPO_ROOT)
 }
 
 async function cloneRepoToTemp(
