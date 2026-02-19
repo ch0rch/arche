@@ -70,12 +70,13 @@ async function resolveContentRepoRoot(): Promise<string | null> {
 
 async function runGit(
   args: string[],
-  options?: { cwd?: string }
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv }
 ): Promise<{ ok: true; stdout: string } | { ok: false; stderr: string }> {
   try {
     const result = await execFileAsync('git', args, {
       cwd: options?.cwd,
-      encoding: 'utf-8'
+      encoding: 'utf-8',
+      env: options?.env ? { ...process.env, ...options.env } : process.env,
     })
     return { ok: true, stdout: result.stdout ?? '' }
   } catch (error) {
@@ -100,11 +101,19 @@ async function runGitOnRepo(root: string, args: string[]): Promise<{ ok: true; s
 
 async function cloneRepoToTemp(root: string): Promise<{ ok: true; dir: string } | { ok: false }> {
   const dir = await fs.mkdtemp(path.join(tmpdir(), 'arche-kb-'))
-  const clone = await runGit(['clone', '--quiet', root, dir])
+  const safeConfig = path.join(dir, 'gitconfig')
+  await fs.writeFile(safeConfig, `[safe]\n\tdirectory = ${root}\n`, 'utf-8')
+  const clone = await runGit(['clone', '--quiet', root, dir], {
+    env: {
+      GIT_CONFIG_GLOBAL: safeConfig,
+    },
+  })
   if (!clone.ok) {
+    await fs.rm(safeConfig, { force: true }).catch(() => {})
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
     return { ok: false }
   }
+  await fs.rm(safeConfig, { force: true }).catch(() => {})
   return { ok: true, dir }
 }
 
