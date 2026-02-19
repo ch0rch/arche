@@ -57,6 +57,9 @@ services:
       ARCHE_SESSION_PEPPER: ${ARCHE_SESSION_PEPPER:?}
       ARCHE_ENCRYPTION_KEY: ${ARCHE_ENCRYPTION_KEY:?}
       ARCHE_INTERNAL_TOKEN: ${ARCHE_INTERNAL_TOKEN:?}
+      ARCHE_GATEWAY_TOKEN_SECRET: ${ARCHE_GATEWAY_TOKEN_SECRET:?}
+      ARCHE_GATEWAY_TOKEN_TTL_SECONDS: ${ARCHE_GATEWAY_TOKEN_TTL_SECONDS:-86400}
+      ARCHE_GATEWAY_BASE_URL: ${ARCHE_GATEWAY_BASE_URL:-http://web:3000}
 
       # Gateway (required for connectors)
       ARCHE_GATEWAY_TOKEN_SECRET: ${ARCHE_GATEWAY_TOKEN_SECRET:?}
@@ -74,7 +77,7 @@ services:
       # Spawner config
       CONTAINER_PROXY_HOST: docker-socket-proxy
       CONTAINER_PROXY_PORT: "2375"
-      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-arche-workspace:latest}
+      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/peaberry-studio/arche/workspace:latest}
       OPENCODE_NETWORK: arche_internal
 
       # Knowledge Base (optional)

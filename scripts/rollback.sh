@@ -52,7 +52,10 @@ find_postgres() {
 
 # Find all running web containers (may include zombies from failed deploys)
 find_all_webs() {
-  podman ps --filter label=arche.role=web --format '{{.Names}}'
+  {
+    podman ps --filter label=arche.role=web --format '{{.Names}}'
+    podman ps --filter label=com.docker.compose.project=arche --filter label=com.docker.compose.service=web --format '{{.Names}}'
+  } | sed '/^$/d' | sort -u
 }
 
 # Detect the compose default network
@@ -162,7 +165,12 @@ if [[ -n "$ROLLBACK_VERSION" ]]; then
 
   # Determine entrypoint - check existing web containers first, then fall back to ARCHE_COOKIE_SECURE
   # If there are running web containers, inspect their labels to match the current configuration
-  EXISTING_ENTRYPOINT=$(podman ps --filter label=arche.role=web --filter label=traefik.http.routers.arche-base.entrypoints=websecure --format '{{.Names}}' | head -1)
+  EXISTING_ENTRYPOINT=$(
+    {
+      podman ps --filter label=arche.role=web --filter label=traefik.http.routers.arche-base.entrypoints=websecure --format '{{.Names}}'
+      podman ps --filter label=com.docker.compose.project=arche --filter label=com.docker.compose.service=web --filter label=traefik.http.routers.arche-base.entrypoints=websecure --format '{{.Names}}'
+    } | sed '/^$/d' | head -1
+  )
   if [[ -n "$EXISTING_ENTRYPOINT" ]]; then
     ENTRYPOINT="websecure"
     log "Detected TLS mode from existing container: $EXISTING_ENTRYPOINT"
