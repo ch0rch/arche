@@ -19,6 +19,7 @@ SSH_USER="root"
 ACME_EMAIL=""
 DRY_RUN=false
 VERBOSE=false
+SKIP_ENSURE_DNS_RECORD=false
 LOCAL_DOMAIN="arche.lvh.me"
 
 # GHCR defaults
@@ -87,6 +88,7 @@ REMOTE MODE:
   Optional:
     --version       Web image tag to deploy (default: latest)
     --user          SSH user (default: root)
+    --skip-ensure-dns-record  Skip DNS verification step before deploy
     --dry-run       Show what would be done without executing
     --verbose       Enable verbose output
 
@@ -142,6 +144,7 @@ while [[ $# -gt 0 ]]; do
     --user)        SSH_USER="$2";        shift 2 ;;
     --acme-email)  ACME_EMAIL="$2";      shift 2 ;;
     --version)     WEB_VERSION="$2";     shift 2 ;;
+    --skip-ensure-dns-record) SKIP_ENSURE_DNS_RECORD=true; shift ;;
     --dry-run)     DRY_RUN=true;         shift ;;
     --verbose)     VERBOSE=true;         shift ;;
     -h|--help)     usage 0 ;;
@@ -376,8 +379,12 @@ deploy_remote() {
   fi
   log "SSH connection OK"
 
-  # Ensure DNS record points to VPS IP
-  ensure_dns_record
+  if $SKIP_ENSURE_DNS_RECORD; then
+    warn "Skipping DNS verification (--skip-ensure-dns-record enabled)"
+  else
+    # Ensure DNS record points to VPS IP
+    ensure_dns_record
+  fi
 
   # Build workspace image on remote host when using default OPENCODE_IMAGE
   prepare_remote_workspace_image

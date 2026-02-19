@@ -26,6 +26,23 @@
 # ---------------------------------------------------------------------------
 # Step 1: Setup
 # ---------------------------------------------------------------------------
+- name: Configure UFW defaults (allow routed traffic for Podman bridges)
+  community.general.ufw:
+    direction: routed
+    default: allow
+
+- name: Allow DNS (UDP) from Podman bridge interfaces
+  ansible.builtin.command:
+    cmd: ufw allow in on podman+ to any port 53 proto udp
+  register: ufw_dns_udp
+  changed_when: "'Skipping adding existing rule' not in ufw_dns_udp.stdout"
+
+- name: Allow DNS (TCP) from Podman bridge interfaces
+  ansible.builtin.command:
+    cmd: ufw allow in on podman+ to any port 53 proto tcp
+  register: ufw_dns_tcp
+  changed_when: "'Skipping adding existing rule' not in ufw_dns_tcp.stdout"
+
 - name: Create users data directory
   ansible.builtin.file:
     path: "{{ users_path | default('/opt/arche/users') }}"

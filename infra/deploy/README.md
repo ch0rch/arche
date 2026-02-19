@@ -88,7 +88,8 @@ cp .env.example .env
   --ip 203.0.113.50 \
   --domain arche.example.com \
   --ssh-key ~/.ssh/id_rsa \
-  --acme-email admin@example.com
+  --acme-email admin@example.com \
+  --skip-ensure-dns-record
 ```
 
 ## CLI Reference
@@ -102,6 +103,7 @@ cp .env.example .env
 | `--ssh-key` | Yes | Path to SSH private key |
 | `--acme-email` | Yes | Let's Encrypt ACME email |
 | `--user` | No | SSH user (default: `root`) |
+| `--skip-ensure-dns-record` | No | Skip `ensure_dns_record` verification before running Ansible |
 | `--dry-run` | No | Show what would be done |
 | `--verbose` | No | Verbose Ansible output |
 
@@ -203,7 +205,7 @@ cd /opt/arche && podman compose logs -f
 podman compose restart
 
 # Re-deploy (from local machine)
-./deploy.sh --ip <IP> --domain <DOMAIN> --ssh-key <KEY> --acme-email <EMAIL>
+./deploy.sh --ip <IP> --domain <DOMAIN> --ssh-key <KEY> --acme-email <EMAIL> [--skip-ensure-dns-record]
 ```
 
 ## Troubleshooting
