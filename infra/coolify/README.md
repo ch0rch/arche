@@ -104,7 +104,7 @@ Set these in the web application's environment variables in Coolify:
 | `ARCHE_SEED_ADMIN_SLUG` | No | Default: `admin` |
 | `CONTAINER_PROXY_HOST` | Yes | Hostname of docker-socket-proxy (use the Coolify service name) |
 | `CONTAINER_PROXY_PORT` | Yes | `2375` |
-| `OPENCODE_IMAGE` | No | Default: `ghcr.io/anomalyco/opencode:1.1.45` |
+| `OPENCODE_IMAGE` | No | Default: `arche-workspace:latest` |
 | `OPENCODE_NETWORK` | Yes | `arche_internal` |
 
 ### Step 6: Deploy

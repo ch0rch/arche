@@ -74,7 +74,7 @@ services:
       # Spawner config
       CONTAINER_PROXY_HOST: docker-socket-proxy
       CONTAINER_PROXY_PORT: "2375"
-      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode:1.1.45}
+      OPENCODE_IMAGE: ${OPENCODE_IMAGE:-arche-workspace:latest}
       OPENCODE_NETWORK: arche_internal
 
       # Knowledge Base (optional)

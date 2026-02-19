@@ -171,7 +171,7 @@ Set in `.env` or export before running `deploy.sh`.
 |----------|---------|
 | `IMAGE_PREFIX` | `ghcr.io/peaberry-studio/arche/` |
 | `WEB_VERSION` | `latest` |
-| `OPENCODE_IMAGE` | `ghcr.io/anomalyco/opencode:1.1.45` |
+| `OPENCODE_IMAGE` | `arche-workspace:latest` |
 | `PODMAN_SOCKET_PATH` | Auto-detected (see below) |
 
 ## Podman Socket

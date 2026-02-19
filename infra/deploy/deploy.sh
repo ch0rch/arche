@@ -25,7 +25,7 @@ LOCAL_DOMAIN="arche.lvh.me"
 # GHCR defaults
 IMAGE_PREFIX="${IMAGE_PREFIX:-ghcr.io/peaberry-studio/arche/}"
 WEB_VERSION="${WEB_VERSION:-latest}"
-OPENCODE_IMAGE="${OPENCODE_IMAGE:-ghcr.io/anomalyco/opencode:1.1.45}"
+OPENCODE_IMAGE="${OPENCODE_IMAGE:-arche-workspace:latest}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,6 +40,37 @@ log()   { printf "${GREEN}[arche]${NC} %s\n" "$*"; }
 warn()  { printf "${YELLOW}[arche]${NC} %s\n" "$*" >&2; }
 err()   { printf "${RED}[arche]${NC} %s\n" "$*" >&2; }
 info()  { printf "${BLUE}[arche]${NC} %s\n" "$*"; }
+
+prepare_remote_workspace_image() {
+  if [[ "$OPENCODE_IMAGE" != "arche-workspace:latest" ]]; then
+    log "Skipping remote workspace image build (OPENCODE_IMAGE=$OPENCODE_IMAGE)"
+    return
+  fi
+
+  if $DRY_RUN; then
+    warn "DRY RUN — skipping remote workspace image build"
+    return
+  fi
+
+  local repo_root="$SCRIPT_DIR/../.."
+  repo_root="$(cd "$repo_root" && pwd)"
+  local workspace_src="$repo_root/infra/workspace-image"
+
+  if [[ ! -f "$workspace_src/Containerfile" ]]; then
+    err "Cannot find infra/workspace-image/Containerfile in $repo_root"
+    err "Run this script from within the arche repository."
+    exit 1
+  fi
+
+  log "Syncing workspace image sources to remote host..."
+  tar -C "$repo_root" -czf - infra/workspace-image | \
+    ssh -o BatchMode=yes -o ConnectTimeout=10 -i "$SSH_KEY" "${SSH_USER}@${DEPLOY_IP}" \
+      "rm -rf /tmp/arche-workspace-image-src && mkdir -p /tmp/arche-workspace-image-src && tar -xzf - -C /tmp/arche-workspace-image-src --strip-components=2"
+
+  log "Building workspace image on remote host: arche-workspace:latest"
+  ssh -o BatchMode=yes -o ConnectTimeout=10 -i "$SSH_KEY" "${SSH_USER}@${DEPLOY_IP}" \
+    "cd /tmp/arche-workspace-image-src && podman build --build-arg OPENCODE_VERSION=1.1.45 -t arche-workspace:latest ."
+}
 
 usage() {
   cat <<'EOF'
@@ -370,6 +401,9 @@ deploy_remote() {
 
   # Ensure DNS record points to VPS IP
   ensure_dns_record
+
+  # Build workspace image on remote host when using default OPENCODE_IMAGE
+  prepare_remote_workspace_image
 
   # Generate temporary inventory and extra-vars file
   INVENTORY=$(mktemp)
