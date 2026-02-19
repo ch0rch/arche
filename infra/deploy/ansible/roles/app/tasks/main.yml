@@ -170,7 +170,7 @@
   ansible.builtin.shell:
     cmd: >
       podman compose -f {{ app_dir }}/compose.yml --env-file {{ app_dir }}/.env
-      -p arche up -d
+      -p arche up -d postgres traefik docker-socket-proxy
   changed_when: true
   when: podman_compose_check.rc == 0
 
@@ -178,7 +178,7 @@
   ansible.builtin.shell:
     cmd: >
       podman-compose -f {{ app_dir }}/compose.yml --env-file {{ app_dir }}/.env
-      -p arche up -d
+      -p arche up -d postgres traefik docker-socket-proxy
   changed_when: true
   when: podman_compose_check.rc != 0
 
@@ -243,7 +243,11 @@
 # 5b. Find all currently running web containers (may include zombies from failed deploys)
 - name: Find old web containers
   ansible.builtin.shell:
-    cmd: podman ps --filter label=arche.role=web --format '{{ '{{' }}.Names{{ '}}' }}'
+    cmd: |
+      {
+        podman ps --filter label=arche.role=web --format '{{ '{{' }}.Names{{ '}}' }}'
+        podman ps --filter label=com.docker.compose.project=arche --filter label=com.docker.compose.service=web --format '{{ '{{' }}.Names{{ '}}' }}'
+      } | sed "/^$/d" | sort -u
   register: old_web_result
   changed_when: false
   failed_when: false

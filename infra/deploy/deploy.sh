@@ -131,8 +131,8 @@ ENVIRONMENT VARIABLES (via .env or exported):
   ARCHE_SEED_TEST_EMAIL     Seed test user email (optional)
   ARCHE_SEED_TEST_SLUG      Seed test user slug (optional)
   ARCHE_USERS_PATH          Host path for persisted user data (optional)
-  KB_CONTENT_HOST_PATH      Path del repo bare de contenido KB
-  KB_CONFIG_HOST_PATH       Path del repo bare de configuración
+  KB_CONTENT_HOST_PATH      Path to the KB content bare repo
+  KB_CONFIG_HOST_PATH       Path to the KB config bare repo
 EOF
   exit "${1:-0}"
 }
@@ -547,7 +547,6 @@ import json, os, sys
 vars = {
     "deploy_mode": "local",
     "domain": os.environ["LOCAL_DOMAIN"],
-    "dns_provider": "",
     "acme_email": "",
     "env_file_name": ".env.local",
     "podman_socket_path": os.environ["PODMAN_SOCKET_PATH"],
@@ -609,7 +608,7 @@ PLAYBOOK
   # Start base services (postgres, traefik, docker-socket-proxy)
   # Web is managed outside compose for blue-green deploys
   log "Starting base services (postgres, traefik, docker-socket-proxy)..."
-  podman compose -f "$COMPOSE_OUT" --env-file "$SCRIPT_DIR/.env.local" -p arche up -d
+  podman compose -f "$COMPOSE_OUT" --env-file "$SCRIPT_DIR/.env.local" -p arche up -d postgres traefik docker-socket-proxy
 
   # Wait for postgres to be healthy
   log "Waiting for postgres..."
@@ -635,7 +634,12 @@ PLAYBOOK
   OLD_WEBS=()
   while IFS= read -r c; do
     [[ -n "$c" ]] && OLD_WEBS+=("$c")
-  done < <(podman ps --filter label=arche.role=web --format '{{.Names}}')
+  done < <(
+    {
+      podman ps --filter label=arche.role=web --format '{{.Names}}'
+      podman ps --filter label=com.docker.compose.project=arche --filter label=com.docker.compose.service=web --format '{{.Names}}'
+    } | sed '/^$/d' | sort -u
+  )
 
   if [[ ${#OLD_WEBS[@]} -gt 0 ]]; then
     log "Found existing web container(s): ${OLD_WEBS[*]}"
@@ -799,7 +803,6 @@ import json, os, sys
 vars = {
     "deploy_mode": "local-dev",
     "domain": os.environ["LOCAL_DOMAIN"],
-    "dns_provider": "",
     "acme_email": "",
     "env_file_name": ".env.local-dev",
     "podman_socket_path": os.environ["PODMAN_SOCKET_PATH"],

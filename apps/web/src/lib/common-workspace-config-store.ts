@@ -99,27 +99,42 @@ async function runGitOnRepo(root: string, args: string[]): Promise<{ ok: true; s
   return runGit(['--git-dir', root, ...args])
 }
 
-async function cloneRepoToTemp(root: string): Promise<{ ok: true; dir: string } | { ok: false }> {
+async function cloneRepoToTemp(
+  root: string
+): Promise<
+  | { ok: true; dir: string; gitEnv: NodeJS.ProcessEnv; safeConfigDir: string }
+  | { ok: false }
+> {
   const dir = await fs.mkdtemp(path.join(tmpdir(), 'arche-kb-'))
-  const safeConfig = path.join(dir, 'gitconfig')
-  await fs.writeFile(safeConfig, `[safe]\n\tdirectory = ${root}\n`, 'utf-8')
-  const clone = await runGit(['clone', '--quiet', root, dir], {
-    env: {
-      ...process.env,
-      GIT_CONFIG_GLOBAL: safeConfig,
-    },
-  })
+  const safeConfigDir = await fs.mkdtemp(path.join(tmpdir(), 'arche-kb-safe-'))
+  const safeConfig = path.join(safeConfigDir, 'gitconfig')
+  const resolvedRoot = await fs.realpath(root).catch(() => root)
+  const safeDirectories = Array.from(new Set([root, resolvedRoot]))
+  const safeConfigContent = safeDirectories
+    .map((safeDirectory) => `[safe]\n\tdirectory = ${safeDirectory}\n`)
+    .join('')
+  await fs.writeFile(safeConfig, safeConfigContent, 'utf-8')
+
+  const gitEnv: NodeJS.ProcessEnv = {
+    GIT_CONFIG_GLOBAL: safeConfig,
+  }
+  const clone = await runGit(['clone', '--quiet', root, dir], { env: gitEnv })
   if (!clone.ok) {
-    await fs.rm(safeConfig, { force: true }).catch(() => {})
     await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+    await fs.rm(safeConfigDir, { recursive: true, force: true }).catch(() => {})
     return { ok: false }
   }
-  await fs.rm(safeConfig, { force: true }).catch(() => {})
-  return { ok: true, dir }
+  return { ok: true, dir, gitEnv, safeConfigDir }
 }
 
-async function detectDefaultBranch(repoDir: string): Promise<string> {
-  const ref = await runGit(['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'], { cwd: repoDir })
+async function detectDefaultBranch(
+  repoDir: string,
+  gitEnv: NodeJS.ProcessEnv
+): Promise<string> {
+  const ref = await runGit(['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'], {
+    cwd: repoDir,
+    env: gitEnv,
+  })
   if (ref.ok) {
     const value = ref.stdout.trim()
     if (value.startsWith('origin/')) {
@@ -157,6 +172,7 @@ export async function readCommonWorkspaceConfig(): Promise<ConfigReadResult> {
     return { ok: false, error: 'read_failed' }
   } finally {
     await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
+    await fs.rm(clone.safeConfigDir, { recursive: true, force: true }).catch(() => {})
   }
 }
 
@@ -182,6 +198,7 @@ export async function writeCommonWorkspaceConfig(
   const current = await fs.readFile(configPath, 'utf-8').catch(() => '')
   if (expectedHash && current && hashContent(current) !== expectedHash) {
     await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
+    await fs.rm(clone.safeConfigDir, { recursive: true, force: true }).catch(() => {})
     return { ok: false, error: 'conflict' }
   }
 
@@ -189,12 +206,15 @@ export async function writeCommonWorkspaceConfig(
     await fs.mkdir(path.dirname(configPath), { recursive: true })
     await fs.writeFile(configPath, content, 'utf-8')
 
-    const add = await runGit(['add', CONFIG_FILE_NAME], { cwd: clone.dir })
+    const add = await runGit(['add', CONFIG_FILE_NAME], { cwd: clone.dir, env: clone.gitEnv })
     if (!add.ok) {
       return { ok: false, error: 'write_failed' }
     }
 
-    const status = await runGit(['status', '--porcelain', '--', CONFIG_FILE_NAME], { cwd: clone.dir })
+    const status = await runGit(['status', '--porcelain', '--', CONFIG_FILE_NAME], {
+      cwd: clone.dir,
+      env: clone.gitEnv,
+    })
     if (!status.ok) {
       return { ok: false, error: 'write_failed' }
     }
@@ -210,14 +230,17 @@ export async function writeCommonWorkspaceConfig(
         'commit',
         '-m', 'Update common workspace config'
       ],
-      { cwd: clone.dir }
+      { cwd: clone.dir, env: clone.gitEnv }
     )
     if (!commit.ok) {
       return { ok: false, error: 'write_failed' }
     }
 
-    const branch = await detectDefaultBranch(clone.dir)
-    const push = await runGit(['push', 'origin', `HEAD:refs/heads/${branch}`], { cwd: clone.dir })
+    const branch = await detectDefaultBranch(clone.dir, clone.gitEnv)
+    const push = await runGit(['push', 'origin', `HEAD:refs/heads/${branch}`], {
+      cwd: clone.dir,
+      env: clone.gitEnv,
+    })
     if (!push.ok) {
       if (push.stderr.includes('non-fast-forward')) {
         return { ok: false, error: 'conflict' }
@@ -228,6 +251,7 @@ export async function writeCommonWorkspaceConfig(
     return { ok: true, hash: hashContent(content) }
   } finally {
     await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
+    await fs.rm(clone.safeConfigDir, { recursive: true, force: true }).catch(() => {})
   }
 }
 
@@ -307,6 +331,7 @@ export async function readConfigRepoFile(
     return { ok: false }
   } finally {
     await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
+    await fs.rm(clone.safeConfigDir, { recursive: true, force: true }).catch(() => {})
   }
 }
 

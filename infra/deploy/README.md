@@ -6,7 +6,7 @@ Deploy Arche to a VPS or run the production stack locally for testing.
 
 ```
 Local Machine
-  ./deploy.sh --ip X --domain Y --dns-provider Z --ssh-key K --acme-email E
+  ./deploy.sh --ip X --domain Y --ssh-key K --acme-email E
               │ SSH (Ansible)
               ▼
 Remote VPS (/opt/arche)
@@ -93,10 +93,10 @@ Edit files in `apps/web/src/` and Next.js hot reloads automatically.
 
 Deploys to a VPS via SSH using Ansible. The playbook provisions Podman (if missing), renders the compose and env templates, pulls images from GHCR, runs migrations, and seeds the database.
 
-- Domain: any single hostname (apex or subdomain), with TLS via ACME DNS challenge
+- Domain: any single hostname (apex or subdomain), with TLS via ACME HTTP challenge
 - HTTPS on port 443, HTTP redirects to HTTPS
 - Requires all secrets set in `.env` or exported
-- Requires SSH access and a DNS provider token for ACME DNS challenge
+- Requires SSH access and open ports 80/443 to complete ACME HTTP challenge
 
 ```bash
 cd infra/deploy
@@ -106,7 +106,6 @@ cp .env.example .env
 ./deploy.sh \
   --ip 203.0.113.50 \
   --domain arche.example.com \
-  --dns-provider cloudflare \
   --ssh-key ~/.ssh/id_rsa \
   --acme-email admin@example.com
 ```
@@ -119,7 +118,6 @@ cp .env.example .env
 |------|----------|-------------|
 | `--ip` | Yes | VPS IP address |
 | `--domain` | Yes | Production domain |
-| `--dns-provider` | Yes | `cloudflare`, `route53`, or `digitalocean` |
 | `--ssh-key` | Yes | Path to SSH private key |
 | `--acme-email` | Yes | Let's Encrypt ACME email |
 | `--user` | No | SSH user (default: `root`) |
@@ -157,13 +155,9 @@ Set in `.env` or export before running `deploy.sh`.
 | `ARCHE_SEED_TEST_EMAIL` | Seed test user email |
 | `ARCHE_SEED_TEST_SLUG` | Seed test user URL slug |
 
-### DNS provider tokens
+### ACME notes
 
-| Provider | Variable(s) |
-|----------|-------------|
-| `cloudflare` | `CF_DNS_API_TOKEN` |
-| `route53` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` |
-| `digitalocean` | `DO_AUTH_TOKEN` |
+No DNS provider token is required. Traefik uses ACME HTTP challenge on entrypoint `web` (port 80).
 
 ### Optional overrides
 
@@ -191,11 +185,9 @@ To override, set `PODMAN_SOCKET_PATH` before running `deploy.sh`.
 
 On remote deploys, the playbook auto-detects whether Podman and a `deploy` user exist. If either is missing, it runs the `common` and `podman` roles to provision the server. On subsequent deploys, only the `app` role runs.
 
-## DNS Provider Notes
+## ACME Notes
 
-Only DNS-01 challenge providers are supported.
-
-HTTP-01 challenge is **not** supported.
+HTTP-01 challenge is used in remote mode. Make sure your domain resolves to the VPS and ports `80/443` are reachable.
 
 ## Services
 
@@ -231,15 +223,14 @@ cd /opt/arche && podman compose logs -f
 podman compose restart
 
 # Re-deploy (from local machine)
-./deploy.sh --ip <IP> --domain <DOMAIN> --dns-provider <PROVIDER> \
-            --ssh-key <KEY> --acme-email <EMAIL>
+./deploy.sh --ip <IP> --domain <DOMAIN> --ssh-key <KEY> --acme-email <EMAIL>
 ```
 
 ## Troubleshooting
 
 **SSH connection fails**: Ensure the SSH key has access and the user can log in (`ssh -i <key> <user>@<ip>`).
 
-**ACME certificate not issued**: Check Traefik logs (`podman compose logs traefik`). Verify DNS provider token is correct and has zone edit permissions.
+**ACME certificate not issued**: Check Traefik logs (`podman compose logs traefik`). Verify domain A/AAAA records point to the VPS and ports `80/443` are reachable.
 
 **Web service unhealthy**: Check web logs (`podman compose logs web`). Ensure `DATABASE_URL` is correct and Postgres is running.
 
