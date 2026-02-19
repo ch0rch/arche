@@ -17,17 +17,7 @@ const OPENCODE_PORT = 4096
  */
 export function getInstanceUrl(slug: string): string {
   const containerName = `opencode-${slug}`
-  // When running in a container network, containers communicate via container name
-  // When running locally for dev, we might need to use localhost
-  const isContainer = process.env.CONTAINER_PROXY_HOST !== undefined || process.env.CONTAINER_SOCKET_PATH !== undefined
-
-  if (isContainer) {
-    return `http://${containerName}:${OPENCODE_PORT}`
-  }
-
-  // For local development without containers, you'd need to map ports
-  // This is a fallback - in production, always use container networking
-  return `http://localhost:${OPENCODE_PORT}`
+  return `http://${containerName}:${OPENCODE_PORT}`
 }
 
 /**

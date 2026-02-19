@@ -46,14 +46,11 @@ describe('docker', () => {
   beforeEach(() => {
     process.env = { ...originalEnv }
     delete process.env.CONTAINER_SOCKET_PATH
-    delete process.env.CONTAINER_HOST
-    // Keep unit tests deterministic even when running inside local-dev compose,
-    // where KB_HOST_PATH is typically set.
-    delete process.env.KB_HOST_PATH
     process.env.CONTAINER_PROXY_HOST = 'test-proxy'
     process.env.CONTAINER_PROXY_PORT = '2375'
     process.env.OPENCODE_IMAGE = 'test-image:latest'
     process.env.OPENCODE_NETWORK = 'test-network'
+    process.env.KB_CONTENT_HOST_PATH = '/opt/arche/kb-content'
   })
 
   afterEach(() => {
@@ -66,6 +63,34 @@ describe('docker', () => {
       const configContent = '{"$schema":"https://opencode.ai/config.json","mcp":{}}'
 
       await createContainer('user-slug', 'secret-password', configContent)
+
+      const configCall = mockWriteFile.mock.calls.find(
+        (call: unknown[]) =>
+          typeof call[0] === 'string' &&
+          (call[0] as string).endsWith('opencode-config.json')
+      )
+      const writtenConfig = JSON.parse(String(configCall?.[1])) as {
+        permission?: {
+          edit?: Record<string, string>
+          bash?: Record<string, string>
+        }
+      }
+      expect(writtenConfig.permission?.edit).toMatchObject({
+        '.gitignore': 'deny',
+        '.gitkeep': 'deny',
+        '**/.gitkeep': 'deny',
+        'opencode.json': 'deny',
+        'AGENTS.md': 'deny',
+        'node_modules/*': 'deny',
+      })
+      expect(writtenConfig.permission?.bash).toMatchObject({
+        '*AGENTS.md*': 'deny',
+        '*.gitkeep*': 'deny',
+        'npm install*': 'deny',
+        'pnpm add*': 'deny',
+        'yarn create*': 'deny',
+        'bun init*': 'deny',
+      })
 
       expect(Docker).toHaveBeenCalledWith({
         host: 'test-proxy',
@@ -103,6 +128,7 @@ describe('docker', () => {
             'arche-workspace-user-slug:/workspace',
             'arche-opencode-share-user-slug:/home/workspace/.local/share/opencode',
             'arche-opencode-state-user-slug:/home/workspace/.local/state/opencode',
+            '/opt/arche/kb-content:/kb-content',
             '/opt/arche/users/user-slug/opencode-config.json:/tmp/arche-user-data/opencode-config.json:ro',
           ],
         },
@@ -110,6 +136,47 @@ describe('docker', () => {
           'arche.managed': 'true',
           'arche.user.slug': 'user-slug',
         },
+      })
+    })
+
+    it('merges existing permission rules with workspace protection', async () => {
+      const configContent = JSON.stringify({
+        permission: {
+          bash: {
+            '*': 'ask',
+            'git *': 'allow',
+          },
+          edit: {
+            '*': 'allow',
+            'Company/*': 'allow',
+          },
+        },
+      })
+
+      await createContainer('user-slug', 'secret-password', configContent)
+
+      const configCall = mockWriteFile.mock.calls.find(
+        (call: unknown[]) =>
+          typeof call[0] === 'string' &&
+          (call[0] as string).endsWith('opencode-config.json')
+      )
+      const writtenConfig = JSON.parse(String(configCall?.[1])) as {
+        permission?: {
+          edit?: Record<string, string>
+          bash?: Record<string, string>
+        }
+      }
+
+      expect(writtenConfig.permission?.bash).toMatchObject({
+        '*': 'ask',
+        'git *': 'allow',
+        'npm install*': 'deny',
+      })
+      expect(writtenConfig.permission?.edit).toMatchObject({
+        '*': 'allow',
+        'Company/*': 'allow',
+        '.gitignore': 'deny',
+        '.gitkeep': 'deny',
       })
     })
 

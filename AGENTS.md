@@ -9,8 +9,7 @@ Arche is a platform of specialized AI agents with isolated per-user workspaces. 
 **Main components:**
 
 - `apps/web/` - Next.js 16 app (React 19, TypeScript). It is the BFF (Backend for Frontend), the UI, and the container spawner.
-- `config/` - Agent definitions and runtime configuration (`CommonWorkspaceConfig.json`).
-- `kb/` - Knowledge Base (Obsidian vault). It is not code; it is Markdown notes.
+- `apps/web/kickstart/` - Kickstart catalogs and templates (agents, KB skeletons, generated `AGENTS.md`).
 - `infra/` - Infrastructure: Podman Compose, Ansible deployer, workspace image.
 - `scripts/` - Deployment scripts for KB and config bare repositories.
 
@@ -174,10 +173,10 @@ Do not modify the spawner without understanding the full flow: create container 
 
 ### Agent Configuration
 
-- Source of truth: `config/CommonWorkspaceConfig.json`.
+- Source of truth for generated runtime config: Kickstart artifacts from `apps/web/kickstart/`.
 - Types: `src/lib/workspace-config.ts`.
 - Store: `src/lib/common-workspace-config-store.ts` (atomic read/write with SHA256 hash conflict detection).
-- Config is deployed to a bare Git repository and mounted read-only into containers.
+- Runtime config is stored in the bare Git repo mounted at `/kb-config`.
 
 ### Chat Streaming
 
@@ -247,15 +246,14 @@ test(spawner): add health check retry tests
 
 ---
 
-## Knowledge Base (KB)
+## Kickstart Templates
 
-The `kb/` directory is an Obsidian vault, **not code**. If you work there:
+Knowledge Base starter content is defined in Kickstart templates, not in a tracked root `kb/` vault.
 
-- Read `config/AGENTS.md` for vault-specific conventions.
-- Keep edits minimal; do not rewrite structure or tone broadly.
-- Use wikilinks (`[[Note]]`) for internal links.
-- Respect existing language in each note.
-- Do not introduce tooling/config files (`package.json`, etc.) in the vault.
+- Edit template definitions in `apps/web/kickstart/templates/definitions/`.
+- Keep template changes minimal and explicit (paths/content in `kbSkeleton`).
+- Preserve placeholder usage (`{{companyName}}`, `{{companyDescription}}`) where applicable.
+- Generated runtime KB content is written to the mounted bare repo at `/kb-content`.
 
 ---
 
@@ -300,8 +298,8 @@ describe('startInstance', () => {
 | Shared type | `src/types/` |
 | React Context | `src/contexts/` |
 | Test | `<module>/__tests__/<name>.test.ts` |
-| Agent config | `config/CommonWorkspaceConfig.json` |
-| KB content | `kb/` (follow `config/AGENTS.md` conventions) |
+| Kickstart agent catalog | `apps/web/kickstart/agents/` |
+| Kickstart KB/config templates | `apps/web/kickstart/templates/definitions/` |
 | Infra / compose | `infra/` |
 
 ---

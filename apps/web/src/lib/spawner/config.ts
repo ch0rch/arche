@@ -8,7 +8,7 @@ export function getEncryptionKey(): Buffer {
 }
 
 export function getContainerSocketPath(): string | undefined {
-  return process.env.CONTAINER_SOCKET_PATH || process.env.CONTAINER_HOST?.replace('unix://', '') || undefined
+  return process.env.CONTAINER_SOCKET_PATH || undefined
 }
 
 export function getContainerProxyUrl(): string {
@@ -49,8 +49,12 @@ export function getIdleTimeoutMinutes(): number {
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 30
 }
 
-export function getKbContentHostPath(): string | undefined {
-  return process.env.KB_CONTENT_HOST_PATH || undefined
+export function getKbContentHostPath(): string {
+  const value = process.env.KB_CONTENT_HOST_PATH?.trim()
+  if (!value) {
+    throw new Error('KB_CONTENT_HOST_PATH is required')
+  }
+  return value
 }
 
 export function getUsersBasePath(): string {

@@ -9,13 +9,12 @@ Arche lets teams deploy AI agents that understand company identity, tone, produc
 ```
 arche/
 ├── apps/web/          # Next.js 16 (React 19) - UI + BFF + Spawner
-├── config/            # Agent definitions and shared runtime config
-├── kb/                # Knowledge Base (Obsidian vault)
+│   └── kickstart/     # Agent catalog + KB/config template definitions
 ├── infra/
 │   ├── compose/       # Local stack (Podman Compose)
 │   ├── deploy/        # VPS deployer (Ansible + Bash)
 │   └── workspace-image/  # Workspace Docker image (OpenCode + git)
-└── scripts/           # KB and config deployment scripts
+└── scripts/           # Bare repo initialization scripts (kb-content/kb-config)
 ```
 
 ### Data Flow
@@ -88,24 +87,14 @@ Each workspace applies a subset during kickstart and generates
 
 ## Knowledge Base
 
-The KB is an Obsidian vault mounted in each workspace:
+KB starter content is defined in `apps/web/kickstart/templates/definitions/*.json`.
+Kickstart generates the initial tree and writes it to the `kb-content` bare repo.
 
-```
-kb/
-├── Company/
-│   ├── 01 - Brand Identity.md
-│   ├── 02 - Voice and Tone.md
-│   ├── 03 - Glossary.md
-│   ├── 05 - Channels and Contact.md
-│   ├── People/           # Team profiles
-│   └── Product/
-│       ├── 00 - Overview.md
-│       ├── 01 - Support - KB Index.md
-│       └── docs/         # Help center
-└── Templates/            # Operational templates (PRD, KB entry, marketing)
-```
+Runtime behavior:
 
-It is deployed as bare Git repositories (`kb-content` and `kb-config`) that containers mount and sync. In a new installation, both repos start empty and are populated by kickstart.
+- `kb-content` (bare repo): workspace knowledge base files
+- `kb-config` (bare repo): runtime `CommonWorkspaceConfig.json` + generated `AGENTS.md`
+- both repos start empty and are populated by kickstart on first setup
 
 ## Local Development
 
@@ -226,7 +215,6 @@ kickstart/
 ## Additional Documentation
 
 - [`apps/web/README.md`](apps/web/README.md) - Detailed local setup, auth, spawner
-- [`config/README.md`](config/README.md) - Agent configuration
 - [`infra/README.md`](infra/README.md) - Infrastructure and KB architecture
 - [`infra/compose/README.md`](infra/compose/README.md) - Podman Compose stack
 - [`infra/deploy/README.md`](infra/deploy/README.md) - VPS deployment guide

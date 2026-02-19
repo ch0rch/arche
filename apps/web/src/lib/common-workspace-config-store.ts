@@ -20,8 +20,8 @@ export type KbRecentFileUpdate = {
   committedAt: string
 }
 
-const CONFIG_REPO_ENV = 'ARCHE_CONFIG_REPO_PATH'
-const CONTENT_REPO_ENV = 'ARCHE_KB_CONTENT_PATH'
+const CONFIG_REPO_ROOT = '/kb-config'
+const CONTENT_REPO_ROOT = '/kb-content'
 const CONFIG_FILE_NAME = 'CommonWorkspaceConfig.json'
 const execFileAsync = promisify(execFile)
 
@@ -51,32 +51,21 @@ function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex')
 }
 
-async function resolveRepoRoot(envName: string, fallbacks: string[]): Promise<string | null> {
-  const explicit = process.env[envName]
-  if (explicit) return explicit
-
-  for (const fallback of fallbacks) {
-    try {
-      const stats = await fs.stat(fallback)
-      if (stats.isDirectory()) return fallback
-    } catch {
-      continue
-    }
+async function resolveRepoRoot(root: string): Promise<string | null> {
+  try {
+    const stats = await fs.stat(root)
+    return stats.isDirectory() ? root : null
+  } catch {
+    return null
   }
-
-  return null
 }
 
 async function resolveConfigRepoRoot(): Promise<string | null> {
-  return resolveRepoRoot(CONFIG_REPO_ENV, [
-    path.resolve(process.cwd(), '..', '..', 'config')
-  ])
+  return resolveRepoRoot(CONFIG_REPO_ROOT)
 }
 
 async function resolveContentRepoRoot(): Promise<string | null> {
-  return resolveRepoRoot(CONTENT_REPO_ENV, [
-    path.resolve(process.cwd(), '..', '..', 'kb')
-  ])
+  return resolveRepoRoot(CONTENT_REPO_ROOT)
 }
 
 async function runGit(
@@ -97,25 +86,16 @@ async function runGit(
   }
 }
 
-async function isWorktreeRepository(root: string): Promise<boolean> {
-  const result = await runGit(['-C', root, 'rev-parse', '--show-toplevel'])
-  if (!result.ok) return false
-  return path.resolve(result.stdout.trim()) === path.resolve(root)
-}
-
 async function runGitOnRepo(root: string, args: string[]): Promise<{ ok: true; stdout: string } | { ok: false; stderr: string }> {
-  if (await hasBareRepoLayout(root)) {
-    if (!(await isGitAvailable())) {
-      return { ok: false, stderr: 'git_unavailable' }
-    }
-    return runGit(['--git-dir', root, ...args])
+  if (!(await hasBareRepoLayout(root))) {
+    return { ok: false, stderr: 'not_bare_repository' }
   }
 
-  if (!(await isWorktreeRepository(root))) {
-    return { ok: false, stderr: 'not_repository' }
+  if (!(await isGitAvailable())) {
+    return { ok: false, stderr: 'git_unavailable' }
   }
 
-  return runGit(['-C', root, ...args])
+  return runGit(['--git-dir', root, ...args])
 }
 
 async function cloneRepoToTemp(root: string): Promise<{ ok: true; dir: string } | { ok: false }> {
@@ -137,12 +117,6 @@ async function detectDefaultBranch(repoDir: string): Promise<string> {
     }
   }
 
-  const hasMain = await runGit(['show-ref', '--verify', '--quiet', 'refs/remotes/origin/main'], { cwd: repoDir })
-  if (hasMain.ok) return 'main'
-
-  const hasMaster = await runGit(['show-ref', '--verify', '--quiet', 'refs/remotes/origin/master'], { cwd: repoDir })
-  if (hasMaster.ok) return 'master'
-
   return 'main'
 }
 
@@ -150,38 +124,29 @@ export async function readCommonWorkspaceConfig(): Promise<ConfigReadResult> {
   const root = await resolveConfigRepoRoot()
   if (!root) return { ok: false, error: 'kb_unavailable' }
 
-  if (await hasBareRepoLayout(root)) {
-    if (!(await isGitAvailable())) {
-      return { ok: false, error: 'read_failed' }
-    }
-
-    const clone = await cloneRepoToTemp(root)
-    if (!clone.ok) return { ok: false, error: 'read_failed' }
-
-    const configPath = path.join(clone.dir, CONFIG_FILE_NAME)
-    try {
-      const content = await fs.readFile(configPath, 'utf-8')
-      return { ok: true, content, hash: hashContent(content), path: `${root}#${CONFIG_FILE_NAME}` }
-    } catch (error) {
-      if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-        return { ok: false, error: 'not_found' }
-      }
-      return { ok: false, error: 'read_failed' }
-    } finally {
-      await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
-    }
+  if (!(await hasBareRepoLayout(root))) {
+    return { ok: false, error: 'kb_unavailable' }
   }
 
-  const configPath = path.join(root, CONFIG_FILE_NAME)
+  if (!(await isGitAvailable())) {
+    return { ok: false, error: 'read_failed' }
+  }
+
+  const clone = await cloneRepoToTemp(root)
+  if (!clone.ok) return { ok: false, error: 'read_failed' }
+
+  const configPath = path.join(clone.dir, CONFIG_FILE_NAME)
 
   try {
     const content = await fs.readFile(configPath, 'utf-8')
-    return { ok: true, content, hash: hashContent(content), path: configPath }
+    return { ok: true, content, hash: hashContent(content), path: `${root}#${CONFIG_FILE_NAME}` }
   } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
       return { ok: false, error: 'not_found' }
     }
     return { ok: false, error: 'read_failed' }
+  } finally {
+    await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
   }
 }
 
@@ -192,80 +157,67 @@ export async function writeCommonWorkspaceConfig(
   const root = await resolveConfigRepoRoot()
   if (!root) return { ok: false, error: 'kb_unavailable' }
 
-  if (await hasBareRepoLayout(root)) {
-    if (!(await isGitAvailable())) {
-      return { ok: false, error: 'write_failed' }
-    }
-
-    const clone = await cloneRepoToTemp(root)
-    if (!clone.ok) return { ok: false, error: 'write_failed' }
-
-    const configPath = path.join(clone.dir, CONFIG_FILE_NAME)
-    const current = await fs.readFile(configPath, 'utf-8').catch(() => '')
-    if (expectedHash && current && hashContent(current) !== expectedHash) {
-      await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
-      return { ok: false, error: 'conflict' }
-    }
-
-    try {
-      await fs.mkdir(path.dirname(configPath), { recursive: true })
-      await fs.writeFile(configPath, content, 'utf-8')
-
-      const add = await runGit(['add', CONFIG_FILE_NAME], { cwd: clone.dir })
-      if (!add.ok) {
-        return { ok: false, error: 'write_failed' }
-      }
-
-      const status = await runGit(['status', '--porcelain', '--', CONFIG_FILE_NAME], { cwd: clone.dir })
-      if (!status.ok) {
-        return { ok: false, error: 'write_failed' }
-      }
-
-      if (!status.stdout.trim()) {
-        return { ok: true, hash: hashContent(content) }
-      }
-
-      const commit = await runGit(
-        [
-          '-c', 'user.name=Arche Config',
-          '-c', 'user.email=config@arche.local',
-          'commit',
-          '-m', 'Update common workspace config'
-        ],
-        { cwd: clone.dir }
-      )
-      if (!commit.ok) {
-        return { ok: false, error: 'write_failed' }
-      }
-
-      const branch = await detectDefaultBranch(clone.dir)
-      const push = await runGit(['push', 'origin', `HEAD:refs/heads/${branch}`], { cwd: clone.dir })
-      if (!push.ok) {
-        if (push.stderr.includes('non-fast-forward')) {
-          return { ok: false, error: 'conflict' }
-        }
-        return { ok: false, error: 'write_failed' }
-      }
-
-      return { ok: true, hash: hashContent(content) }
-    } finally {
-      await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
-    }
+  if (!(await hasBareRepoLayout(root))) {
+    return { ok: false, error: 'kb_unavailable' }
   }
 
-  const configPath = path.join(root, CONFIG_FILE_NAME)
+  if (!(await isGitAvailable())) {
+    return { ok: false, error: 'write_failed' }
+  }
 
-  const current = await readCommonWorkspaceConfig()
-  if (expectedHash && current.ok && current.hash !== expectedHash) {
+  const clone = await cloneRepoToTemp(root)
+  if (!clone.ok) return { ok: false, error: 'write_failed' }
+
+  const configPath = path.join(clone.dir, CONFIG_FILE_NAME)
+  const current = await fs.readFile(configPath, 'utf-8').catch(() => '')
+  if (expectedHash && current && hashContent(current) !== expectedHash) {
+    await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
     return { ok: false, error: 'conflict' }
   }
 
   try {
     await fs.mkdir(path.dirname(configPath), { recursive: true })
     await fs.writeFile(configPath, content, 'utf-8')
+
+    const add = await runGit(['add', CONFIG_FILE_NAME], { cwd: clone.dir })
+    if (!add.ok) {
+      return { ok: false, error: 'write_failed' }
+    }
+
+    const status = await runGit(['status', '--porcelain', '--', CONFIG_FILE_NAME], { cwd: clone.dir })
+    if (!status.ok) {
+      return { ok: false, error: 'write_failed' }
+    }
+
+    if (!status.stdout.trim()) {
+      return { ok: true, hash: hashContent(content) }
+    }
+
+    const commit = await runGit(
+      [
+        '-c', 'user.name=Arche Config',
+        '-c', 'user.email=config@arche.local',
+        'commit',
+        '-m', 'Update common workspace config'
+      ],
+      { cwd: clone.dir }
+    )
+    if (!commit.ok) {
+      return { ok: false, error: 'write_failed' }
+    }
+
+    const branch = await detectDefaultBranch(clone.dir)
+    const push = await runGit(['push', 'origin', `HEAD:refs/heads/${branch}`], { cwd: clone.dir })
+    if (!push.ok) {
+      if (push.stderr.includes('non-fast-forward')) {
+        return { ok: false, error: 'conflict' }
+      }
+      return { ok: false, error: 'write_failed' }
+    }
+
     return { ok: true, hash: hashContent(content) }
-  } catch {
-    return { ok: false, error: 'write_failed' }
+  } finally {
+    await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
   }
 }
 
@@ -329,27 +281,22 @@ export async function readConfigRepoFile(
   const root = await resolveConfigRepoRoot()
   if (!root) return { ok: false }
 
-  if (await hasBareRepoLayout(root)) {
-    if (!(await isGitAvailable())) return { ok: false }
-
-    const clone = await cloneRepoToTemp(root)
-    if (!clone.ok) return { ok: false }
-
-    try {
-      const content = await fs.readFile(path.join(clone.dir, fileName), 'utf-8')
-      return { ok: true, content }
-    } catch {
-      return { ok: false }
-    } finally {
-      await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
-    }
+  if (!(await hasBareRepoLayout(root))) {
+    return { ok: false }
   }
 
+  if (!(await isGitAvailable())) return { ok: false }
+
+  const clone = await cloneRepoToTemp(root)
+  if (!clone.ok) return { ok: false }
+
   try {
-    const content = await fs.readFile(path.join(root, fileName), 'utf-8')
+    const content = await fs.readFile(path.join(clone.dir, fileName), 'utf-8')
     return { ok: true, content }
   } catch {
     return { ok: false }
+  } finally {
+    await fs.rm(clone.dir, { recursive: true, force: true }).catch(() => {})
   }
 }
 
