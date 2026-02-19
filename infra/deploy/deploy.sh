@@ -4,7 +4,6 @@ set -euo pipefail
 # Arche One-Click Deployer
 # Usage:
 #   Remote:    ./deploy.sh --ip <IP> --domain <DOMAIN> --ssh-key <KEY> --acme-email <EMAIL>
-#   Local:     ./deploy.sh --local
 #   Local dev: ./deploy.sh --local-dev
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,18 +95,10 @@ REMOTE MODE:
     If not, it will show you exactly which DNS record to add.
     Works with any domain provider (Cloudflare, GoDaddy, Namecheap, etc.)
 
-LOCAL MODE:
-  ./deploy.sh --local
-
-  Runs the production stack locally with:
-    - Domain: arche.lvh.me (resolves to 127.0.0.1)
-    - No TLS (HTTP only on port 8080)
-    - No SSH (Ansible still required to render templates)
-
 LOCAL DEV MODE:
   ./deploy.sh --local-dev
 
-  Like --local but mounts source code for hot reload via next dev:
+  Runs the local development stack with hot reload via next dev:
     - App:              http://arche.lvh.me:8080
     - Traefik dashboard: http://localhost:8081
     - Postgres:         localhost:5432
@@ -144,7 +135,6 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --local)       MODE="local";      shift ;;
     --local-dev)   MODE="local-dev";   shift ;;
     --ip)          DEPLOY_IP="$2";       shift 2 ;;
     --domain)      DEPLOY_DOMAIN="$2";   shift 2 ;;
@@ -217,7 +207,7 @@ validate_remote() {
 }
 
 validate_local() {
-  # Local mode needs fewer secrets — use defaults if not set
+  # Local-dev mode needs fewer secrets — use defaults if not set
   export POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-postgres}"
   export ARCHE_SESSION_PEPPER="${ARCHE_SESSION_PEPPER:-local-dev-pepper-not-for-production}"
   # Must be base64 for a 32-byte key (AES-256-GCM). Keep stable across runs.
@@ -236,7 +226,7 @@ validate_local() {
 log "About to determine mode, current MODE=$MODE"
 
 # Determine mode
-if [[ "$MODE" == "local" || "$MODE" == "local-dev" ]]; then
+if [[ "$MODE" == "local-dev" ]]; then
   # Ensure no remote flags were also passed
   if [[ -n "$DEPLOY_IP" || -n "$DEPLOY_DOMAIN" || -n "$SSH_KEY" || -n "$ACME_EMAIL" ]]; then
     ERRORS+=("--${MODE} is mutually exclusive with remote flags (--ip, --domain, etc.)")
@@ -246,7 +236,7 @@ elif [[ -n "$DEPLOY_IP" || -n "$DEPLOY_DOMAIN" || -n "$SSH_KEY" || -n "$ACME_EMA
   MODE="remote"
   validate_remote
 else
-  err "Specify --local, --local-dev, or remote flags (--ip, --domain, etc.)"
+  err "Specify --local-dev, or remote flags (--ip, --domain, etc.)"
   usage 1
 fi
 
@@ -467,265 +457,6 @@ json.dump(vars, open(sys.argv[1], "w"))
 }
 
 # ---------------------------------------------------------------------------
-# Local mode
-# ---------------------------------------------------------------------------
-deploy_local() {
-  log "Starting local deployment (arche.lvh.me)"
-
-  # Check prerequisites
-  if ! command -v podman &>/dev/null; then
-    err "Podman not found. Install Podman first."
-    exit 1
-  fi
-
-  if ! podman compose version &>/dev/null; then
-    err "podman-compose not found. Install podman-compose first."
-    exit 1
-  fi
-
-  # Compute repo root and validate source tree
-  REPO_ROOT="$SCRIPT_DIR/../.."
-  REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
-  if [[ ! -f "$REPO_ROOT/infra/workspace-image/Containerfile" ]]; then
-    err "Cannot find infra/workspace-image/Containerfile in $REPO_ROOT"
-    err "Run this script from within the arche repository."
-    exit 1
-  fi
-
-  LOCAL_WORKSPACE_IMAGE="${LOCAL_WORKSPACE_IMAGE:-arche-workspace:latest}"
-  log "Building workspace image: $LOCAL_WORKSPACE_IMAGE"
-  podman build -t "$LOCAL_WORKSPACE_IMAGE" "$REPO_ROOT/infra/workspace-image"
-
-  # Ensure local stack uses the workspace image with agent
-  export OPENCODE_IMAGE="$LOCAL_WORKSPACE_IMAGE"
-
-  KB_CONTENT_DEST="${KB_CONTENT_HOST_PATH:-$HOME/.arche/kb-content}"
-  KB_CONFIG_DEST="${KB_CONFIG_HOST_PATH:-$HOME/.arche/kb-config}"
-  USERS_DEST="${ARCHE_USERS_PATH:-$HOME/.arche/users}"
-  log "Deploying KB content to: $KB_CONTENT_DEST"
-  "$REPO_ROOT/scripts/deploy-kb.sh" "$KB_CONTENT_DEST"
-  log "Deploying KB config to: $KB_CONFIG_DEST"
-  "$REPO_ROOT/scripts/deploy-config.sh" "$KB_CONFIG_DEST"
-  log "Ensuring users data directory exists: $USERS_DEST"
-  mkdir -p "$USERS_DEST"
-
-  # Detect Podman socket path (VM-internal path for container mounts)
-  PODMAN_SOCKET_PATH="${PODMAN_SOCKET_PATH:-}"
-  if [[ -z "$PODMAN_SOCKET_PATH" ]]; then
-    if podman machine inspect &>/dev/null; then
-      # Podman Machine: choose rootful vs rootless socket inside the VM
-      PODMAN_ROOTLESS="$(podman info --format '{{.Host.Security.Rootless}}' 2>/dev/null || echo false)"
-      if [[ "$PODMAN_ROOTLESS" == "true" ]]; then
-        PODMAN_SOCKET_PATH="/run/user/$(id -u)/podman/podman.sock"
-      else
-        PODMAN_SOCKET_PATH="/run/podman/podman.sock"
-      fi
-    else
-      # Linux rootful Podman
-      PODMAN_SOCKET_PATH="/run/podman/podman.sock"
-    fi
-  fi
-  log "Using Podman socket: $PODMAN_SOCKET_PATH"
-
-  # Render compose from template using Ansible (local)
-  COMPOSE_OUT="$SCRIPT_DIR/.compose-local.yml"
-
-  # Use a simple Python/Jinja2 render if ansible is available, otherwise inline
-  if command -v ansible &>/dev/null; then
-    log "Rendering compose template via Ansible..."
-
-    TEMP_PLAYBOOK=$(mktemp)
-    EXTRA_VARS_FILE=$(mktemp)
-    trap 'rm -f "$TEMP_PLAYBOOK" "$EXTRA_VARS_FILE"' EXIT
-
-    # Export variables so python3 subprocess can read them
-    export LOCAL_DOMAIN PODMAN_SOCKET_PATH IMAGE_PREFIX WEB_VERSION OPENCODE_IMAGE KB_CONTENT_DEST KB_CONFIG_DEST USERS_DEST
-
-    # Build extra vars as JSON (safe for secrets with special characters)
-    python3 -c '
-import json, os, sys
-vars = {
-    "deploy_mode": "local",
-    "domain": os.environ["LOCAL_DOMAIN"],
-    "acme_email": "",
-    "env_file_name": ".env.local",
-    "podman_socket_path": os.environ["PODMAN_SOCKET_PATH"],
-    "image_prefix": os.environ["IMAGE_PREFIX"],
-    "web_version": os.environ["WEB_VERSION"],
-    "opencode_image": os.environ["OPENCODE_IMAGE"],
-    "postgres_password": os.environ["POSTGRES_PASSWORD"],
-    "arche_session_pepper": os.environ["ARCHE_SESSION_PEPPER"],
-    "arche_encryption_key": os.environ["ARCHE_ENCRYPTION_KEY"],
-    "arche_internal_token": os.environ["ARCHE_INTERNAL_TOKEN"],
-    "arche_gateway_token_secret": os.environ["ARCHE_GATEWAY_TOKEN_SECRET"],
-    "arche_gateway_token_ttl_seconds": os.environ.get("ARCHE_GATEWAY_TOKEN_TTL_SECONDS", ""),
-    "arche_gateway_base_url": os.environ.get("ARCHE_GATEWAY_BASE_URL", ""),
-    "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
-    "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
-    "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
-    "arche_seed_test_email": os.environ.get("ARCHE_SEED_TEST_EMAIL", ""),
-    "arche_seed_test_slug": os.environ.get("ARCHE_SEED_TEST_SLUG", ""),
-    "kb_content_host_path": os.environ["KB_CONTENT_DEST"],
-    "kb_config_host_path": os.environ["KB_CONFIG_DEST"],
-    "users_path": os.environ["USERS_DEST"],
-}
-json.dump(vars, open(sys.argv[1], "w"))
-' "$EXTRA_VARS_FILE"
-
-    # Playbook only contains tasks — all vars come via extra-vars JSON
-    cat > "$TEMP_PLAYBOOK" <<'PLAYBOOK'
----
-- hosts: localhost
-  connection: local
-  gather_facts: false
-  tasks:
-    - name: Render compose template
-      ansible.builtin.template:
-        src: "{{ deploy_dir }}/ansible/roles/app/templates/compose.yml.j2"
-        dest: "{{ deploy_dir }}/.compose-local.yml"
-    - name: Render env template
-      ansible.builtin.template:
-        src: "{{ deploy_dir }}/ansible/roles/app/templates/.env.j2"
-        dest: "{{ deploy_dir }}/.env.local"
-        mode: "0600"
-PLAYBOOK
-
-    ANSIBLE_CONFIG="$SCRIPT_DIR/ansible.cfg" ansible-playbook \
-      --extra-vars "@${EXTRA_VARS_FILE}" \
-      --extra-vars "deploy_dir=${SCRIPT_DIR}" \
-      "$TEMP_PLAYBOOK"
-  else
-    err "Ansible is required to render templates. Install with: pip install ansible"
-    exit 1
-  fi
-
-  # Ensure arche-internal network exists
-  if ! podman network inspect arche-internal &>/dev/null; then
-    log "Creating arche-internal network..."
-    podman network create arche-internal
-  fi
-
-  # Start base services (postgres, traefik, docker-socket-proxy)
-  # Web is managed outside compose for blue-green deploys
-  log "Starting base services (postgres, traefik, docker-socket-proxy)..."
-  podman compose -f "$COMPOSE_OUT" --env-file "$SCRIPT_DIR/.env.local" -p arche up -d postgres traefik docker-socket-proxy
-
-  # Wait for postgres to be healthy
-  log "Waiting for postgres..."
-  RETRIES=15
-  PG_CONTAINER=""
-  until PG_CONTAINER=$(podman ps --filter label=com.docker.compose.project=arche --filter name=postgres --format '{{.Names}}' | head -1) && \
-        [[ -n "$PG_CONTAINER" ]] && \
-        podman exec "$PG_CONTAINER" pg_isready -U postgres 2>/dev/null; do
-    RETRIES=$((RETRIES - 1))
-    if [[ $RETRIES -le 0 ]]; then
-      warn "Postgres did not become healthy."
-      break
-    fi
-    sleep 2
-  done
-
-  # Detect compose default network
-  COMPOSE_NETWORK=$(podman network ls --format '{{.Name}}' | grep -E '^arche[_-]default$' | head -1)
-  COMPOSE_NETWORK="${COMPOSE_NETWORK:-arche_default}"
-  log "Using compose network: $COMPOSE_NETWORK"
-
-  # Find existing web containers (there may be zombies from failed deploys)
-  OLD_WEBS=()
-  while IFS= read -r c; do
-    [[ -n "$c" ]] && OLD_WEBS+=("$c")
-  done < <(
-    {
-      podman ps --filter label=arche.role=web --format '{{.Names}}'
-      podman ps --filter label=com.docker.compose.project=arche --filter label=com.docker.compose.service=web --format '{{.Names}}'
-    } | sed '/^$/d' | sort -u
-  )
-
-  if [[ ${#OLD_WEBS[@]} -gt 0 ]]; then
-    log "Found existing web container(s): ${OLD_WEBS[*]}"
-  fi
-
-  # Build volume args
-  VOLUME_ARGS=(-v "${USERS_DEST}:${USERS_DEST}")
-  if [[ -n "${KB_CONTENT_DEST:-}" && -n "${KB_CONFIG_DEST:-}" ]]; then
-    VOLUME_ARGS+=(-v "${KB_CONTENT_DEST}:/kb-content" -v "${KB_CONFIG_DEST}:/kb-config")
-  fi
-
-  # Start NEW web container alongside the old one(s)
-  NEW_WEB="arche-web-$(date +%s)-$(openssl rand -hex 2)"
-  log "Starting web container: $NEW_WEB"
-  podman run -d \
-    --name "$NEW_WEB" \
-    --env-file "$SCRIPT_DIR/.env.local" \
-    -e ARCHE_GATEWAY_TOKEN_SECRET="${ARCHE_GATEWAY_TOKEN_SECRET}" \
-    -e ARCHE_GATEWAY_TOKEN_TTL_SECONDS="${ARCHE_GATEWAY_TOKEN_TTL_SECONDS}" \
-    -e ARCHE_GATEWAY_BASE_URL="${ARCHE_GATEWAY_BASE_URL}" \
-    --network arche-internal \
-    --network "$COMPOSE_NETWORK" \
-    "${VOLUME_ARGS[@]}" \
-    --label traefik.enable=true \
-    --label "traefik.http.routers.arche-base.rule=Host(\`${LOCAL_DOMAIN}\`)" \
-    --label traefik.http.routers.arche-base.entrypoints=web \
-    --label traefik.http.routers.arche-base.service=arche-web \
-    --label traefik.http.services.arche-web.loadbalancer.server.port=3000 \
-    --label traefik.http.services.arche-web.loadbalancer.healthcheck.path=/api/health \
-    --label traefik.http.services.arche-web.loadbalancer.healthcheck.interval=5s \
-    --label traefik.http.services.arche-web.loadbalancer.healthcheck.timeout=3s \
-    --label "traefik.docker.network=${COMPOSE_NETWORK}" \
-    --label arche.role=web \
-    --label "arche.version=${WEB_VERSION}" \
-    --restart unless-stopped \
-    "${IMAGE_PREFIX}web:${WEB_VERSION}"
-
-  # Wait for web to pass health check (migrations and seed run inside start.sh)
-  log "Waiting for web service to pass health check..."
-  HEALTH_OK=false
-  RETRIES=24
-  until podman exec "$NEW_WEB" node -e "fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))" 2>/dev/null; do
-    RETRIES=$((RETRIES - 1))
-    if [[ $RETRIES -le 0 ]]; then
-      break
-    fi
-    sleep 5
-  done
-  [[ $RETRIES -gt 0 ]] && HEALTH_OK=true
-
-  if [[ "$HEALTH_OK" != "true" ]]; then
-    err "Web service did not become healthy after 120 seconds."
-    err "Check logs with: podman logs $NEW_WEB"
-    err "Removing failed container..."
-    podman rm -f "$NEW_WEB" 2>/dev/null || true
-    if [[ ${#OLD_WEBS[@]} -gt 0 ]]; then
-      err "Old container(s) still serving traffic: ${OLD_WEBS[*]}"
-    fi
-    exit 1
-  fi
-
-  # Health check passed — wait for Traefik to discover the new container
-  log "Health check passed. Waiting 15s for Traefik discovery..."
-  sleep 15
-
-  # Stop and remove ALL old web containers
-  for old in "${OLD_WEBS[@]}"; do
-    log "Stopping old web container: $old"
-    podman stop -t 10 "$old" 2>/dev/null || true
-    podman rm "$old" 2>/dev/null || true
-  done
-
-  echo ""
-  log "Local deployment ready! (version: ${WEB_VERSION})"
-  info "  App:   http://${LOCAL_DOMAIN}"
-  info "  Dashboard: http://${LOCAL_DOMAIN}/u/${ARCHE_SEED_ADMIN_SLUG}"
-  info "  Workspace: http://${LOCAL_DOMAIN}/w/${ARCHE_SEED_ADMIN_SLUG}"
-  echo ""
-  info "Useful commands:"
-  info "  Logs:       podman logs -f $NEW_WEB"
-  info "  Base stack: podman compose -f $COMPOSE_OUT -p arche logs -f"
-  info "  Stop web:   podman stop $NEW_WEB && podman rm $NEW_WEB"
-  info "  Stop all:   podman stop $NEW_WEB && podman rm $NEW_WEB && podman compose -f $COMPOSE_OUT -p arche down"
-}
-
-# ---------------------------------------------------------------------------
 # Local dev mode
 # ---------------------------------------------------------------------------
 deploy_local_dev() {
@@ -906,6 +637,5 @@ PLAYBOOK
 # ---------------------------------------------------------------------------
 case "$MODE" in
   remote)    deploy_remote ;;
-  local)     deploy_local ;;
   local-dev) deploy_local_dev ;;
 esac

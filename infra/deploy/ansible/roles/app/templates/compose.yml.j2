@@ -23,7 +23,7 @@ services:
       - --certificatesResolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
       - --certificatesResolvers.letsencrypt.acme.httpChallenge.entryPoint=web
 {% else %}
-      # HTTP-only (local / local-dev mode)
+      # HTTP-only (local-dev mode)
       - --entrypoints.web.address=:80
 {% endif %}
 {% if deploy_mode == 'local-dev' %}
@@ -42,8 +42,6 @@ services:
 {% elif deploy_mode == 'local-dev' %}
       - "8080:80"
       - "8081:8080"
-{% else %}
-      - "8080:80"
 {% endif %}
     networks:
       - default
@@ -54,7 +52,7 @@ services:
   docker-socket-proxy:
     image: ghcr.io/tecnativa/docker-socket-proxy:latest
     restart: unless-stopped
-{% if deploy_mode in ('local', 'local-dev') %}
+{% if deploy_mode == 'local-dev' %}
     user: root
     security_opt:
       - label=disable

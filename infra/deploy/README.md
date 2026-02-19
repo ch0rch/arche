@@ -1,6 +1,6 @@
 # Arche One-Click Deployer
 
-Deploy Arche to a VPS or run the production stack locally for testing.
+Deploy Arche to a VPS or run the local development stack with hot reload.
 
 ## Architecture
 
@@ -43,32 +43,13 @@ Remote VPS (/opt/arche)
 
 ## Deployment Modes
 
-The deployer has three modes: **local** for testing the production stack, **local-dev** for active development with hot reload, and **remote** for deploying to a VPS.
-
-### Local mode
-
-Runs the full production stack (Traefik, Postgres, Web) on your machine using Podman. Useful for testing the production image, Traefik routing, and the complete compose setup without a VPS.
-
-- Domain: `arche.lvh.me` (resolves to `127.0.0.1`, no `/etc/hosts` needed)
-- No TLS (HTTP only on port 8080)
-- No SSH — Ansible runs locally to render templates
-- Secrets default to insecure dev values if not set
-- Podman socket is auto-detected (macOS Podman Machine and Linux both supported)
-
-```bash
-cd infra/deploy
-cp .env.example .env   # edit if needed, defaults work for local
-./deploy.sh --local
-```
-
-Open http://arche.lvh.me:8080 — login with `admin@example.com` / `change-me`.
+The deployer has two modes: **local-dev** for active development with hot reload, and **remote** for deploying to a VPS.
 
 ### Local dev mode
 
-Like `--local` but mounts your source code for hot reload via `next dev`. Use this for active development against the full stack (Traefik, Postgres, socket proxy).
+Mounts your source code for hot reload via `next dev`. Use this for active development against the full stack (Traefik, Postgres, socket proxy).
 
 - **App**: http://arche.lvh.me:8080
-- **Traefik dashboard**: http://localhost:8081
 - **Traefik dashboard**: http://localhost:8081
 - **Postgres**: `localhost:5432`
 - Source from `apps/web/` is bind-mounted; `node_modules` lives in a named volume
@@ -84,7 +65,7 @@ cp .env.example .env   # edit if needed, defaults work for local
 
 Edit files in `apps/web/src/` and Next.js hot reloads automatically.
 
-> **Note**: `--local` and `--local-dev` both use project name `arche`. Only one can run at a time. Run `podman compose -f <compose-file> -p arche down` before switching modes.
+> **Note**: `--local-dev` uses project name `arche`. Run `podman compose -f <compose-file> -p arche down` before re-running if a previous stack is still active.
 
 > **macOS**: Podman Machine mounts `$HOME` into the VM by default, so source bind mounts work for repos under `$HOME`. Repos outside `$HOME` need manual Podman Machine volume configuration.
 
@@ -128,7 +109,6 @@ cp .env.example .env
 
 | Flag | Description |
 |------|-------------|
-| `--local` | Run production stack locally (mutually exclusive with remote flags) |
 | `--local-dev` | Run dev stack with source-mounted hot reload (mutually exclusive with remote flags) |
 
 ## Environment Variables
@@ -177,7 +157,7 @@ The `docker-socket-proxy` container needs access to the Podman socket. The deplo
 | Linux rootful Podman (VPS) | `/run/podman/podman.sock` |
 | macOS Podman Machine (dev) | `/run/user/<uid>/podman/podman.sock` (VM-internal) |
 
-In local mode on macOS, the proxy runs with `user: root` and `security_opt: [label=disable]` to access the rootless socket inside the Podman VM.
+In local-dev mode on macOS, the proxy runs with `user: root` and `security_opt: [label=disable]` to access the rootless socket inside the Podman VM.
 
 To override, set `PODMAN_SOCKET_PATH` before running `deploy.sh`.
 
