@@ -203,9 +203,6 @@ validate_remote() {
   [[ -z "${ARCHE_SEED_ADMIN_PASSWORD:-}" ]] && ERRORS+=("ARCHE_SEED_ADMIN_PASSWORD is required")
   [[ -z "${ARCHE_SEED_ADMIN_SLUG:-}" ]]     && ERRORS+=("ARCHE_SEED_ADMIN_SLUG is required")
 
-  # GHCR token for remote pulls
-  [[ -z "${GHCR_TOKEN:-}" ]] && ERRORS+=("GHCR_TOKEN is required for remote deployment")
-  
   log "validate_remote complete, errors: ${#ERRORS[@]}"
 }
 
@@ -439,7 +436,7 @@ vars = {
     "arche_seed_test_slug": os.environ.get("ARCHE_SEED_TEST_SLUG", ""),
     "kb_content_host_path": os.environ.get("KB_CONTENT_HOST_PATH", "/opt/arche/kb-content"),
     "kb_config_host_path": os.environ.get("KB_CONFIG_HOST_PATH", "/opt/arche/kb-config"),
-    "ghcr_token": os.environ["GHCR_TOKEN"],
+    "ghcr_token": os.environ.get("GHCR_TOKEN", ""),
 }
 json.dump(vars, open(sys.argv[1], "w"))
 ' "$EXTRA_VARS_FILE"

@@ -121,7 +121,6 @@ Set in `.env` or export before running `deploy.sh`.
 
 | Variable | Description |
 |----------|-------------|
-| `GHCR_TOKEN` | GitHub Container Registry token |
 | `POSTGRES_PASSWORD` | Database password |
 | `ARCHE_SESSION_PEPPER` | Session pepper (`openssl rand -base64 32`) |
 | `ARCHE_ENCRYPTION_KEY` | Encryption key (`openssl rand -base64 32`) |
@@ -129,6 +128,12 @@ Set in `.env` or export before running `deploy.sh`.
 | `ARCHE_SEED_ADMIN_EMAIL` | Seed admin email |
 | `ARCHE_SEED_ADMIN_PASSWORD` | Seed admin password |
 | `ARCHE_SEED_ADMIN_SLUG` | Seed admin URL slug |
+
+### Optional (remote auth)
+
+| Variable | Description |
+|----------|-------------|
+| `GHCR_TOKEN` | GitHub Container Registry token (optional for public images) |
 
 ### Optional (seed test user)
 
