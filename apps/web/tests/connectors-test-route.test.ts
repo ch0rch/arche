@@ -28,6 +28,12 @@ vi.mock('@/lib/connectors/crypto', () => ({
   decryptConfig: (...args: unknown[]) => mockDecryptConfig(...args),
 }))
 
+const mockRefreshConnectorOAuthConfigIfNeeded = vi.fn()
+vi.mock('@/lib/connectors/oauth-refresh', () => ({
+  refreshConnectorOAuthConfigIfNeeded: (...args: unknown[]) =>
+    mockRefreshConnectorOAuthConfigIfNeeded(...args),
+}))
+
 const mockValidateConnectorTestEndpoint = vi.fn()
 vi.mock('@/lib/security/ssrf', () => ({
   validateConnectorTestEndpoint: (...args: unknown[]) => mockValidateConnectorTestEndpoint(...args),
@@ -67,6 +73,7 @@ describe('POST /api/u/[slug]/connectors/[id]/test SSRF hardening', () => {
       enabled: true,
       config: 'encrypted-config',
     })
+    mockRefreshConnectorOAuthConfigIfNeeded.mockResolvedValue(null)
     mockDecryptConfig.mockReturnValue({ endpoint: 'https://api.example.com/mcp' })
     mockValidateConnectorTestEndpoint.mockResolvedValue({ ok: true, url: new URL('https://api.example.com/mcp') })
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('ok', { status: 200 })))
@@ -109,5 +116,92 @@ describe('POST /api/u/[slug]/connectors/[id]/test SSRF hardening', () => {
         redirect: 'manual',
       })
     )
+  })
+})
+
+describe('POST /api/u/[slug]/connectors/[id]/test OAuth MCP checks', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.resetModules()
+
+    mockGetAuthenticatedUser.mockResolvedValue(session('alice'))
+    mockValidateSameOrigin.mockReturnValue({ ok: true })
+    mockUserFindUnique.mockResolvedValue({ id: 'user-1' })
+    mockConnectorFindFirst.mockResolvedValue({
+      id: 'conn-1',
+      userId: 'user-1',
+      type: 'linear',
+      enabled: true,
+      config: 'encrypted-config',
+    })
+    mockRefreshConnectorOAuthConfigIfNeeded.mockResolvedValue(null)
+    mockDecryptConfig.mockReturnValue({
+      authType: 'oauth',
+      oauth: {
+        provider: 'linear',
+        accessToken: 'oauth-token',
+        clientId: 'client-1',
+      },
+    })
+    mockValidateConnectorTestEndpoint.mockResolvedValue({ ok: true, url: new URL('https://api.example.com/mcp') })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('tests Linear OAuth using the MCP endpoint initialize call', async () => {
+    vi.stubGlobal('fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ jsonrpc: '2.0', id: 'arche-connector-test', result: {} }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    )
+
+    const { status, body } = await callTestRoute('alice', 'conn-1')
+
+    expect(status).toBe(200)
+    expect(body).toEqual({
+      ok: true,
+      tested: true,
+      message:
+        'Linear MCP connection verified. Restart the workspace to apply the updated connector credentials. If it is still unavailable in chat, enable this connector in Agent capabilities.',
+    })
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      'https://mcp.linear.app/mcp',
+      expect.objectContaining({
+        method: 'POST',
+      })
+    )
+
+    const [, requestInit] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [
+      string,
+      RequestInit
+    ]
+    const headers = requestInit.headers as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer oauth-token')
+    expect(JSON.parse(String(requestInit.body))).toMatchObject({
+      jsonrpc: '2.0',
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+      },
+    })
+  })
+
+  it('returns failed test when MCP endpoint rejects OAuth token', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('unauthorized', { status: 401 })))
+
+    const { status, body } = await callTestRoute('alice', 'conn-1')
+
+    expect(status).toBe(200)
+    expect(body).toEqual({
+      ok: false,
+      tested: true,
+      message: 'Linear MCP authentication failed (401). Reconnect OAuth and retry.',
+    })
   })
 })
