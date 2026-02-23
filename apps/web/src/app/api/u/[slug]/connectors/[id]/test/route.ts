@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getAuthenticatedUser } from '@/lib/auth'
 import { decryptConfig } from '@/lib/connectors/crypto'
 import { getConnectorAuthType, getConnectorOAuthConfig } from '@/lib/connectors/oauth-config'
+import { refreshConnectorOAuthConfigIfNeeded } from '@/lib/connectors/oauth-refresh'
 import type { ConnectorType } from '@/lib/connectors/types'
 import { validateConnectorType } from '@/lib/connectors/validators'
 import { validateSameOrigin } from '@/lib/csrf'
@@ -13,6 +14,13 @@ export interface TestConnectionResult {
   tested: boolean
   message?: string
 }
+
+const MCP_SERVER_URLS = {
+  linear: 'https://mcp.linear.app/mcp',
+  notion: 'https://mcp.notion.com/mcp',
+} as const
+
+const MCP_PROTOCOL_VERSION = '2025-03-26'
 
 async function fetchWithTimeout(input: RequestInfo | URL, init: RequestInit, timeoutMs = 8000) {
   const controller = new AbortController()
@@ -45,6 +53,70 @@ function isOAuthPending(type: ConnectorType, config: Record<string, unknown>): b
   return !getConnectorOAuthConfig(type, config)?.accessToken
 }
 
+function getMcpServerUrl(type: 'linear' | 'notion', config: Record<string, unknown>): string {
+  const oauth = getConnectorOAuthConfig(type, config)
+  if (oauth?.mcpServerUrl) return oauth.mcpServerUrl
+
+  if (type === 'linear') {
+    return process.env.ARCHE_CONNECTOR_LINEAR_MCP_URL || MCP_SERVER_URLS.linear
+  }
+  return process.env.ARCHE_CONNECTOR_NOTION_MCP_URL || MCP_SERVER_URLS.notion
+}
+
+function buildMcpInitializeBody() {
+  return {
+    jsonrpc: '2.0',
+    id: 'arche-connector-test',
+    method: 'initialize',
+    params: {
+      protocolVersion: MCP_PROTOCOL_VERSION,
+      clientInfo: {
+        name: 'arche-web',
+        version: '0.1.0',
+      },
+      capabilities: {},
+    },
+  }
+}
+
+async function testRemoteMcpConnection(input: {
+  label: 'Linear' | 'Notion'
+  url: string
+  token: string
+}): Promise<TestConnectionResult> {
+  const response = await fetchWithTimeout(input.url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${input.token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify(buildMcpInitializeBody()),
+  })
+
+  if (response.status === 401 || response.status === 403) {
+    return {
+      ok: false,
+      tested: true,
+      message: `${input.label} MCP authentication failed (${response.status}). Reconnect OAuth and retry.`,
+    }
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      tested: true,
+      message: `${input.label} MCP test failed (${response.status})`,
+    }
+  }
+
+  return {
+    ok: true,
+    tested: true,
+    message: `${input.label} MCP connection verified.`,
+  }
+}
+
 async function testConnection(
   type: ConnectorType,
   config: Record<string, unknown>,
@@ -59,6 +131,17 @@ async function testConnection(
             tested: false,
             message: 'Complete OAuth from the dashboard before testing this connector.',
           }
+        }
+
+        if (getConnectorAuthType(config) === 'oauth') {
+          const token = getAccessToken(type, config)
+          if (!token) return { ok: false, tested: false, message: 'Missing OAuth access token' }
+
+          return testRemoteMcpConnection({
+            label: 'Notion',
+            url: getMcpServerUrl(type, config),
+            token,
+          })
         }
 
         const token = getAccessToken(type, config)
@@ -89,27 +172,11 @@ async function testConnection(
         const token = getAccessToken(type, config)
         if (!token) return { ok: false, tested: false, message: 'Missing API key' }
 
-        const response = await fetchWithTimeout('https://api.linear.app/graphql', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ query: '{ viewer { id } }' }),
+        return testRemoteMcpConnection({
+          label: 'Linear',
+          url: getMcpServerUrl(type, config),
+          token,
         })
-
-        const body = (await response.json().catch(() => null)) as
-          | { data?: { viewer?: { id?: string } }; errors?: Array<{ message?: string }> }
-          | null
-
-        if (!response.ok || !body?.data?.viewer?.id) {
-          return {
-            ok: false,
-            tested: true,
-            message: `Linear test failed (${body?.errors?.[0]?.message ?? response.status})`,
-          }
-        }
-        return { ok: true, tested: true, message: 'Linear connection verified.' }
       }
 
       case 'custom': {
@@ -206,9 +273,15 @@ export async function POST(
   }
 
   // Decrypt config and test connection
+  const refreshedConfig = await refreshConnectorOAuthConfigIfNeeded({
+    id: connector.id,
+    type: connector.type,
+    config: connector.config,
+  })
+
   let config: Record<string, unknown>
   try {
-    config = decryptConfig(connector.config)
+    config = decryptConfig(refreshedConfig ?? connector.config)
   } catch {
     return NextResponse.json(
       { error: 'config_corrupted', message: 'Failed to decrypt connector configuration' },
@@ -233,6 +306,16 @@ export async function POST(
   }
 
   const result = await testConnection(connector.type, config, { customEndpointUrl })
+
+  if (result.ok && getConnectorAuthType(config) === 'oauth') {
+    const message = result.message ?? 'Connection verified.'
+    return NextResponse.json({
+      ...result,
+      message:
+        `${message} Restart the workspace to apply the updated connector credentials. ` +
+        'If it is still unavailable in chat, enable this connector in Agent capabilities.',
+    })
+  }
 
   return NextResponse.json(result)
 }
