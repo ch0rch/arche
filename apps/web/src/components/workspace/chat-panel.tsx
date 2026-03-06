@@ -82,7 +82,9 @@ type ChatPanelProps = {
   isSending?: boolean;
   isStartingNewSession?: boolean;
   models?: AvailableModel[];
+  agentDefaultModel?: AvailableModel | null;
   selectedModel?: AvailableModel | null;
+  hasManualModelSelection?: boolean;
   onSelectModel?: (model: AvailableModel | null) => void;
   activeAgentName?: string | null;
   pendingInsert?: string | null;
@@ -819,7 +821,9 @@ export function ChatPanel({
   isSending = false,
   isStartingNewSession = false,
   models = [],
+  agentDefaultModel,
   selectedModel,
+  hasManualModelSelection = false,
   onSelectModel,
   activeAgentName,
   pendingInsert,
@@ -1229,9 +1233,10 @@ export function ChatPanel({
     // Mantener el focus en el textarea
     textareaRef.current?.focus();
     
-    const model = selectedModel 
-      ? { providerId: selectedModel.providerId, modelId: selectedModel.modelId }
-      : undefined;
+    const model =
+      hasManualModelSelection && selectedModel
+        ? { providerId: selectedModel.providerId, modelId: selectedModel.modelId }
+        : undefined;
 
     const messageAttachments: MessageAttachmentInput[] = selectedAttachments.map(
       (attachment) => ({
@@ -1253,6 +1258,7 @@ export function ChatPanel({
     onSendMessage,
     isSending,
     isStartingNewSession,
+    hasManualModelSelection,
     selectedModel,
     selectedAttachments,
     isUploadingAttachment,
@@ -1544,25 +1550,33 @@ export function ChatPanel({
                             model.modelId.toLowerCase().includes(q)
                           );
                         })
-                        .map((model) => (
-                          <DropdownMenuItem
-                            key={`${model.providerId}-${model.modelId}`}
-                            onClick={() => onSelectModel?.(model)}
-                            className={cn(
-                              selectedModel?.modelId === model.modelId &&
-                              selectedModel?.providerId === model.providerId &&
-                              "bg-primary/10"
-                            )}
-                          >
-                            <div className="flex flex-col">
-                              <span className="font-medium">{model.modelName}</span>
-                              <span className="text-xs text-muted-foreground">{model.providerName}</span>
-                            </div>
-                            {model.isDefault && (
-                              <span className="ml-auto text-[10px] text-primary">Default</span>
-                            )}
-                          </DropdownMenuItem>
-                        ))}
+                        .map((model) => {
+                          const isAgentDefault =
+                            agentDefaultModel?.providerId === model.providerId &&
+                            agentDefaultModel?.modelId === model.modelId;
+
+                          return (
+                            <DropdownMenuItem
+                              key={`${model.providerId}-${model.modelId}`}
+                              onClick={() => onSelectModel?.(model)}
+                              className={cn(
+                                selectedModel?.modelId === model.modelId &&
+                                selectedModel?.providerId === model.providerId &&
+                                "bg-primary/10"
+                              )}
+                            >
+                              <div className="flex flex-col">
+                                <span className="font-medium">{model.modelName}</span>
+                                <span className="text-xs text-muted-foreground">{model.providerName}</span>
+                              </div>
+                              {isAgentDefault ? (
+                                <span className="ml-auto text-[10px] text-primary">Agent default</span>
+                              ) : model.isDefault ? (
+                                <span className="ml-auto text-[10px] text-muted-foreground">Provider default</span>
+                              ) : null}
+                            </DropdownMenuItem>
+                          );
+                        })}
                       {models.length > 0 && modelSearch && models.every((m) => {
                         const q = modelSearch.toLowerCase();
                         return !(m.modelName.toLowerCase().includes(q) || m.providerName.toLowerCase().includes(q) || m.modelId.toLowerCase().includes(q));

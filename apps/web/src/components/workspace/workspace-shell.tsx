@@ -1140,7 +1140,9 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               onSendMessage={workspace.sendMessage}
               isSending={workspace.isSending}
               models={workspace.models}
+              agentDefaultModel={workspace.agentDefaultModel}
               selectedModel={workspace.selectedModel}
+              hasManualModelSelection={workspace.hasManualModelSelection}
               onSelectModel={workspace.setSelectedModel}
               activeAgentName={workspace.activeAgentName}
               pendingInsert={pendingInsert}

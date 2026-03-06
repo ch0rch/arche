@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 
+import type { ComponentProps } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -18,7 +19,18 @@ type MockAttachment = {
   uploadedAt: number;
 };
 
-function renderChatPanel(onSendMessage = vi.fn().mockResolvedValue(undefined)) {
+const defaultModel = {
+  providerId: "openai",
+  providerName: "OpenAI",
+  modelId: "gpt-5.4",
+  modelName: "GPT 5.4",
+  isDefault: false,
+};
+
+function renderChatPanel(
+  onSendMessage = vi.fn().mockResolvedValue(undefined),
+  props?: Partial<ComponentProps<typeof ChatPanel>>
+) {
   render(
     <ChatPanel
       slug={"alice"}
@@ -29,6 +41,7 @@ function renderChatPanel(onSendMessage = vi.fn().mockResolvedValue(undefined)) {
       onCloseSession={vi.fn()}
       onOpenFile={vi.fn()}
       onSendMessage={onSendMessage}
+      {...props}
     />
   );
 
@@ -250,5 +263,65 @@ describe("ChatPanel textarea", () => {
     await waitFor(() => {
       expect(sendButton.disabled).toBe(false);
     });
+  });
+
+  it("does not send a model override when only the agent default is selected", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onSendMessage = vi.fn().mockResolvedValue(undefined);
+    renderChatPanel(onSendMessage, {
+      models: [defaultModel],
+      selectedModel: defaultModel,
+      hasManualModelSelection: false,
+      agentDefaultModel: defaultModel,
+    });
+
+    fireEvent.change(getTextarea(), { target: { value: "hello" } });
+    fireEvent.click(getSendButton());
+
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onSendMessage).toHaveBeenCalledWith("hello", undefined, {
+      attachments: [],
+      contextPaths: [],
+    });
+  });
+
+  it("sends a model override when the user selected one manually", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onSendMessage = vi.fn().mockResolvedValue(undefined);
+    renderChatPanel(onSendMessage, {
+      models: [defaultModel],
+      selectedModel: defaultModel,
+      hasManualModelSelection: true,
+      agentDefaultModel: defaultModel,
+    });
+
+    fireEvent.change(getTextarea(), { target: { value: "hello" } });
+    fireEvent.click(getSendButton());
+
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onSendMessage).toHaveBeenCalledWith(
+      "hello",
+      { providerId: "openai", modelId: "gpt-5.4" },
+      {
+        attachments: [],
+        contextPaths: [],
+      }
+    );
   });
 });
