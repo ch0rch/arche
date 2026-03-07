@@ -56,6 +56,7 @@ export type AgentCatalogItem = {
 };
 
 const STALE_PENDING_ASSISTANT_MS = 5_000;
+const INSTANCE_ACTIVITY_HEARTBEAT_MS = 20_000;
 
 function normalizeAgentId(value: string): string {
   return value.trim().toLowerCase();
@@ -1520,6 +1521,36 @@ export function useWorkspace({
       refreshFiles();
     }
   }, [filesRefreshTrigger, isConnected, refreshFiles]);
+
+  // Keep the workspace instance alive while this tab remains open.
+  useEffect(() => {
+    if (!enabled) return;
+
+    let cancelled = false;
+
+    const heartbeat = async () => {
+      try {
+        await fetch(`/api/instances/${slug}/activity`, {
+          method: "PATCH",
+          cache: "no-store",
+        });
+      } catch {
+        // best-effort
+      }
+    };
+
+    void heartbeat();
+
+    const interval = setInterval(() => {
+      if (cancelled) return;
+      void heartbeat();
+    }, INSTANCE_ACTIVITY_HEARTBEAT_MS);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [enabled, slug]);
 
   // Poll for session status updates
   useEffect(() => {

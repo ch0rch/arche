@@ -1,21 +1,33 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getAuthenticatedUser } from '@/lib/auth'
+import { validateSameOrigin } from '@/lib/csrf'
 import { prisma } from '@/lib/prisma'
 
 export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ slug: string }> }
 ) {
-  const internalToken = process.env.ARCHE_INTERNAL_TOKEN
-  if (!internalToken) {
-    return NextResponse.json({ error: 'not_configured' }, { status: 500 })
-  }
-
-  const auth = request.headers.get('authorization')
-  if (auth !== `Bearer ${internalToken}`) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
-
   const { slug } = await params
+
+  const internalToken = process.env.ARCHE_INTERNAL_TOKEN
+  const auth = request.headers.get('authorization')
+  const internalAuthOk = Boolean(internalToken) && auth === `Bearer ${internalToken}`
+
+  if (!internalAuthOk) {
+    const originValidation = validateSameOrigin(request)
+    if (!originValidation.ok) {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+    }
+
+    const session = await getAuthenticatedUser()
+    if (!session) {
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+    }
+
+    if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
+      return NextResponse.json({ error: 'forbidden' }, { status: 403 })
+    }
+  }
 
   const instance = await prisma.instance.findUnique({ where: { slug } })
   if (!instance) {
