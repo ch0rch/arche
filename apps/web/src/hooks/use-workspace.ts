@@ -86,6 +86,39 @@ function parseModelString(
   };
 }
 
+function resolveModelEntry(
+  providerId: string,
+  modelId: string,
+  models: AvailableModel[]
+): AvailableModel {
+  const match = models.find(
+    (entry) => entry.providerId === providerId && entry.modelId === modelId
+  );
+  if (match) return match;
+
+  return {
+    providerId,
+    modelId,
+    providerName: providerId,
+    modelName: modelId,
+    isDefault: false,
+  };
+}
+
+function hasModelEntry(
+  providerId: string,
+  modelId: string,
+  models: AvailableModel[]
+): boolean {
+  return models.some(
+    (entry) => entry.providerId === providerId && entry.modelId === modelId
+  );
+}
+
+function getPrimaryAgent(catalog: AgentCatalogItem[]): AgentCatalogItem | null {
+  return catalog.find((agent) => agent.isPrimary) ?? null;
+}
+
 export type UseWorkspaceOptions = {
   slug: string;
   /** Poll interval in ms for session status updates */
@@ -150,7 +183,9 @@ export type UseWorkspaceReturn = {
 
   // Models
   models: AvailableModel[];
+  agentDefaultModel: AvailableModel | null;
   selectedModel: AvailableModel | null;
+  hasManualModelSelection: boolean;
   setSelectedModel: (model: AvailableModel | null) => void;
   activeAgentName: string | null;
 
@@ -209,11 +244,12 @@ export function useWorkspace({
 
   // Models
   const [models, setModels] = useState<AvailableModel[]>([]);
-  const [selectedModel, setSelectedModel] = useState<AvailableModel | null>(
+  const [manualSelectedModel, setManualSelectedModel] = useState<AvailableModel | null>(
     null
   );
-  const modelsRef = useRef<AvailableModel[]>([]);
-  modelsRef.current = models;
+  const [runtimeSelectedModel, setRuntimeSelectedModel] = useState<AvailableModel | null>(
+    null
+  );
   const [agentCatalog, setAgentCatalog] = useState<AgentCatalogItem[]>([]);
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
 
@@ -226,12 +262,36 @@ export function useWorkspace({
   const activeAgentName = activeAgentId
     ? activeCatalogAgent?.displayName ?? null
     : null;
+  const primaryAgent = getPrimaryAgent(agentCatalog);
+  const agentDefaultModel = (() => {
+    const primaryModel = parseModelString(primaryAgent?.model);
+    if (!primaryModel) return null;
 
-  const syncSelectedModel = useCallback(
+    return resolveModelEntry(
+      primaryModel.providerId,
+      primaryModel.modelId,
+      models
+    );
+  })();
+  const selectedModel =
+    manualSelectedModel ?? runtimeSelectedModel ?? agentDefaultModel;
+  const hasManualModelSelection = manualSelectedModel !== null;
+
+  const resetSessionSelectionState = useCallback(() => {
+    setManualSelectedModel(null);
+    setRuntimeSelectedModel(null);
+    setActiveAgentId(primaryAgent?.id ?? null);
+  }, [primaryAgent]);
+
+  const updateSelectedModel = useCallback((model: AvailableModel | null) => {
+    setManualSelectedModel(model);
+  }, []);
+
+  const syncRuntimeSelectedModel = useCallback(
     (providerId?: string, modelId?: string) => {
       if (!providerId || !modelId) return;
 
-      setSelectedModel((current) => {
+      setRuntimeSelectedModel((current) => {
         if (
           current?.providerId === providerId &&
           current?.modelId === modelId
@@ -239,19 +299,7 @@ export function useWorkspace({
           return current;
         }
 
-        const found = models.find(
-          (entry) =>
-            entry.providerId === providerId && entry.modelId === modelId
-        );
-        if (found) return found;
-
-        return {
-          providerId,
-          modelId,
-          providerName: providerId,
-          modelName: modelId,
-          isDefault: false,
-        };
+        return resolveModelEntry(providerId, modelId, models);
       });
     },
     [models]
@@ -436,8 +484,9 @@ export function useWorkspace({
       setActiveSessionId(id);
       activeSessionIdRef.current = id; // Sync ref immediately so in-flight refreshMessages can detect staleness
       setMessages([]); // Clear messages when switching sessions
+      resetSessionSelectionState();
     },
-    [abortActiveStream]
+    [abortActiveStream, resetSessionSelectionState]
   );
 
   // Create session
@@ -449,11 +498,12 @@ export function useWorkspace({
         setActiveSessionId(result.session.id);
         activeSessionIdRef.current = result.session.id; // Sync ref immediately so in-flight refreshMessages can detect staleness
         setMessages([]);
+        resetSessionSelectionState();
         return result.session;
       }
       return null;
     },
-    [slug]
+    [resetSessionSelectionState, slug]
   );
 
   // Delete session
@@ -564,9 +614,13 @@ export function useWorkspace({
         const runtime = extractRuntimeMetadata(hydratedMessages);
         if (runtime.agentId) {
           syncActiveAgentFromRuntime(runtime.agentId);
+        } else {
+          setActiveAgentId(primaryAgent?.id ?? null);
         }
         if (runtime.model) {
-          syncSelectedModel(runtime.model.providerId, runtime.model.modelId);
+          syncRuntimeSelectedModel(runtime.model.providerId, runtime.model.modelId);
+        } else {
+          setRuntimeSelectedModel(null);
         }
       }
     } finally {
@@ -576,8 +630,9 @@ export function useWorkspace({
     slug,
     activeSessionId,
     extractRuntimeMetadata,
+    primaryAgent,
     syncActiveAgentFromRuntime,
-    syncSelectedModel,
+    syncRuntimeSelectedModel,
   ]);
 
   const deriveStatusInfoFromPart = useCallback((part: MessagePart) => {
@@ -869,7 +924,7 @@ export function useWorkspace({
                       typeof data.providerID === "string" &&
                       typeof data.modelID === "string"
                     ) {
-                      syncSelectedModel(data.providerID, data.modelID);
+                      syncRuntimeSelectedModel(data.providerID, data.modelID);
                     }
                     if (typeof data.agent === "string") {
                       syncActiveAgentFromRuntime(data.agent);
@@ -1057,7 +1112,7 @@ export function useWorkspace({
       slug,
       upsertMessagePart,
       syncActiveAgentFromRuntime,
-      syncSelectedModel,
+      syncRuntimeSelectedModel,
       scheduleWorkspaceRefresh,
     ]
   );
@@ -1121,15 +1176,10 @@ export function useWorkspace({
 
       let resolvedModel = model;
       if (!resolvedModel) {
-        const primaryModel = parseModelString(
-          agentCatalog.find((agent) => agent.isPrimary)?.model
-        );
-        if (primaryModel) {
-          resolvedModel = primaryModel;
-        } else if (selectedModel) {
+        if (manualSelectedModel) {
           resolvedModel = {
-            providerId: selectedModel.providerId,
-            modelId: selectedModel.modelId,
+            providerId: manualSelectedModel.providerId,
+            modelId: manualSelectedModel.modelId,
           };
         }
       }
@@ -1184,9 +1234,8 @@ export function useWorkspace({
     [
       abortActiveStream,
       activeSessionId,
-      agentCatalog,
       createSession,
-      selectedModel,
+      manualSelectedModel,
       streamChat,
     ]
   );
@@ -1270,19 +1319,16 @@ export function useWorkspace({
 
     setModels(nextModels);
 
-    setSelectedModel((current) => {
-      const stillSelected =
-        current &&
-        nextModels.some(
-          (m) =>
-            m.providerId === current.providerId && m.modelId === current.modelId
-        );
-
-      if (stillSelected) {
-        return current;
+    setManualSelectedModel((current) => {
+      if (!current) return null;
+      if (!hasModelEntry(current.providerId, current.modelId, nextModels)) {
+        return null;
       }
-
-      return nextModels.find((m) => m.isDefault) ?? null;
+      return resolveModelEntry(current.providerId, current.modelId, nextModels);
+    });
+    setRuntimeSelectedModel((current) => {
+      if (!current) return null;
+      return resolveModelEntry(current.providerId, current.modelId, nextModels);
     });
   }, [slug]);
 
@@ -1297,7 +1343,6 @@ export function useWorkspace({
       if (!response.ok || !data?.agents) return;
       const agents = data.agents;
       const primary = agents.find((agent) => agent.isPrimary);
-      const primaryModel = parseModelString(primary?.model);
 
       setAgentCatalog(agents);
       setActiveAgentId((current) => {
@@ -1309,37 +1354,6 @@ export function useWorkspace({
         }
         return primary?.id ?? current;
       });
-
-      if (primaryModel) {
-        setSelectedModel((current) => {
-          if (
-            current?.providerId === primaryModel.providerId &&
-            current?.modelId === primaryModel.modelId
-          ) {
-            return current;
-          }
-
-          // Respect runtime/user model decisions that are not global defaults.
-          if (current && !current.isDefault) {
-            return current;
-          }
-
-          const catalogMatch = modelsRef.current.find(
-            (entry) =>
-              entry.providerId === primaryModel.providerId &&
-              entry.modelId === primaryModel.modelId
-          );
-          if (catalogMatch) return catalogMatch;
-
-          return {
-            providerId: primaryModel.providerId,
-            modelId: primaryModel.modelId,
-            providerName: primaryModel.providerId,
-            modelName: primaryModel.modelId,
-            isDefault: false,
-          };
-        });
-      }
     } catch {
       // keep defaults when catalog is unavailable
     }
@@ -1591,8 +1605,10 @@ export function useWorkspace({
     diffsError,
     refreshDiffs,
     models,
+    agentDefaultModel,
     selectedModel,
-    setSelectedModel,
+    hasManualModelSelection,
+    setSelectedModel: updateSelectedModel,
     activeAgentName,
     agentCatalog,
   };

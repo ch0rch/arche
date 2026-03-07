@@ -82,7 +82,9 @@ type ChatPanelProps = {
   isSending?: boolean;
   isStartingNewSession?: boolean;
   models?: AvailableModel[];
+  agentDefaultModel?: AvailableModel | null;
   selectedModel?: AvailableModel | null;
+  hasManualModelSelection?: boolean;
   onSelectModel?: (model: AvailableModel | null) => void;
   activeAgentName?: string | null;
   pendingInsert?: string | null;
@@ -819,7 +821,9 @@ export function ChatPanel({
   isSending = false,
   isStartingNewSession = false,
   models = [],
+  agentDefaultModel,
   selectedModel,
+  hasManualModelSelection = false,
   onSelectModel,
   activeAgentName,
   pendingInsert,
@@ -981,11 +985,11 @@ export function ChatPanel({
     });
   }, []);
 
-  const handleUploadAttachments = useCallback(async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+  const handleUploadAttachments = useCallback(async (files: File[]) => {
+    if (files.length === 0) return;
 
     const formData = new FormData();
-    Array.from(files).forEach((file) => {
+    files.forEach((file) => {
       formData.append("files", file);
     });
 
@@ -1037,10 +1041,46 @@ export function ChatPanel({
 
   const handleAttachmentInputChange = useCallback(
     async (event: React.ChangeEvent<HTMLInputElement>) => {
-      await handleUploadAttachments(event.target.files);
+      await handleUploadAttachments(Array.from(event.target.files ?? []));
       event.target.value = "";
     },
     [handleUploadAttachments]
+  );
+
+  const handleTextareaPaste = useCallback(
+    async (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      if (isSending || isStartingNewSession || isUploadingAttachment || !onSendMessage) {
+        return;
+      }
+
+      const clipboardData = event.clipboardData;
+      if (!clipboardData) return;
+
+      const imageFilesFromItems = Array.from(clipboardData.items ?? [])
+        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => Boolean(file) && file.size > 0);
+
+      const imageFiles =
+        imageFilesFromItems.length > 0
+          ? imageFilesFromItems
+          : Array.from(clipboardData.files ?? []).filter(
+              (file): file is File => file.type.startsWith("image/") && file.size > 0
+            );
+
+      if (imageFiles.length === 0) {
+        return;
+      }
+
+      await handleUploadAttachments(imageFiles);
+    },
+    [
+      handleUploadAttachments,
+      isSending,
+      isStartingNewSession,
+      isUploadingAttachment,
+      onSendMessage,
+    ]
   );
 
   const handleRenameAttachment = useCallback(
@@ -1179,16 +1219,24 @@ export function ChatPanel({
 
   const handleSend = useCallback(async () => {
     const text = inputValue.trim();
-    if (!text || !onSendMessage || isSending || isStartingNewSession) return;
+    const hasSelectedAttachments = selectedAttachments.length > 0;
+    if (
+      (!text && !hasSelectedAttachments) ||
+      !onSendMessage ||
+      isSending ||
+      isStartingNewSession ||
+      isUploadingAttachment
+    ) return;
     
     setInputValue("");
     
     // Mantener el focus en el textarea
     textareaRef.current?.focus();
     
-    const model = selectedModel 
-      ? { providerId: selectedModel.providerId, modelId: selectedModel.modelId }
-      : undefined;
+    const model =
+      hasManualModelSelection && selectedModel
+        ? { providerId: selectedModel.providerId, modelId: selectedModel.modelId }
+        : undefined;
 
     const messageAttachments: MessageAttachmentInput[] = selectedAttachments.map(
       (attachment) => ({
@@ -1210,8 +1258,10 @@ export function ChatPanel({
     onSendMessage,
     isSending,
     isStartingNewSession,
+    hasManualModelSelection,
     selectedModel,
     selectedAttachments,
+    isUploadingAttachment,
   ]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1509,25 +1559,33 @@ export function ChatPanel({
                             model.modelId.toLowerCase().includes(q)
                           );
                         })
-                        .map((model) => (
-                          <DropdownMenuItem
-                            key={`${model.providerId}-${model.modelId}`}
-                            onClick={() => onSelectModel?.(model)}
-                            className={cn(
-                              selectedModel?.modelId === model.modelId &&
-                              selectedModel?.providerId === model.providerId &&
-                              "bg-primary/10"
-                            )}
-                          >
-                            <div className="flex flex-col">
-                              <span className="font-medium">{model.modelName}</span>
-                              <span className="text-xs text-muted-foreground">{model.providerName}</span>
-                            </div>
-                            {model.isDefault && (
-                              <span className="ml-auto text-[10px] text-primary">Default</span>
-                            )}
-                          </DropdownMenuItem>
-                        ))}
+                        .map((model) => {
+                          const isAgentDefault =
+                            agentDefaultModel?.providerId === model.providerId &&
+                            agentDefaultModel?.modelId === model.modelId;
+
+                          return (
+                            <DropdownMenuItem
+                              key={`${model.providerId}-${model.modelId}`}
+                              onClick={() => onSelectModel?.(model)}
+                              className={cn(
+                                selectedModel?.modelId === model.modelId &&
+                                selectedModel?.providerId === model.providerId &&
+                                "bg-primary/10"
+                              )}
+                            >
+                              <div className="flex flex-col">
+                                <span className="font-medium">{model.modelName}</span>
+                                <span className="text-xs text-muted-foreground">{model.providerName}</span>
+                              </div>
+                              {isAgentDefault ? (
+                                <span className="ml-auto text-[10px] text-primary">Agent default</span>
+                              ) : model.isDefault ? (
+                                <span className="ml-auto text-[10px] text-muted-foreground">Provider default</span>
+                              ) : null}
+                            </DropdownMenuItem>
+                          );
+                        })}
                       {models.length > 0 && modelSearch && models.every((m) => {
                         const q = modelSearch.toLowerCase();
                         return !(m.modelName.toLowerCase().includes(q) || m.providerName.toLowerCase().includes(q) || m.modelId.toLowerCase().includes(q));
@@ -1807,6 +1865,7 @@ export function ChatPanel({
             value={inputValue}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
+            onPaste={handleTextareaPaste}
             className="max-h-[200px] flex-1 resize-none bg-transparent px-1.5 py-1.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground/60"
             placeholder="Type a message..."
             disabled={isSending || isStartingNewSession || !onSendMessage}
@@ -1815,7 +1874,13 @@ export function ChatPanel({
           <Button
             size="icon"
             className="h-8 w-8 shrink-0 rounded-lg"
-            disabled={isSending || isStartingNewSession || !inputValue.trim() || !onSendMessage}
+            disabled={
+              isSending ||
+              isStartingNewSession ||
+              isUploadingAttachment ||
+              (!inputValue.trim() && selectedAttachments.length === 0) ||
+              !onSendMessage
+            }
             onClick={handleSend}
             aria-label="Send message"
           >
