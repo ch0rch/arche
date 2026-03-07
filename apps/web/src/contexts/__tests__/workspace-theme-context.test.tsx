@@ -1,6 +1,8 @@
 /** @vitest-environment jsdom */
 
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { hydrateRoot } from 'react-dom/client'
+import { renderToString } from 'react-dom/server'
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -31,6 +33,11 @@ function ThemeSetter({ id }: { id: string }) {
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  document.cookie.split(';').forEach((cookie) => {
+    const [name] = cookie.trim().split('=');
+    if (!name) return;
+    document.cookie = `${name}=; Path=/; Max-Age=0`;
+  });
   const root = document.documentElement;
   root.className = "";
   root.removeAttribute("data-arche-theme-owner");
@@ -46,7 +53,9 @@ describe("WorkspaceThemeProvider", () => {
       </WorkspaceThemeProvider>
     );
 
-    expect(screen.getByTestId("theme-id").textContent).toBe("warm-sand");
+    return waitFor(() => {
+      expect(screen.getByTestId("theme-id").textContent).toBe("warm-sand");
+    })
   });
 
   it("saves to scoped storage key on setThemeId", () => {
@@ -62,6 +71,7 @@ describe("WorkspaceThemeProvider", () => {
 
     expect(localStorage.getItem("arche.workspace.bob.theme")).toBe("ocean-mist");
     expect(localStorage.getItem("arche.workspace.alice.theme")).toBeNull();
+    expect(document.cookie).toContain("arche-workspace-theme-bob=ocean-mist");
   });
 
   it("uses default theme when no stored key exists (no legacy fallback)", () => {
@@ -74,6 +84,50 @@ describe("WorkspaceThemeProvider", () => {
     );
 
     expect(screen.getByTestId("theme-id").textContent).toBe(DEFAULT_THEME_ID);
+  });
+
+  it("hydrates from the server theme and reconciles to localStorage without mismatch", async () => {
+    localStorage.setItem("arche.workspace.alice.theme", "warm-sand");
+
+    const recoverableErrors: string[] = []
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    container.innerHTML = renderToString(
+      <WorkspaceThemeProvider storageScope="alice" initialThemeId="forest-dew">
+        <ThemeDisplay />
+      </WorkspaceThemeProvider>
+    )
+
+    expect(container.textContent).toContain('forest-dew')
+
+    const root = hydrateRoot(
+      container,
+      <WorkspaceThemeProvider storageScope="alice" initialThemeId="forest-dew">
+        <ThemeDisplay />
+      </WorkspaceThemeProvider>,
+      {
+        onRecoverableError: (error) => {
+          recoverableErrors.push(error.message)
+        },
+      }
+    )
+
+    try {
+      await waitFor(() => {
+        expect(container.textContent).toContain('warm-sand')
+      })
+
+      await waitFor(() => {
+        expect(document.cookie).toContain('arche-workspace-theme-alice=warm-sand')
+      })
+
+      expect(recoverableErrors).toEqual([])
+    } finally {
+      act(() => {
+        root.unmount()
+      })
+      container.remove()
+    }
   });
 
   it("applies correct html classes and removes stale dark classes on theme change", () => {
@@ -110,6 +164,7 @@ describe("WorkspaceThemeProvider", () => {
     expect(screen.getByTestId("theme-id").textContent).toBe(DEFAULT_THEME_ID);
 
     act(() => {
+      localStorage.setItem("arche.workspace.alice.theme", "forest-dew");
       window.dispatchEvent(
         new StorageEvent("storage", {
           key: "arche.workspace.alice.theme",
@@ -129,6 +184,7 @@ describe("WorkspaceThemeProvider", () => {
     );
 
     act(() => {
+      localStorage.setItem("arche.workspace.bob.theme", "forest-dew");
       window.dispatchEvent(
         new StorageEvent("storage", {
           key: "arche.workspace.bob.theme",

@@ -2,15 +2,15 @@
 
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
-export type WorkspaceThemeId =
-  | "warm-sand"
-  | "ocean-mist"
-  | "forest-dew"
-  | "lavender-haze"
-  | "sunset-glow"
-  | "midnight-ember"
-  | "midnight-ash"
-  | "nuclear";
+import {
+  DEFAULT_THEME_ID,
+  getWorkspaceThemeCookieName,
+  getWorkspaceThemeStorageKey,
+  isWorkspaceThemeId,
+  type WorkspaceThemeId,
+} from '@/lib/workspace-theme'
+
+export { DEFAULT_THEME_ID } from '@/lib/workspace-theme'
 
 export type DarkVariant = "ember" | "ash" | "nuclear";
 
@@ -108,17 +108,24 @@ export const WORKSPACE_THEMES: Record<WorkspaceThemeId, WorkspaceTheme> = {
   },
 };
 
-export const DEFAULT_THEME_ID: WorkspaceThemeId = "midnight-ash";
-
-const STORAGE_KEY_PREFIX = "arche.workspace";
 const ROOT_THEME_OWNER_ATTR = "data-arche-theme-owner";
 const ALL_THEME_CLASSES = Object.keys(WORKSPACE_THEMES).map((id) => `theme-${id}`);
 const ALL_DARK_VARIANT_CLASSES = ["dark-ember", "dark-ash", "dark-nuclear"];
 
-const getStorageKey = (scope: string) => `${STORAGE_KEY_PREFIX}.${scope}.theme`;
+function readStoredThemeId(storageKey: string): WorkspaceThemeId | null {
+  try {
+    const stored = window.localStorage.getItem(storageKey)
+    return stored && isWorkspaceThemeId(stored) ? stored : null
+  } catch {
+    return null
+  }
+}
 
-function isWorkspaceThemeId(value: string): value is WorkspaceThemeId {
-  return value in WORKSPACE_THEMES;
+function persistThemeCookie(scope: string, themeId: WorkspaceThemeId) {
+  if (typeof document === 'undefined') return;
+
+  const secure = window.location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = `${getWorkspaceThemeCookieName(scope)}=${themeId}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
 }
 
 function applyThemeClasses(root: HTMLElement, theme: WorkspaceTheme) {
@@ -146,36 +153,71 @@ const WorkspaceThemeContext = createContext<WorkspaceThemeContextValue | null>(
 export function WorkspaceThemeProvider({
   children,
   storageScope = "global",
+  initialThemeId = DEFAULT_THEME_ID,
 }: {
   children: ReactNode;
   storageScope?: string;
+  initialThemeId?: WorkspaceThemeId;
 }) {
-  const storageKey = useMemo(() => getStorageKey(storageScope), [storageScope]);
+  const storageKey = useMemo(() => getWorkspaceThemeStorageKey(storageScope), [storageScope]);
   const rootThemeOwnerId = useId();
 
-  const [themeId, setThemeIdState] = useState<WorkspaceThemeId>(() => {
-    if (typeof window === "undefined") return DEFAULT_THEME_ID;
-    const stored = window.localStorage.getItem(storageKey);
-    if (stored && isWorkspaceThemeId(stored)) return stored;
-    return DEFAULT_THEME_ID;
-  });
+  const [themeId, setThemeIdState] = useState<WorkspaceThemeId>(initialThemeId)
 
   const setThemeId = useCallback(
     (id: WorkspaceThemeId) => {
-      setThemeIdState(id);
+      setThemeIdState(id)
       if (typeof window !== "undefined") {
         try {
           window.localStorage.setItem(storageKey, id);
         } catch {
           // ignore storage errors
         }
+        persistThemeCookie(storageScope, id)
       }
     },
-    [storageKey]
+    [storageKey, storageScope]
   );
 
   const theme = WORKSPACE_THEMES[themeId];
   const themes = useMemo(() => Object.values(WORKSPACE_THEMES), []);
+
+  useEffect(() => {
+    const storedThemeId = readStoredThemeId(storageKey)
+    if (!storedThemeId || storedThemeId === themeId) return
+
+    queueMicrotask(() => {
+      setThemeIdState((currentThemeId) => currentThemeId === storedThemeId ? currentThemeId : storedThemeId)
+    })
+  }, [storageKey, themeId])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(storageKey, themeId)
+    } catch {
+      // ignore storage errors
+    }
+
+    persistThemeCookie(storageScope, themeId)
+  }, [storageKey, storageScope, themeId])
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== storageKey) return
+
+      const nextThemeId = event.newValue && isWorkspaceThemeId(event.newValue)
+        ? event.newValue
+        : null
+
+      if (!nextThemeId) return
+
+      setThemeIdState(nextThemeId)
+      persistThemeCookie(storageScope, nextThemeId)
+    }
+
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
+  }, [storageKey, storageScope])
 
   useEffect(() => {
     const root = document.documentElement;
@@ -187,18 +229,6 @@ export function WorkspaceThemeProvider({
       root.removeAttribute(ROOT_THEME_OWNER_ATTR);
     };
   }, [rootThemeOwnerId, theme]);
-
-  useEffect(() => {
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key !== storageKey) return;
-      const newValue = event.newValue;
-      if (newValue && isWorkspaceThemeId(newValue)) {
-        setThemeIdState(newValue);
-      }
-    };
-    window.addEventListener("storage", handleStorage);
-    return () => window.removeEventListener("storage", handleStorage);
-  }, [storageKey]);
 
   return (
     <WorkspaceThemeContext.Provider
