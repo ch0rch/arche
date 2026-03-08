@@ -37,6 +37,7 @@
   --font-mono: var(--font-geist-mono);
   --font-display: var(--font-display);
   --font-serif: var(--font-serif);
+  --font-chat-serif: var(--font-chat-serif);
   --color-sidebar-ring: hsl(var(--sidebar-ring));
   --color-sidebar-border: hsl(var(--sidebar-border));
   --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));

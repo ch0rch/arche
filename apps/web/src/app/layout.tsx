@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Space_Grotesk, Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
+import { Geist, Geist_Mono, Instrument_Serif, Libre_Baskerville, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -23,6 +23,12 @@ const instrumentSerif = Instrument_Serif({
   subsets: ["latin"],
   weight: "400",
   style: "italic",
+});
+
+const libreBaskerville = Libre_Baskerville({
+  variable: "--font-chat-serif",
+  subsets: ["latin"],
+  weight: ["400", "700"],
 });
 
 export const metadata: Metadata = {
@@ -62,7 +68,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} ${spaceGrotesk.variable} ${instrumentSerif.variable} antialiased`}
+        className={`${geistSans.variable} ${geistMono.variable} ${spaceGrotesk.variable} ${instrumentSerif.variable} ${libreBaskerville.variable} antialiased`}
       >
         {children}
       </body>

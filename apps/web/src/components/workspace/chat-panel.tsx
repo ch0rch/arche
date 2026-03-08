@@ -840,7 +840,7 @@ export function ChatPanel({
   const chatContentStyle = useMemo(
     () => ({
       '--workspace-chat-font-family': chatFontFamily === 'serif'
-        ? 'var(--font-serif), Georgia, serif'
+        ? 'var(--font-chat-serif), Georgia, serif'
         : 'var(--font-geist-sans), system-ui, sans-serif',
       '--workspace-chat-font-size': `${chatFontSize}px`,
       '--workspace-chat-font-size-xs': `${Math.max(chatFontSize - 2, 12)}px`,
