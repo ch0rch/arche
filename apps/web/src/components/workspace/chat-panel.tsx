@@ -830,7 +830,7 @@ export function ChatPanel({
   pendingInsert,
   onPendingInsertConsumed
 }: ChatPanelProps) {
-  const { chatFontSize } = useWorkspaceTheme();
+  const { chatFontFamily, chatFontSize } = useWorkspaceTheme();
   const activeSession = useMemo(
     () => sessions.find((session) => session.id === activeSessionId),
     [sessions, activeSessionId]
@@ -839,13 +839,16 @@ export function ChatPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatContentStyle = useMemo(
     () => ({
+      '--workspace-chat-font-family': chatFontFamily === 'serif'
+        ? 'var(--font-serif), Georgia, serif'
+        : 'var(--font-geist-sans), system-ui, sans-serif',
       '--workspace-chat-font-size': `${chatFontSize}px`,
       '--workspace-chat-font-size-xs': `${Math.max(chatFontSize - 2, 12)}px`,
       '--workspace-chat-font-size-note': `${Math.max(chatFontSize - 3, 11)}px`,
       '--workspace-chat-font-size-micro': `${Math.max(chatFontSize - 4, 10)}px`,
       '--workspace-chat-line-height': '1.65',
     }) satisfies CSSProperties,
-    [chatFontSize]
+    [chatFontFamily, chatFontSize]
   );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);

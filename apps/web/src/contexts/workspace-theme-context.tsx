@@ -3,20 +3,25 @@
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 
 import {
+  DEFAULT_CHAT_FONT_FAMILY,
   DEFAULT_CHAT_FONT_SIZE,
   DEFAULT_THEME_ID,
+  getWorkspaceChatFontFamilyCookieName,
+  getWorkspaceChatFontFamilyStorageKey,
   getWorkspaceChatFontSizeCookieName,
   getWorkspaceChatFontSizeStorageKey,
   getWorkspaceThemeCookieName,
   getWorkspaceThemeStorageKey,
+  isWorkspaceChatFontFamily,
   isWorkspaceChatFontSize,
   isWorkspaceThemeId,
   WORKSPACE_CHAT_FONT_SIZES,
+  type WorkspaceChatFontFamily,
   type WorkspaceChatFontSize,
   type WorkspaceThemeId,
 } from '@/lib/workspace-theme'
 
-export { DEFAULT_CHAT_FONT_SIZE, DEFAULT_THEME_ID } from '@/lib/workspace-theme'
+export { DEFAULT_CHAT_FONT_FAMILY, DEFAULT_CHAT_FONT_SIZE, DEFAULT_THEME_ID } from '@/lib/workspace-theme'
 
 export type DarkVariant = "ember" | "ash" | "nuclear";
 
@@ -139,6 +144,15 @@ function readStoredChatFontSize(storageKey: string): WorkspaceChatFontSize | nul
   }
 }
 
+function readStoredChatFontFamily(storageKey: string): WorkspaceChatFontFamily | null {
+  try {
+    const stored = window.localStorage.getItem(storageKey)
+    return stored && isWorkspaceChatFontFamily(stored) ? stored : null
+  } catch {
+    return null
+  }
+}
+
 function persistThemeCookie(scope: string, themeId: WorkspaceThemeId) {
   if (typeof document === 'undefined') return;
 
@@ -151,6 +165,13 @@ function persistChatFontSizeCookie(scope: string, chatFontSize: WorkspaceChatFon
 
   const secure = window.location.protocol === 'https:' ? '; Secure' : ''
   document.cookie = `${getWorkspaceChatFontSizeCookieName(scope)}=${chatFontSize}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`
+}
+
+function persistChatFontFamilyCookie(scope: string, chatFontFamily: WorkspaceChatFontFamily) {
+  if (typeof document === 'undefined') return
+
+  const secure = window.location.protocol === 'https:' ? '; Secure' : ''
+  document.cookie = `${getWorkspaceChatFontFamilyCookieName(scope)}=${chatFontFamily}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`
 }
 
 function applyThemeClasses(root: HTMLElement, theme: WorkspaceTheme) {
@@ -167,7 +188,9 @@ function applyThemeClasses(root: HTMLElement, theme: WorkspaceTheme) {
 type WorkspaceThemeContextValue = {
   theme: WorkspaceTheme;
   themeId: WorkspaceThemeId;
+  chatFontFamily: WorkspaceChatFontFamily;
   chatFontSize: WorkspaceChatFontSize;
+  setChatFontFamily: (family: WorkspaceChatFontFamily) => void;
   canDecreaseChatFontSize: boolean;
   canIncreaseChatFontSize: boolean;
   decreaseChatFontSize: () => void;
@@ -184,18 +207,22 @@ const WorkspaceThemeContext = createContext<WorkspaceThemeContextValue | null>(
 export function WorkspaceThemeProvider({
   children,
   storageScope = "global",
+  initialChatFontFamily = DEFAULT_CHAT_FONT_FAMILY,
   initialChatFontSize = DEFAULT_CHAT_FONT_SIZE,
   initialThemeId = DEFAULT_THEME_ID,
 }: {
   children: ReactNode;
   storageScope?: string;
+  initialChatFontFamily?: WorkspaceChatFontFamily;
   initialChatFontSize?: WorkspaceChatFontSize;
   initialThemeId?: WorkspaceThemeId;
 }) {
+  const chatFontFamilyStorageKey = useMemo(() => getWorkspaceChatFontFamilyStorageKey(storageScope), [storageScope]);
   const chatFontSizeStorageKey = useMemo(() => getWorkspaceChatFontSizeStorageKey(storageScope), [storageScope]);
   const storageKey = useMemo(() => getWorkspaceThemeStorageKey(storageScope), [storageScope]);
   const rootThemeOwnerId = useId();
 
+  const [chatFontFamily, setChatFontFamilyState] = useState<WorkspaceChatFontFamily>(initialChatFontFamily)
   const [chatFontSize, setChatFontSizeState] = useState<WorkspaceChatFontSize>(initialChatFontSize)
   const [themeId, setThemeIdState] = useState<WorkspaceThemeId>(initialThemeId)
 
@@ -229,6 +256,21 @@ export function WorkspaceThemeProvider({
     [chatFontSizeStorageKey, storageScope]
   )
 
+  const setChatFontFamily = useCallback(
+    (family: WorkspaceChatFontFamily) => {
+      setChatFontFamilyState(family)
+      if (typeof window !== 'undefined') {
+        try {
+          window.localStorage.setItem(chatFontFamilyStorageKey, family)
+        } catch {
+          // ignore storage errors
+        }
+        persistChatFontFamilyCookie(storageScope, family)
+      }
+    },
+    [chatFontFamilyStorageKey, storageScope]
+  )
+
   const canDecreaseChatFontSize = chatFontSize > MIN_CHAT_FONT_SIZE
   const canIncreaseChatFontSize = chatFontSize < MAX_CHAT_FONT_SIZE
 
@@ -250,6 +292,15 @@ export function WorkspaceThemeProvider({
   const themes = useMemo(() => Object.values(WORKSPACE_THEMES), []);
 
   useEffect(() => {
+    const storedChatFontFamily = readStoredChatFontFamily(chatFontFamilyStorageKey)
+    if (!storedChatFontFamily || storedChatFontFamily === chatFontFamily) return
+
+    queueMicrotask(() => {
+      setChatFontFamilyState((currentChatFontFamily) => currentChatFontFamily === storedChatFontFamily ? currentChatFontFamily : storedChatFontFamily)
+    })
+  }, [chatFontFamilyStorageKey, chatFontFamily])
+
+  useEffect(() => {
     const storedChatFontSize = readStoredChatFontSize(chatFontSizeStorageKey)
     if (!storedChatFontSize || storedChatFontSize === chatFontSize) return
 
@@ -266,6 +317,16 @@ export function WorkspaceThemeProvider({
       setThemeIdState((currentThemeId) => currentThemeId === storedThemeId ? currentThemeId : storedThemeId)
     })
   }, [storageKey, themeId])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(chatFontFamilyStorageKey, chatFontFamily)
+    } catch {
+      // ignore storage errors
+    }
+
+    persistChatFontFamilyCookie(storageScope, chatFontFamily)
+  }, [chatFontFamily, chatFontFamilyStorageKey, storageScope])
 
   useEffect(() => {
     try {
@@ -301,6 +362,18 @@ export function WorkspaceThemeProvider({
         return
       }
 
+      if (event.key === chatFontFamilyStorageKey) {
+        const nextChatFontFamily = event.newValue && isWorkspaceChatFontFamily(event.newValue)
+          ? event.newValue
+          : null
+
+        if (!nextChatFontFamily) return
+
+        setChatFontFamilyState(nextChatFontFamily)
+        persistChatFontFamilyCookie(storageScope, nextChatFontFamily)
+        return
+      }
+
       if (event.key !== chatFontSizeStorageKey) return
 
       const nextChatFontSize = event.newValue ? Number.parseInt(event.newValue, 10) : Number.NaN
@@ -312,7 +385,7 @@ export function WorkspaceThemeProvider({
 
     window.addEventListener('storage', handleStorage)
     return () => window.removeEventListener('storage', handleStorage)
-  }, [chatFontSizeStorageKey, storageKey, storageScope])
+  }, [chatFontFamilyStorageKey, chatFontSizeStorageKey, storageKey, storageScope])
 
   useEffect(() => {
     const root = document.documentElement;
@@ -330,9 +403,11 @@ export function WorkspaceThemeProvider({
       value={{
         canDecreaseChatFontSize,
         canIncreaseChatFontSize,
+        chatFontFamily,
         chatFontSize,
         decreaseChatFontSize,
         increaseChatFontSize,
+        setChatFontFamily,
         setChatFontSize,
         theme,
         themeId,

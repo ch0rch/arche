@@ -47,9 +47,11 @@ export function WorkspaceHeader({
   const {
     canDecreaseChatFontSize,
     canIncreaseChatFontSize,
+    chatFontFamily,
     chatFontSize,
     decreaseChatFontSize,
     increaseChatFontSize,
+    setChatFontFamily,
     themes,
     themeId,
     setThemeId,
@@ -230,6 +232,40 @@ export function WorkspaceHeader({
                     )}
                   </DropdownMenuItem>
                 ))}
+
+                <DropdownMenuSeparator />
+
+                <div className="px-2 py-1.5">
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Font style
+                    </span>
+                    <span className="text-xs font-medium text-foreground/80">
+                      {chatFontFamily === 'sans' ? 'Sans' : 'Serif'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={chatFontFamily === 'sans' ? 'secondary' : 'outline'}
+                      className="h-8"
+                      onClick={() => setChatFontFamily('sans')}
+                    >
+                      Sans
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={chatFontFamily === 'serif' ? 'secondary' : 'outline'}
+                      className="h-8"
+                      onClick={() => setChatFontFamily('serif')}
+                    >
+                      Serif
+                    </Button>
+                  </div>
+                </div>
 
                 <DropdownMenuSeparator />
 

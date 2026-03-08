@@ -6,6 +6,7 @@ import { renderToString } from 'react-dom/server'
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_CHAT_FONT_FAMILY,
   DEFAULT_CHAT_FONT_SIZE,
   DEFAULT_THEME_ID,
   useWorkspaceTheme,
@@ -49,6 +50,29 @@ function ChatFontSizeSetter({ size }: { size: number }) {
         }}
       >
         set font size
+      </button>
+    </>
+  );
+}
+
+function ChatFontFamilyDisplay() {
+  const { chatFontFamily } = useWorkspaceTheme();
+  return <div data-testid="chat-font-family">{chatFontFamily}</div>;
+}
+
+function ChatFontFamilySetter({ family }: { family: string }) {
+  const { chatFontFamily, setChatFontFamily } = useWorkspaceTheme();
+  return (
+    <>
+      <div data-testid="chat-font-family">{chatFontFamily}</div>
+      <button
+        onClick={() => {
+          if (family === "sans" || family === "serif") {
+            setChatFontFamily(family)
+          }
+        }}
+      >
+        set font family
       </button>
     </>
   );
@@ -250,6 +274,58 @@ describe("WorkspaceThemeProvider", () => {
     });
 
     expect(screen.getByTestId("chat-font-size").textContent).toBe("16");
+  });
+
+  it("loads chat font family from scoped storage key", () => {
+    localStorage.setItem("arche.workspace.alice.chat-font-family", "serif");
+
+    render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatFontFamilyDisplay />
+      </WorkspaceThemeProvider>
+    );
+
+    return waitFor(() => {
+      expect(screen.getByTestId("chat-font-family").textContent).toBe("serif");
+    })
+  });
+
+  it("saves chat font family to scoped storage key on setChatFontFamily", () => {
+    render(
+      <WorkspaceThemeProvider storageScope="bob">
+        <ChatFontFamilySetter family="serif" />
+      </WorkspaceThemeProvider>
+    );
+
+    act(() => {
+      screen.getByRole("button", { name: "set font family" }).click();
+    });
+
+    expect(localStorage.getItem("arche.workspace.bob.chat-font-family")).toBe("serif");
+    expect(localStorage.getItem("arche.workspace.alice.chat-font-family")).toBeNull();
+    expect(document.cookie).toContain("arche-workspace-chat-font-family-bob=serif");
+  });
+
+  it("syncs chat font family across tabs via storage event", () => {
+    render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatFontFamilyDisplay />
+      </WorkspaceThemeProvider>
+    );
+
+    expect(screen.getByTestId("chat-font-family").textContent).toBe(DEFAULT_CHAT_FONT_FAMILY);
+
+    act(() => {
+      localStorage.setItem("arche.workspace.alice.chat-font-family", "serif");
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "arche.workspace.alice.chat-font-family",
+          newValue: "serif",
+        })
+      );
+    });
+
+    expect(screen.getByTestId("chat-font-family").textContent).toBe("serif");
   });
 
   it("ignores storage events for other scopes", () => {

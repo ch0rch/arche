@@ -465,11 +465,13 @@
   }
 
   .workspace-chat-content {
+    --workspace-chat-font-family: var(--font-geist-sans), system-ui, sans-serif;
     --workspace-chat-font-size: 15px;
     --workspace-chat-font-size-xs: 13px;
     --workspace-chat-font-size-note: 12px;
     --workspace-chat-font-size-micro: 11px;
     --workspace-chat-line-height: 1.65;
+    font-family: var(--workspace-chat-font-family);
   }
 
   .workspace-chat-content .text-sm {
