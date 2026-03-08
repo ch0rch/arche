@@ -19,13 +19,7 @@ export function DashboardThemeShell({ children }: DashboardThemeShellProps) {
 
   return (
     <div
-      className={cn('relative min-h-screen text-foreground', darkModeClasses, themeClassName)}
-      style={{
-        backgroundAttachment: 'fixed',
-        backgroundImage: theme.gradient,
-        backgroundRepeat: 'no-repeat',
-        backgroundSize: '100% 100%',
-      }}
+      className={cn('relative min-h-screen bg-background text-foreground', darkModeClasses, themeClassName)}
     >
       {/* Subtle dot-grid overlay — fades out towards center */}
       <div

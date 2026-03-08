@@ -223,7 +223,7 @@
   --grid-line: hsl(120 60% 75% / 0.15);
 }
 
-/* Theme-specific accent palettes */
+/* Theme-specific palettes */
 .theme-warm-sand {
   --primary: 24 85% 48%;
   --primary-foreground: 0 0% 100%;
@@ -234,6 +234,44 @@
   --sidebar-primary: 24 85% 48%;
   --sidebar-primary-foreground: 0 0% 100%;
   --sidebar-ring: 24 85% 48%;
+}
+
+.theme-warm-papyrus {
+  --background: 44 42% 93%;
+  --foreground: 26 24% 18%;
+  --surface: 40 34% 89%;
+  --surface-foreground: 26 24% 20%;
+  --card: 46 48% 96%;
+  --card-foreground: 26 24% 18%;
+  --popover: 46 50% 96%;
+  --popover-foreground: 26 24% 18%;
+  --primary: 28 78% 58%;
+  --primary-foreground: 30 30% 12%;
+  --secondary: 39 30% 87%;
+  --secondary-foreground: 26 22% 24%;
+  --muted: 42 28% 88%;
+  --muted-foreground: 28 14% 40%;
+  --accent: 38 42% 90%;
+  --accent-foreground: 26 20% 22%;
+  --destructive: 0 70% 50%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 36 24% 77%;
+  --input: 36 24% 77%;
+  --ring: 28 78% 58%;
+  --chart-1: 28 78% 58%;
+  --chart-2: 18 56% 50%;
+  --chart-3: 44 62% 48%;
+  --chart-4: 12 48% 42%;
+  --chart-5: 34 54% 56%;
+  --sidebar: 43 38% 91%;
+  --sidebar-foreground: 26 24% 18%;
+  --sidebar-primary: 28 78% 58%;
+  --sidebar-primary-foreground: 30 30% 12%;
+  --sidebar-accent: 40 34% 87%;
+  --sidebar-accent-foreground: 26 22% 24%;
+  --sidebar-border: 36 22% 79%;
+  --sidebar-ring: 28 78% 58%;
+  --grid-line: hsl(28 24% 24% / 0.12);
 }
 
 .theme-ocean-mist {

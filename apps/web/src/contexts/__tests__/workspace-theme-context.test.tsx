@@ -133,7 +133,7 @@ describe("WorkspaceThemeProvider", () => {
   it("applies correct html classes and removes stale dark classes on theme change", () => {
     render(
       <WorkspaceThemeProvider storageScope="test">
-        <ThemeSetter id="warm-sand" />
+        <ThemeSetter id="warm-papyrus" />
       </WorkspaceThemeProvider>
     );
 
@@ -147,11 +147,26 @@ describe("WorkspaceThemeProvider", () => {
       screen.getByRole("button", { name: "set" }).click();
     });
 
-    // After switching to warm-sand (light theme)
-    expect(root.classList.contains("theme-warm-sand")).toBe(true);
+    // After switching to warm-papyrus (light theme)
+    expect(root.classList.contains("theme-warm-papyrus")).toBe(true);
     expect(root.classList.contains("theme-midnight-ash")).toBe(false);
     expect(root.classList.contains("dark")).toBe(false);
     expect(root.classList.contains("dark-ash")).toBe(false);
+  });
+
+  it("accepts warm-papyrus from scoped storage", () => {
+    localStorage.setItem("arche.workspace.alice.theme", "warm-papyrus");
+
+    render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ThemeDisplay />
+      </WorkspaceThemeProvider>
+    );
+
+    return waitFor(() => {
+      expect(screen.getByTestId("theme-id").textContent).toBe("warm-papyrus");
+      expect(document.documentElement.classList.contains("theme-warm-papyrus")).toBe(true);
+    })
   });
 
   it("syncs theme across tabs via storage event", () => {
