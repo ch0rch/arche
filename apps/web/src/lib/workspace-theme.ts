@@ -1,4 +1,5 @@
 export const WORKSPACE_THEME_IDS = [
+  'warm-papyrus',
   'warm-sand',
   'ocean-mist',
   'forest-dew',

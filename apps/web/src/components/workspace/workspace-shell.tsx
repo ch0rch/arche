@@ -934,18 +934,12 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   // Loading screen while instance is starting
   if (instanceStatus !== 'running') {
     return (
-      <div 
+      <div
         className={cn(
-          "flex h-screen flex-col overflow-hidden text-foreground",
+          'flex h-screen flex-col overflow-hidden bg-background text-foreground',
           darkModeClasses,
-          themeClassName
+          themeClassName,
         )}
-        style={{ 
-          backgroundImage: theme.gradient,
-          backgroundRepeat: 'no-repeat',
-          backgroundSize: '100% 100%',
-          backgroundAttachment: 'fixed'
-        }}
       >
         <div className="flex h-full flex-col p-3">
           <WorkspaceHeader
@@ -1007,18 +1001,12 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   // Connecting to OpenCode screen
   if (!workspace.isConnected) {
     return (
-      <div 
+      <div
         className={cn(
-          "flex h-screen flex-col overflow-hidden text-foreground",
+          'flex h-screen flex-col overflow-hidden bg-background text-foreground',
           darkModeClasses,
-          themeClassName
+          themeClassName,
         )}
-        style={{ 
-          backgroundImage: theme.gradient,
-          backgroundRepeat: 'no-repeat',
-          backgroundSize: '100% 100%',
-          backgroundAttachment: 'fixed'
-        }}
       >
         <div className="flex h-full flex-col p-3">
           <WorkspaceHeader
@@ -1049,18 +1037,12 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   }
 
   return (
-    <div 
+    <div
       className={cn(
-        "flex h-screen flex-col overflow-hidden text-foreground",
+        'flex h-screen flex-col overflow-hidden bg-background text-foreground',
         darkModeClasses,
-        themeClassName
+        themeClassName,
       )}
-      style={{ 
-        backgroundImage: theme.gradient,
-        backgroundRepeat: 'no-repeat',
-        backgroundSize: '100% 100%',
-        backgroundAttachment: 'fixed'
-      }}
     >
       {/* Outer padding container */}
         <div className="flex h-full flex-col p-3 gap-3">
