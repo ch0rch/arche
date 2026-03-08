@@ -6,6 +6,8 @@ import { renderToString } from 'react-dom/server'
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_CHAT_FONT_FAMILY,
+  DEFAULT_CHAT_FONT_SIZE,
   DEFAULT_THEME_ID,
   useWorkspaceTheme,
   WorkspaceThemeProvider,
@@ -25,6 +27,52 @@ function ThemeSetter({ id }: { id: string }) {
         onClick={() => setThemeId(id as Parameters<typeof setThemeId>[0])}
       >
         set
+      </button>
+    </>
+  );
+}
+
+function ChatFontSizeDisplay() {
+  const { chatFontSize } = useWorkspaceTheme();
+  return <div data-testid="chat-font-size">{chatFontSize}</div>;
+}
+
+function ChatFontSizeSetter({ size }: { size: number }) {
+  const { chatFontSize, setChatFontSize } = useWorkspaceTheme();
+  return (
+    <>
+      <div data-testid="chat-font-size">{chatFontSize}</div>
+      <button
+        onClick={() => {
+          if (size === 14 || size === 15 || size === 16 || size === 17 || size === 18) {
+            setChatFontSize(size)
+          }
+        }}
+      >
+        set font size
+      </button>
+    </>
+  );
+}
+
+function ChatFontFamilyDisplay() {
+  const { chatFontFamily } = useWorkspaceTheme();
+  return <div data-testid="chat-font-family">{chatFontFamily}</div>;
+}
+
+function ChatFontFamilySetter({ family }: { family: string }) {
+  const { chatFontFamily, setChatFontFamily } = useWorkspaceTheme();
+  return (
+    <>
+      <div data-testid="chat-font-family">{chatFontFamily}</div>
+      <button
+        onClick={() => {
+          if (family === "sans" || family === "serif") {
+            setChatFontFamily(family)
+          }
+        }}
+      >
+        set font family
       </button>
     </>
   );
@@ -189,6 +237,110 @@ describe("WorkspaceThemeProvider", () => {
     });
 
     expect(screen.getByTestId("theme-id").textContent).toBe("forest-dew");
+  });
+
+  it("loads chat font size from scoped storage key", () => {
+    localStorage.setItem("arche.workspace.alice.chat-font-size", "17");
+
+    render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatFontSizeDisplay />
+      </WorkspaceThemeProvider>
+    );
+
+    return waitFor(() => {
+      expect(screen.getByTestId("chat-font-size").textContent).toBe("17");
+    })
+  });
+
+  it("saves chat font size to scoped storage key on setChatFontSize", () => {
+    render(
+      <WorkspaceThemeProvider storageScope="bob">
+        <ChatFontSizeSetter size={18} />
+      </WorkspaceThemeProvider>
+    );
+
+    act(() => {
+      screen.getByRole("button", { name: "set font size" }).click();
+    });
+
+    expect(localStorage.getItem("arche.workspace.bob.chat-font-size")).toBe("18");
+    expect(localStorage.getItem("arche.workspace.alice.chat-font-size")).toBeNull();
+    expect(document.cookie).toContain("arche-workspace-chat-font-size-bob=18");
+  });
+
+  it("syncs chat font size across tabs via storage event", () => {
+    render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatFontSizeDisplay />
+      </WorkspaceThemeProvider>
+    );
+
+    expect(screen.getByTestId("chat-font-size").textContent).toBe(String(DEFAULT_CHAT_FONT_SIZE));
+
+    act(() => {
+      localStorage.setItem("arche.workspace.alice.chat-font-size", "16");
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "arche.workspace.alice.chat-font-size",
+          newValue: "16",
+        })
+      );
+    });
+
+    expect(screen.getByTestId("chat-font-size").textContent).toBe("16");
+  });
+
+  it("loads chat font family from scoped storage key", () => {
+    localStorage.setItem("arche.workspace.alice.chat-font-family", "serif");
+
+    render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatFontFamilyDisplay />
+      </WorkspaceThemeProvider>
+    );
+
+    return waitFor(() => {
+      expect(screen.getByTestId("chat-font-family").textContent).toBe("serif");
+    })
+  });
+
+  it("saves chat font family to scoped storage key on setChatFontFamily", () => {
+    render(
+      <WorkspaceThemeProvider storageScope="bob">
+        <ChatFontFamilySetter family="serif" />
+      </WorkspaceThemeProvider>
+    );
+
+    act(() => {
+      screen.getByRole("button", { name: "set font family" }).click();
+    });
+
+    expect(localStorage.getItem("arche.workspace.bob.chat-font-family")).toBe("serif");
+    expect(localStorage.getItem("arche.workspace.alice.chat-font-family")).toBeNull();
+    expect(document.cookie).toContain("arche-workspace-chat-font-family-bob=serif");
+  });
+
+  it("syncs chat font family across tabs via storage event", () => {
+    render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatFontFamilyDisplay />
+      </WorkspaceThemeProvider>
+    );
+
+    expect(screen.getByTestId("chat-font-family").textContent).toBe(DEFAULT_CHAT_FONT_FAMILY);
+
+    act(() => {
+      localStorage.setItem("arche.workspace.alice.chat-font-family", "serif");
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "arche.workspace.alice.chat-font-family",
+          newValue: "serif",
+        })
+      );
+    });
+
+    expect(screen.getByTestId("chat-font-family").textContent).toBe("serif");
   });
 
   it("ignores storage events for other scopes", () => {
