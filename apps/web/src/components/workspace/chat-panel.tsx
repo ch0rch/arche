@@ -80,6 +80,7 @@ type ChatPanelProps = {
     model?: { providerId: string; modelId: string },
     options?: { attachments?: MessageAttachmentInput[]; contextPaths?: string[] }
   ) => Promise<boolean>;
+  onAbortMessage?: () => Promise<void> | void;
   isSending?: boolean;
   isStartingNewSession?: boolean;
   models?: AvailableModel[];
@@ -821,6 +822,7 @@ export function ChatPanel({
   onOpenFile,
   onShowContext,
   onSendMessage,
+  onAbortMessage,
   isSending = false,
   isStartingNewSession = false,
   models = [],
@@ -1930,19 +1932,26 @@ export function ChatPanel({
           />
           <Button
             size="icon"
-            className="h-8 w-8 shrink-0 rounded-lg"
+            className={cn(
+              "h-8 w-8 shrink-0 rounded-lg",
+              isSending && "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            )}
             disabled={
-              isSending ||
-              isStartingNewSession ||
-              isUploadingAttachment ||
-              (!inputValue.trim() && selectedAttachments.length === 0) ||
-              !onSendMessage
+              isStartingNewSession
+                ? true
+                : isSending
+                  ? !onAbortMessage
+                  : isUploadingAttachment ||
+                    (!inputValue.trim() && selectedAttachments.length === 0) ||
+                    !onSendMessage
             }
-            onClick={handleSend}
-            aria-label="Send message"
+            onClick={isSending ? onAbortMessage : handleSend}
+            aria-label={isSending ? "Cancel response" : "Send message"}
           >
-            {isSending || isStartingNewSession ? (
+            {isStartingNewSession ? (
               <SpinnerGap size={16} className="animate-spin" />
+            ) : isSending ? (
+              <X size={16} weight="bold" />
             ) : (
               <PaperPlaneTilt size={16} weight="fill" />
             )}

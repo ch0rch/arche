@@ -67,6 +67,14 @@ function getSendButton(): HTMLButtonElement {
   return sendButton;
 }
 
+function getCancelButton(): HTMLButtonElement {
+  const cancelButton = screen.getByRole("button", { name: "Cancel response" });
+  if (!(cancelButton instanceof HTMLButtonElement)) {
+    throw new Error("Expected cancel button element");
+  }
+  return cancelButton;
+}
+
 function createClipboardImageData(file: File) {
   return {
     items: [
@@ -385,6 +393,114 @@ describe("ChatPanel textarea", () => {
     });
 
     expect(textarea.value).toBe("hello");
+  });
+
+  it("shows a cancel button while streaming and aborts when clicked", async () => {
+    const onAbortMessage = vi.fn();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ attachments: [] }),
+      })
+    );
+
+    renderChatPanel(undefined, {
+      isSending: true,
+      onAbortMessage,
+    });
+
+    expect(screen.queryByRole("button", { name: "Send message" })).toBeNull();
+
+    fireEvent.click(getCancelButton());
+
+    expect(onAbortMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets composer state when the active session remounts the panel", async () => {
+    const attachmentStore: MockAttachment[] = [];
+    const uploadedAttachment: MockAttachment = {
+      id: ".arche/attachments/spec.png",
+      path: ".arche/attachments/spec.png",
+      name: "spec.png",
+      mime: "image/png",
+      size: 10,
+      uploadedAt: 1,
+    };
+
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        attachmentStore.push(uploadedAttachment);
+        return {
+          ok: true,
+          json: async () => ({ uploaded: [uploadedAttachment], failed: [] }),
+        };
+      }
+
+      return {
+        ok: true,
+        json: async () => ({ attachments: attachmentStore }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onSendMessage = vi.fn().mockResolvedValue(true);
+    const view = render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatPanel
+          key="s1"
+          slug="alice"
+          sessions={[{ id: "s1", title: "Chat 1", status: "idle", updatedAt: "now", agent: "OpenCode" }]}
+          messages={[]}
+          activeSessionId="s1"
+          openFilePaths={[]}
+          onCloseSession={vi.fn()}
+          onOpenFile={vi.fn()}
+          onSendMessage={onSendMessage}
+        />
+      </WorkspaceThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(getTextarea(), { target: { value: "draft" } });
+    fireEvent.paste(getTextarea(), {
+      clipboardData: createClipboardImageData(
+        new File(["image"], "spec.png", { type: "image/png" })
+      ),
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("spec.png")).toBeTruthy();
+    });
+
+    expect(getTextarea().value).toBe("draft");
+
+    view.rerender(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatPanel
+          key="s2"
+          slug="alice"
+          sessions={[{ id: "s2", title: "Chat 2", status: "idle", updatedAt: "now", agent: "OpenCode" }]}
+          messages={[]}
+          activeSessionId="s2"
+          openFilePaths={[]}
+          onCloseSession={vi.fn()}
+          onOpenFile={vi.fn()}
+          onSendMessage={onSendMessage}
+        />
+      </WorkspaceThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    });
+
+    expect(getTextarea().value).toBe("");
+    expect(screen.queryByText("spec.png")).toBeNull();
   });
 
   it("renders subagent sessions as read-only inspection views", async () => {

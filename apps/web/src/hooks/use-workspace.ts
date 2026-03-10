@@ -57,17 +57,73 @@ export type AgentCatalogItem = {
 
 const STALE_PENDING_ASSISTANT_MS = 5_000;
 const INSTANCE_ACTIVITY_HEARTBEAT_MS = 20_000;
+const EMPTY_WORKSPACE_MESSAGES: WorkspaceMessage[] = [];
+
+function areStatusInfoEqual(
+  left: WorkspaceMessage["statusInfo"],
+  right: WorkspaceMessage["statusInfo"]
+): boolean {
+  return (
+    left?.status === right?.status &&
+    left?.toolName === right?.toolName &&
+    left?.detail === right?.detail
+  );
+}
+
+function areModelsEqual(
+  left: WorkspaceMessage["model"],
+  right: WorkspaceMessage["model"]
+): boolean {
+  return (
+    left?.providerId === right?.providerId &&
+    left?.modelId === right?.modelId
+  );
+}
+
+function arePartsEqual(left: MessagePart[], right: MessagePart[]): boolean {
+  if (left.length !== right.length) return false;
+
+  return left.every((part, index) => JSON.stringify(part) === JSON.stringify(right[index]));
+}
+
+function areMessagesEqual(left: WorkspaceMessage, right: WorkspaceMessage): boolean {
+  return (
+    left.id === right.id &&
+    left.sessionId === right.sessionId &&
+    left.role === right.role &&
+    left.content === right.content &&
+    left.timestamp === right.timestamp &&
+    left.timestampRaw === right.timestampRaw &&
+    left.pending === right.pending &&
+    left.agentId === right.agentId &&
+    areModelsEqual(left.model, right.model) &&
+    areStatusInfoEqual(left.statusInfo, right.statusInfo) &&
+    arePartsEqual(left.parts, right.parts)
+  );
+}
+
+function areMessageListsEqual(left: WorkspaceMessage[], right: WorkspaceMessage[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((message, index) => areMessagesEqual(message, right[index]));
+}
 
 function getActiveSessionStorageKey(slug: string): string {
   return `arche.workspace.${slug}.active-session`;
+}
+
+function readStoredValue(storage: Storage, key: string): string | null {
+  const value = storage.getItem(key);
+  return value && value.trim().length > 0 ? value : null;
 }
 
 function loadStoredActiveSessionId(key: string): string | null {
   if (typeof window === "undefined") return null;
 
   try {
-    const value = window.localStorage.getItem(key);
-    return value && value.trim().length > 0 ? value : null;
+    return (
+      readStoredValue(window.sessionStorage, key) ??
+      readStoredValue(window.localStorage, key)
+    );
   } catch {
     return null;
   }
@@ -78,10 +134,12 @@ function persistActiveSessionId(key: string, sessionId: string | null): void {
 
   try {
     if (sessionId) {
-      window.localStorage.setItem(key, sessionId);
+      window.sessionStorage.setItem(key, sessionId);
+      window.localStorage.removeItem(key);
       return;
     }
 
+    window.sessionStorage.removeItem(key);
     window.localStorage.removeItem(key);
   } catch {
     // Ignore storage access errors.
@@ -147,6 +205,22 @@ function hasModelEntry(
 
 function getPrimaryAgent(catalog: AgentCatalogItem[]): AgentCatalogItem | null {
   return catalog.find((agent) => agent.isPrimary) ?? null;
+}
+
+type SessionSelectionState = {
+  manualModel: AvailableModel | null;
+  runtimeModel: AvailableModel | null;
+  activeAgentId: string | null;
+};
+
+function createDefaultSessionSelectionState(
+  primaryAgentId: string | null
+): SessionSelectionState {
+  return {
+    manualModel: null,
+    runtimeModel: null,
+    activeAgentId: primaryAgentId,
+  };
 }
 
 export type UseWorkspaceOptions = {
@@ -277,18 +351,14 @@ export function useWorkspace({
 
   // Models
   const [models, setModels] = useState<AvailableModel[]>([]);
-  const [manualSelectedModel, setManualSelectedModel] = useState<AvailableModel | null>(
-    null
-  );
-  const [runtimeSelectedModel, setRuntimeSelectedModel] = useState<AvailableModel | null>(
-    null
-  );
   const [agentCatalog, setAgentCatalog] = useState<AgentCatalogItem[]>([]);
-  const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
+  const [sessionSelectionState, setSessionSelectionState] = useState<
+    Record<string, SessionSelectionState>
+  >({});
 
   const isConnected = connection.status === "connected";
   const messages = useMemo(
-    () => (activeSessionId ? messagesBySession[activeSessionId] ?? [] : []),
+    () => (activeSessionId ? messagesBySession[activeSessionId] ?? EMPTY_WORKSPACE_MESSAGES : EMPTY_WORKSPACE_MESSAGES),
     [activeSessionId, messagesBySession]
   );
   const isLoadingMessages = activeSessionId
@@ -297,13 +367,18 @@ export function useWorkspace({
   const isSending = activeSessionId ? sendingSessionIds.includes(activeSessionId) : false;
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
-  const activeCatalogAgent = activeAgentId
-    ? findAgentInCatalog(agentCatalog, activeAgentId)
+  const primaryAgent = getPrimaryAgent(agentCatalog);
+  const primaryAgentId = primaryAgent?.id ?? null;
+  const currentSessionSelection = activeSessionId
+    ? sessionSelectionState[activeSessionId] ??
+      createDefaultSessionSelectionState(primaryAgentId)
+    : createDefaultSessionSelectionState(primaryAgentId);
+  const activeCatalogAgent = currentSessionSelection.activeAgentId
+    ? findAgentInCatalog(agentCatalog, currentSessionSelection.activeAgentId)
     : undefined;
-  const activeAgentName = activeAgentId
+  const activeAgentName = currentSessionSelection.activeAgentId
     ? activeCatalogAgent?.displayName ?? null
     : null;
-  const primaryAgent = getPrimaryAgent(agentCatalog);
   const agentDefaultModel = (() => {
     const primaryModel = parseModelString(primaryAgent?.model);
     if (!primaryModel) return null;
@@ -315,46 +390,105 @@ export function useWorkspace({
     );
   })();
   const selectedModel =
-    manualSelectedModel ?? runtimeSelectedModel ?? agentDefaultModel;
-  const hasManualModelSelection = manualSelectedModel !== null;
+    currentSessionSelection.manualModel ??
+    currentSessionSelection.runtimeModel ??
+    agentDefaultModel;
+  const hasManualModelSelection = currentSessionSelection.manualModel !== null;
 
-  const resetSessionSelectionState = useCallback(() => {
-    setManualSelectedModel(null);
-    setRuntimeSelectedModel(null);
-    setActiveAgentId(primaryAgent?.id ?? null);
-  }, [primaryAgent]);
+  const updateSessionSelection = useCallback(
+    (
+      sessionId: string,
+      updater: (current: SessionSelectionState) => SessionSelectionState
+    ) => {
+      setSessionSelectionState((prev) => {
+        const current = prev[sessionId] ?? createDefaultSessionSelectionState(primaryAgentId);
+        const next = updater(current);
+        if (
+          next.manualModel === current.manualModel &&
+          next.runtimeModel === current.runtimeModel &&
+          next.activeAgentId === current.activeAgentId
+        ) {
+          return prev;
+        }
 
-  const updateSelectedModel = useCallback((model: AvailableModel | null) => {
-    setManualSelectedModel(model);
-  }, []);
+        return {
+          ...prev,
+          [sessionId]: next,
+        };
+      });
+    },
+    [primaryAgentId]
+  );
+
+  const clearSessionSelectionState = useCallback(
+    (sessionId: string) => {
+      setSessionSelectionState((prev) => {
+        if (!(sessionId in prev)) return prev;
+
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+    },
+    []
+  );
+
+  const initializeSessionSelectionState = useCallback(
+    (sessionId: string) => {
+      updateSessionSelection(sessionId, () =>
+        createDefaultSessionSelectionState(primaryAgentId)
+      );
+    },
+    [primaryAgentId, updateSessionSelection]
+  );
+
+  const updateSelectedModel = useCallback(
+    (model: AvailableModel | null) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+
+      updateSessionSelection(sessionId, (current) => ({
+        ...current,
+        manualModel: model,
+      }));
+    },
+    [updateSessionSelection]
+  );
 
   const syncRuntimeSelectedModel = useCallback(
-    (providerId?: string, modelId?: string) => {
+    (sessionId: string, providerId?: string, modelId?: string) => {
       if (!providerId || !modelId) return;
 
-      setRuntimeSelectedModel((current) => {
+      updateSessionSelection(sessionId, (current) => {
         if (
-          current?.providerId === providerId &&
-          current?.modelId === modelId
+          current.runtimeModel?.providerId === providerId &&
+          current.runtimeModel?.modelId === modelId
         ) {
           return current;
         }
 
-        return resolveModelEntry(providerId, modelId, models);
+        return {
+          ...current,
+          runtimeModel: resolveModelEntry(providerId, modelId, models),
+        };
       });
     },
-    [models]
+    [models, updateSessionSelection]
   );
 
   const syncActiveAgentFromRuntime = useCallback(
-    (agentId: string) => {
-      setActiveAgentId((current) => {
+    (sessionId: string, agentId: string) => {
+      updateSessionSelection(sessionId, (current) => {
         const resolved = findAgentInCatalog(agentCatalog, agentId);
-        if (resolved) return resolved.id;
-        return current;
+        if (!resolved) return current;
+
+        return {
+          ...current,
+          activeAgentId: resolved.id,
+        };
       });
     },
-    [agentCatalog]
+    [agentCatalog, updateSessionSelection]
   );
 
   const extractRuntimeMetadata = useCallback((items: WorkspaceMessage[]) => {
@@ -397,7 +531,12 @@ export function useWorkspace({
             ? updater(previousMessages)
             : updater;
 
-        if (nextMessages === previousMessages) return prev;
+        if (
+          nextMessages === previousMessages ||
+          areMessageListsEqual(previousMessages, nextMessages)
+        ) {
+          return prev;
+        }
 
         return {
           ...prev,
@@ -433,21 +572,18 @@ export function useWorkspace({
 
   const syncRuntimeMetadataForSession = useCallback(
     (sessionId: string, items: WorkspaceMessage[]) => {
-      if (activeSessionIdRef.current !== sessionId) return;
-
       const runtime = extractRuntimeMetadata(items);
-      if (runtime.agentId) {
-        syncActiveAgentFromRuntime(runtime.agentId);
-      } else {
-        setActiveAgentId(primaryAgent?.id ?? null);
-      }
-      if (runtime.model) {
-        syncRuntimeSelectedModel(runtime.model.providerId, runtime.model.modelId);
-      } else {
-        setRuntimeSelectedModel(null);
-      }
+      updateSessionSelection(sessionId, (current) => ({
+        ...current,
+        activeAgentId: runtime.agentId
+          ? findAgentInCatalog(agentCatalog, runtime.agentId)?.id ?? current.activeAgentId
+          : primaryAgentId,
+        runtimeModel: runtime.model
+          ? resolveModelEntry(runtime.model.providerId, runtime.model.modelId, models)
+          : null,
+      }));
     },
-    [extractRuntimeMetadata, primaryAgent, syncActiveAgentFromRuntime, syncRuntimeSelectedModel]
+    [agentCatalog, extractRuntimeMetadata, models, primaryAgentId, updateSessionSelection]
   );
 
   // Check connection
@@ -555,6 +691,20 @@ export function useWorkspace({
         setSessions(result.sessions);
         const sessions = result.sessions;
         const sessionIds = new Set(sessions.map((session) => session.id));
+        setSessionSelectionState((prev) => {
+          let changed = false;
+          const next: Record<string, SessionSelectionState> = {};
+
+          for (const [sessionId, state] of Object.entries(prev)) {
+            if (!sessionIds.has(sessionId)) {
+              changed = true;
+              continue;
+            }
+            next[sessionId] = state;
+          }
+
+          return changed ? next : prev;
+        });
         const currentSessionId = activeSessionIdRef.current;
         const storedSessionId = loadStoredActiveSessionId(activeSessionStorageKey);
         const firstRootSession = sessions.find(
@@ -613,9 +763,8 @@ export function useWorkspace({
     (id: string) => {
       setActiveSessionId(id);
       activeSessionIdRef.current = id;
-      resetSessionSelectionState();
     },
-    [resetSessionSelectionState]
+    []
   );
 
   // Create session
@@ -627,12 +776,12 @@ export function useWorkspace({
         setActiveSessionId(result.session.id);
         activeSessionIdRef.current = result.session.id;
         updateSessionMessages(result.session.id, []);
-        resetSessionSelectionState();
+        initializeSessionSelectionState(result.session.id);
         return result.session;
       }
       return null;
     },
-    [resetSessionSelectionState, slug, updateSessionMessages]
+    [initializeSessionSelectionState, slug, updateSessionMessages]
   );
 
   // Delete session
@@ -640,14 +789,18 @@ export function useWorkspace({
     async (id: string) => {
       const result = await deleteSessionAction(slug, id);
       if (result.ok) {
+        abortSessionStream(id);
         setSessions((prev) => {
           const filtered = prev.filter((s) => s.id !== id);
+          const nextActiveSessionId =
+            activeSessionIdRef.current === id
+              ? filtered[0]?.id ?? null
+              : activeSessionIdRef.current;
+
+          activeSessionIdRef.current = nextActiveSessionId;
+
           // Select another session if the deleted one was active
-          if (activeSessionId === id && filtered.length > 0) {
-            setActiveSessionId(filtered[0].id);
-          } else if (filtered.length === 0) {
-            setActiveSessionId(null);
-          }
+          setActiveSessionId(nextActiveSessionId);
           return filtered;
         });
         setMessagesBySession((prev) => {
@@ -663,11 +816,12 @@ export function useWorkspace({
           sendingSessionIdsRef.current = new Set(next);
           return next;
         });
+        clearSessionSelectionState(id);
         return true;
       }
       return false;
     },
-    [slug, activeSessionId]
+    [abortSessionStream, clearSessionSelectionState, slug]
   );
 
   // Rename session
@@ -1043,28 +1197,18 @@ export function useWorkspace({
                   }
 
                   case "assistant-meta": {
-                    if (
-                      activeSessionIdRef.current === sessionId &&
-                      typeof data.providerID === "string" &&
-                      typeof data.modelID === "string"
-                    ) {
-                      syncRuntimeSelectedModel(data.providerID, data.modelID);
+                    if (typeof data.providerID === "string" && typeof data.modelID === "string") {
+                      syncRuntimeSelectedModel(sessionId, data.providerID, data.modelID);
                     }
-                    if (
-                      activeSessionIdRef.current === sessionId &&
-                      typeof data.agent === "string"
-                    ) {
-                      syncActiveAgentFromRuntime(data.agent);
+                    if (typeof data.agent === "string") {
+                      syncActiveAgentFromRuntime(sessionId, data.agent);
                     }
                     break;
                   }
 
                   case "agent": {
-                    if (
-                      activeSessionIdRef.current === sessionId &&
-                      typeof data.agent === "string"
-                    ) {
-                      syncActiveAgentFromRuntime(data.agent);
+                    if (typeof data.agent === "string") {
+                      syncActiveAgentFromRuntime(sessionId, data.agent);
                     }
                     break;
                   }
@@ -1313,10 +1457,14 @@ export function useWorkspace({
 
       let resolvedModel = model;
       if (!resolvedModel) {
-        if (manualSelectedModel) {
+        const selection =
+          sessionSelectionState[sessionId] ??
+          createDefaultSessionSelectionState(primaryAgentId);
+
+        if (selection.manualModel) {
           resolvedModel = {
-            providerId: manualSelectedModel.providerId,
-            modelId: manualSelectedModel.modelId,
+            providerId: selection.manualModel.providerId,
+            modelId: selection.manualModel.modelId,
           };
         }
       }
@@ -1357,7 +1505,7 @@ export function useWorkspace({
       };
 
       updateSessionMessages(sessionId, (prev) => [...prev, tempUserMsg, tempAssistantMsg]);
-      await streamChat({
+      void streamChat({
         sessionId,
         mode: "send",
         targetMessageId: tempAssistantMsgId,
@@ -1370,7 +1518,8 @@ export function useWorkspace({
     },
     [
       createSession,
-      manualSelectedModel,
+      primaryAgentId,
+      sessionSelectionState,
       streamChat,
       updateSessionMessages,
     ]
@@ -1379,9 +1528,20 @@ export function useWorkspace({
   // Abort session
   const abortSession = useCallback(async () => {
     if (!activeSessionId) return;
+    updateSessionMessages(activeSessionId, (prev) =>
+      prev.map((message) => {
+        if (message.role !== "assistant" || !message.pending) return message;
+
+        return {
+          ...message,
+          pending: false,
+          statusInfo: { status: "error", detail: "cancelled" },
+        };
+      })
+    );
     abortSessionStream(activeSessionId);
     await abortSessionAction(slug, activeSessionId);
-  }, [abortSessionStream, slug, activeSessionId]);
+  }, [abortSessionStream, activeSessionId, slug, updateSessionMessages]);
 
   // Load diffs
   const refreshDiffs = useCallback(async (options?: { force?: boolean }) => {
@@ -1455,16 +1615,43 @@ export function useWorkspace({
 
     setModels(nextModels);
 
-    setManualSelectedModel((current) => {
-      if (!current) return null;
-      if (!hasModelEntry(current.providerId, current.modelId, nextModels)) {
-        return null;
+    setSessionSelectionState((prev) => {
+      let changed = false;
+      const next: Record<string, SessionSelectionState> = {};
+
+      for (const [sessionId, state] of Object.entries(prev)) {
+        const manualModel = state.manualModel
+          ? hasModelEntry(state.manualModel.providerId, state.manualModel.modelId, nextModels)
+            ? resolveModelEntry(
+                state.manualModel.providerId,
+                state.manualModel.modelId,
+                nextModels
+              )
+            : null
+          : null;
+        const runtimeModel = state.runtimeModel
+          ? resolveModelEntry(
+              state.runtimeModel.providerId,
+              state.runtimeModel.modelId,
+              nextModels
+            )
+          : null;
+        const nextState: SessionSelectionState = {
+          ...state,
+          manualModel,
+          runtimeModel,
+        };
+
+        next[sessionId] = nextState;
+        if (
+          nextState.manualModel !== state.manualModel ||
+          nextState.runtimeModel !== state.runtimeModel
+        ) {
+          changed = true;
+        }
       }
-      return resolveModelEntry(current.providerId, current.modelId, nextModels);
-    });
-    setRuntimeSelectedModel((current) => {
-      if (!current) return null;
-      return resolveModelEntry(current.providerId, current.modelId, nextModels);
+
+      return changed ? next : prev;
     });
   }, [slug]);
 
@@ -1481,14 +1668,26 @@ export function useWorkspace({
       const primary = agents.find((agent) => agent.isPrimary);
 
       setAgentCatalog(agents);
-      setActiveAgentId((current) => {
-        if (current) {
-          const resolvedCurrent = findAgentInCatalog(agents, current);
-          if (resolvedCurrent) {
-            return resolvedCurrent.id;
+      setSessionSelectionState((prev) => {
+        let changed = false;
+        const next: Record<string, SessionSelectionState> = {};
+
+        for (const [sessionId, state] of Object.entries(prev)) {
+          const resolvedCurrent = state.activeAgentId
+            ? findAgentInCatalog(agents, state.activeAgentId)
+            : undefined;
+          const nextState: SessionSelectionState = {
+            ...state,
+            activeAgentId: resolvedCurrent?.id ?? primary?.id ?? state.activeAgentId,
+          };
+
+          next[sessionId] = nextState;
+          if (nextState.activeAgentId !== state.activeAgentId) {
+            changed = true;
           }
         }
-        return primary?.id ?? current;
+
+        return changed ? next : prev;
       });
     } catch {
       // keep defaults when catalog is unavailable

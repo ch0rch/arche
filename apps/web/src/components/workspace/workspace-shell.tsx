@@ -844,11 +844,19 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   }, [workspace]);
 
   // Agent mention insertion
-  const [pendingInsert, setPendingInsert] = useState<string | null>(null);
+  const [pendingInsert, setPendingInsert] = useState<{
+    sessionId: string;
+    value: string;
+  } | null>(null);
 
   const handleSelectAgent = useCallback((agent: { displayName: string }) => {
-    setPendingInsert("@" + agent.displayName + " ");
-  }, []);
+    if (!workspace.activeSessionId) return;
+
+    setPendingInsert({
+      sessionId: workspace.activeSessionId,
+      value: "@" + agent.displayName + " ",
+    });
+  }, [workspace.activeSessionId]);
 
   const handlePendingInsertConsumed = useCallback(() => {
     setPendingInsert(null);
@@ -1113,6 +1121,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             style={{ minWidth: minCenterWidth }}
           >
             <ChatPanel
+              key={workspace.activeSessionId ?? "no-session"}
               slug={slug}
               sessions={uiSessions}
               messages={uiMessages}
@@ -1128,6 +1137,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                 setRightTab("preview");
               }}
               onSendMessage={workspace.sendMessage}
+              onAbortMessage={workspace.abortSession}
               isSending={workspace.isSending}
               models={workspace.models}
               agentDefaultModel={workspace.agentDefaultModel}
@@ -1141,7 +1151,11 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                   ? () => workspace.selectSession(activeRootSessionId)
                   : undefined
               }
-              pendingInsert={pendingInsert}
+              pendingInsert={
+                pendingInsert?.sessionId === workspace.activeSessionId
+                  ? pendingInsert.value
+                  : null
+              }
               onPendingInsertConsumed={handlePendingInsertConsumed}
             />
           </div>

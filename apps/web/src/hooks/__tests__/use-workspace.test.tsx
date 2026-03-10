@@ -194,6 +194,58 @@ describe("useWorkspace", () => {
     expect(result.current.agentDefaultModel?.modelId).toBe("gpt-5.4");
   });
 
+  it("keeps manual model selection scoped to each session", async () => {
+    opencodeMocks.listSessionsAction.mockResolvedValue({
+      ok: true,
+      sessions: [
+        { id: "s1", title: "First", status: "idle", updatedAt: "now" },
+        { id: "s2", title: "Second", status: "idle", updatedAt: "now" },
+      ],
+    });
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("s1");
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.2");
+    });
+
+    act(() => {
+      result.current.setSelectedModel({
+        providerId: "openai",
+        providerName: "OpenAI",
+        modelId: "gpt-5.4",
+        modelName: "GPT 5.4",
+        isDefault: false,
+      });
+    });
+
+    expect(result.current.selectedModel?.modelId).toBe("gpt-5.4");
+    expect(result.current.hasManualModelSelection).toBe(true);
+
+    act(() => {
+      result.current.selectSession("s2");
+    });
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("s2");
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.4");
+      expect(result.current.hasManualModelSelection).toBe(false);
+    });
+
+    act(() => {
+      result.current.selectSession("s1");
+    });
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("s1");
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.4");
+      expect(result.current.hasManualModelSelection).toBe(true);
+    });
+  });
+
   it("restores the stored active session on reload instead of defaulting to the first returned child session", async () => {
     localStorage.setItem("arche.workspace.alice.active-session", "root");
     opencodeMocks.listSessionsAction.mockResolvedValue({
@@ -254,26 +306,47 @@ describe("useWorkspace", () => {
   });
 
   it("clears a manual model override when the model is no longer available", async () => {
-    vi.useFakeTimers();
-    opencodeMocks.checkConnectionAction
-      .mockResolvedValueOnce({ status: "disconnected" })
-      .mockResolvedValue({ status: "connected" });
-    opencodeMocks.listModelsAction.mockResolvedValue({
-      ok: true,
-      models: [
-        {
-          providerId: "openai",
-          providerName: "OpenAI",
-          modelId: "gpt-5.2",
-          modelName: "GPT 5.2",
-          isDefault: true,
-        },
-      ],
-    });
+    opencodeMocks.listModelsAction
+      .mockResolvedValueOnce({
+        ok: true,
+        models: [
+          {
+            providerId: "openai",
+            providerName: "OpenAI",
+            modelId: "gpt-5.2",
+            modelName: "GPT 5.2",
+            isDefault: true,
+          },
+          {
+            providerId: "openai",
+            providerName: "OpenAI",
+            modelId: "gpt-5.4",
+            modelName: "GPT 5.4",
+            isDefault: false,
+          },
+        ],
+      })
+      .mockResolvedValue({
+        ok: true,
+        models: [
+          {
+            providerId: "openai",
+            providerName: "OpenAI",
+            modelId: "gpt-5.2",
+            modelName: "GPT 5.2",
+            isDefault: true,
+          },
+        ],
+      });
 
-    const { result } = renderHook(() =>
-      useWorkspace({ slug: "alice", pollInterval: 0 })
+    const { result, rerender } = renderHook(
+      ({ enabled }) => useWorkspace({ slug: "alice", pollInterval: 0, enabled }),
+      { initialProps: { enabled: true } }
     );
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("s1");
+    });
 
     act(() => {
       result.current.setSelectedModel({
@@ -287,13 +360,13 @@ describe("useWorkspace", () => {
 
     expect(result.current.hasManualModelSelection).toBe(true);
 
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
+    rerender({ enabled: false });
+    rerender({ enabled: true });
+
+    await waitFor(() => {
+      expect(result.current.hasManualModelSelection).toBe(false);
     });
 
-    vi.useRealTimers();
-
-    expect(result.current.hasManualModelSelection).toBe(false);
     expect(result.current.agentDefaultModel?.modelId).toBe("gpt-5.4");
     expect(result.current.selectedModel?.modelId).toBe("gpt-5.2");
   });
@@ -551,5 +624,144 @@ describe("useWorkspace", () => {
     await act(async () => {
       await Promise.all([firstSendPromise, secondSendPromise]);
     });
+  });
+
+  it("resolves sendMessage before the stream finishes so the composer can clear immediately", async () => {
+    const stream = createPendingStreamBody();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  model: "openai/gpt-5.4",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/w/alice/chat/stream") {
+          return {
+            ok: true,
+            body: stream.body,
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("s1");
+    });
+
+    let accepted = false;
+    await act(async () => {
+      accepted = await result.current.sendMessage("clear now");
+    });
+
+    expect(accepted).toBe(true);
+    expect(result.current.isSending).toBe(true);
+
+    act(() => {
+      stream.close();
+    });
+  });
+
+  it("aborts the active stream and clears pending assistant state", async () => {
+    const stream = createPendingStreamBody();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  model: "openai/gpt-5.4",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/w/alice/chat/stream") {
+          return {
+            ok: true,
+            body: stream.body,
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("s1");
+    });
+
+    await act(async () => {
+      await result.current.sendMessage("cancel me");
+    });
+
+    await waitFor(() => {
+      expect(result.current.isSending).toBe(true);
+    });
+
+    await act(async () => {
+      await result.current.abortSession();
+    });
+
+    expect(opencodeMocks.abortSessionAction).toHaveBeenCalledWith("alice", "s1");
+    expect(result.current.isSending).toBe(false);
+    expect(result.current.messages.at(-1)?.pending).toBe(false);
+    expect(result.current.messages.at(-1)?.statusInfo).toEqual({
+      status: "error",
+      detail: "cancelled",
+    });
+
+    act(() => {
+      stream.close();
+    });
+  });
+
+  it("preserves the active message list reference when refresh returns identical messages", async () => {
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("s1");
+      expect(result.current.messages).toHaveLength(1);
+    });
+
+    const initialMessages = result.current.messages;
+
+    await act(async () => {
+      await result.current.refreshMessages();
+    });
+
+    expect(result.current.messages).toBe(initialMessages);
   });
 });
