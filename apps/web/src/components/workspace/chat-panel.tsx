@@ -876,6 +876,8 @@ export function ChatPanel({
   );
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isStuckToBottomRef = useRef(true);
   const chatContentStyle = useMemo(
     () => ({
       '--workspace-chat-font-family': chatFontFamily === 'serif'
@@ -1297,13 +1299,31 @@ export function ChatPanel({
     };
   }, [pendingInsert, onPendingInsertConsumed]);
 
-  // Auto-scroll to bottom when new messages arrive
+  // --- Smart auto-scroll: only scroll when the user is "stuck" to the bottom ---
+  const SCROLL_BOTTOM_THRESHOLD = 60;
+
+  const handleScrollContainer = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    isStuckToBottomRef.current =
+      el.scrollTop + el.clientHeight >= el.scrollHeight - SCROLL_BOTTOM_THRESHOLD;
+  }, []);
+
   const prevMessagesLengthRef = useRef(0);
   useEffect(() => {
     const isInitialLoad = prevMessagesLengthRef.current === 0 && messages.length > 0;
-    const behavior = isInitialLoad ? "instant" : "smooth";
-    messagesEndRef.current?.scrollIntoView({ behavior });
     prevMessagesLengthRef.current = messages.length;
+
+    if (isInitialLoad) {
+      // Always scroll on initial load
+      isStuckToBottomRef.current = true;
+      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+      return;
+    }
+
+    if (!isStuckToBottomRef.current) return;
+
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   // Restore focus when isSending changes from true to false
@@ -1340,7 +1360,10 @@ export function ChatPanel({
       })
     );
     const messageContextPaths = [...contextPathsToSend];
-    
+
+    // Re-engage auto-scroll so we follow the agent's response
+    isStuckToBottomRef.current = true;
+
     const accepted = await onSendMessage(text, model, {
       attachments: messageAttachments,
       contextPaths: messageContextPaths,
@@ -1475,7 +1498,7 @@ export function ChatPanel({
       </div>
 
       {/* Messages area */}
-      <div className="workspace-chat-content flex-1 overflow-y-auto px-6 py-6 scrollbar-custom" style={chatContentStyle}>
+      <div ref={scrollContainerRef} onScroll={handleScrollContainer} className="workspace-chat-content flex-1 overflow-y-auto px-6 py-6 scrollbar-custom" style={chatContentStyle}>
         {isStartingNewSession ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
             <div className="h-16 w-16 animate-spin rounded-full border-4 border-muted border-t-primary" />
