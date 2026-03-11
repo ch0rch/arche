@@ -11,6 +11,7 @@ import type { WorkspaceSession } from "@/lib/opencode/types";
 type SessionsPanelProps = {
   sessions: WorkspaceSession[];
   activeSessionId: string | null;
+  unseenCompletedSessions: ReadonlySet<string>;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
   query?: string;
@@ -19,6 +20,7 @@ type SessionsPanelProps = {
 export function SessionsPanel({
   sessions,
   activeSessionId,
+  unseenCompletedSessions,
   onSelectSession,
   onCreateSession,
   query = "",
@@ -97,10 +99,12 @@ export function SessionsPanel({
                   className={cn(
                     "shrink-0",
                     session.status === "busy"
-                      ? "text-green-400"
+                      ? "text-amber-400"
                       : session.status === "error"
                         ? "text-red-400"
-                        : "text-muted-foreground/40"
+                        : unseenCompletedSessions.has(session.id)
+                          ? "text-green-400"
+                          : "text-muted-foreground/40"
                   )}
                 />
                 <span className="flex-1 truncate font-medium">{session.title}</span>

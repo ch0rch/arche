@@ -21,7 +21,7 @@ describe('ChatPanel', () => {
           openFilePaths={[]}
           onCloseSession={() => {}}
           onOpenFile={() => {}}
-          onSendMessage={async () => {}}
+          onSendMessage={async () => true}
           {...overrides}
         />
       </WorkspaceThemeProvider>
@@ -44,6 +44,19 @@ describe('ChatPanel', () => {
 
     expect(html).toContain('Starting a new conversation')
     expect(html).not.toContain('OLD CHAT')
+  })
+
+  it('shows a busy indicator on session tabs with running work', () => {
+    const html = renderChatPanel({
+      sessionTabs: [
+        { id: 's1', title: 'Main', depth: 0, status: 'idle' },
+        { id: 's2', title: 'Background', depth: 0, status: 'busy' },
+      ],
+      activeSessionId: 's1',
+    })
+
+    expect(html).toContain('Background')
+    expect(html).toContain('animate-spin text-primary')
   })
 
   it('renders connector tool calls with friendly labels', () => {

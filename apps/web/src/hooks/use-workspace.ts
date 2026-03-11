@@ -1,31 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react";
 import {
-  checkConnectionAction,
   listSessionsAction,
   createSessionAction,
   deleteSessionAction,
   updateSessionAction,
   listMessagesAction,
   abortSessionAction,
-  loadFileTreeAction,
-  readFileAction,
-  getWorkspaceDiffsAction,
   listModelsAction,
 } from "@/actions/opencode";
-import {
-  readWorkspaceFileAction,
-  writeWorkspaceFileAction,
-  deleteWorkspaceFileAction,
-  applyWorkspacePatchAction,
-  discardWorkspaceFileChangesAction,
-} from "@/actions/workspace-agent";
 import type {
+  WorkspaceConnectionState,
   WorkspaceFileNode,
   WorkspaceSession,
   WorkspaceMessage,
-  WorkspaceConnectionState,
   AvailableModel,
   MessageStatus,
   MessagePart,
@@ -37,16 +26,14 @@ import {
   recordResumeFailure,
   type ResumeFailureState,
 } from "@/lib/workspace-resume-policy";
+import { SerialJobExecutor } from "@/lib/serial-job-executor";
+import { useInstanceHeartbeat } from "@/hooks/use-instance-heartbeat";
+import { useWorkspaceConnection } from "@/hooks/use-workspace-connection";
+import { useWorkspaceDiffs, type WorkspaceDiff } from "@/hooks/use-workspace-diffs";
+import { useWorkspaceFiles } from "@/hooks/use-workspace-files";
 import type { MessageAttachmentInput } from "@/types/workspace";
 
-export type WorkspaceDiff = {
-  path: string;
-  status: "modified" | "added" | "deleted";
-  additions: number;
-  deletions: number;
-  diff: string;
-  conflicted: boolean;
-};
+export type { WorkspaceDiff } from "@/hooks/use-workspace-diffs";
 
 export type AgentCatalogItem = {
   id: string;
@@ -56,18 +43,74 @@ export type AgentCatalogItem = {
 };
 
 const STALE_PENDING_ASSISTANT_MS = 5_000;
-const INSTANCE_ACTIVITY_HEARTBEAT_MS = 20_000;
+const RESUME_POLL_INTERVAL_MS = 4_000;
+const EMPTY_WORKSPACE_MESSAGES: WorkspaceMessage[] = [];
+
+function areStatusInfoEqual(
+  left: WorkspaceMessage["statusInfo"],
+  right: WorkspaceMessage["statusInfo"]
+): boolean {
+  return (
+    left?.status === right?.status &&
+    left?.toolName === right?.toolName &&
+    left?.detail === right?.detail
+  );
+}
+
+function areModelsEqual(
+  left: WorkspaceMessage["model"],
+  right: WorkspaceMessage["model"]
+): boolean {
+  return (
+    left?.providerId === right?.providerId &&
+    left?.modelId === right?.modelId
+  );
+}
+
+function arePartsEqual(left: MessagePart[], right: MessagePart[]): boolean {
+  if (left.length !== right.length) return false;
+
+  return left.every((part, index) => JSON.stringify(part) === JSON.stringify(right[index]));
+}
+
+function areMessagesEqual(left: WorkspaceMessage, right: WorkspaceMessage): boolean {
+  return (
+    left.id === right.id &&
+    left.sessionId === right.sessionId &&
+    left.role === right.role &&
+    left.content === right.content &&
+    left.timestamp === right.timestamp &&
+    left.timestampRaw === right.timestampRaw &&
+    left.pending === right.pending &&
+    left.agentId === right.agentId &&
+    areModelsEqual(left.model, right.model) &&
+    areStatusInfoEqual(left.statusInfo, right.statusInfo) &&
+    arePartsEqual(left.parts, right.parts)
+  );
+}
+
+function areMessageListsEqual(left: WorkspaceMessage[], right: WorkspaceMessage[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((message, index) => areMessagesEqual(message, right[index]));
+}
 
 function getActiveSessionStorageKey(slug: string): string {
   return `arche.workspace.${slug}.active-session`;
+}
+
+function readStoredValue(storage: Storage, key: string): string | null {
+  const value = storage.getItem(key);
+  return value && value.trim().length > 0 ? value : null;
 }
 
 function loadStoredActiveSessionId(key: string): string | null {
   if (typeof window === "undefined") return null;
 
   try {
-    const value = window.localStorage.getItem(key);
-    return value && value.trim().length > 0 ? value : null;
+    return (
+      readStoredValue(window.sessionStorage, key) ??
+      readStoredValue(window.localStorage, key)
+    );
   } catch {
     return null;
   }
@@ -78,10 +121,12 @@ function persistActiveSessionId(key: string, sessionId: string | null): void {
 
   try {
     if (sessionId) {
+      window.sessionStorage.setItem(key, sessionId);
       window.localStorage.setItem(key, sessionId);
       return;
     }
 
+    window.sessionStorage.removeItem(key);
     window.localStorage.removeItem(key);
   } catch {
     // Ignore storage access errors.
@@ -149,6 +194,22 @@ function getPrimaryAgent(catalog: AgentCatalogItem[]): AgentCatalogItem | null {
   return catalog.find((agent) => agent.isPrimary) ?? null;
 }
 
+type SessionSelectionState = {
+  manualModel: AvailableModel | null;
+  runtimeModel: AvailableModel | null;
+  activeAgentId: string | null;
+};
+
+function createDefaultSessionSelectionState(
+  primaryAgentId: string | null
+): SessionSelectionState {
+  return {
+    manualModel: null,
+    runtimeModel: null,
+    activeAgentId: primaryAgentId,
+  };
+}
+
 export type UseWorkspaceOptions = {
   slug: string;
   /** Poll interval in ms for session status updates */
@@ -183,6 +244,7 @@ export type UseWorkspaceReturn = {
   activeSessionId: string | null;
   activeSession: WorkspaceSession | null;
   isLoadingSessions: boolean;
+  unseenCompletedSessions: ReadonlySet<string>;
   selectSession: (id: string) => void;
   createSession: (title?: string) => Promise<WorkspaceSession | null>;
   deleteSession: (id: string) => Promise<boolean>;
@@ -201,7 +263,7 @@ export type UseWorkspaceReturn = {
       attachments?: MessageAttachmentInput[];
       contextPaths?: string[];
     }
-  ) => Promise<void>;
+  ) => Promise<boolean>;
   abortSession: () => Promise<void>;
   refreshMessages: () => Promise<void>;
 
@@ -229,14 +291,25 @@ export function useWorkspace({
   enabled = true,
 }: UseWorkspaceOptions): UseWorkspaceReturn {
   const activeSessionStorageKey = getActiveSessionStorageKey(slug);
-  // Connection state
-  const [connection, setConnection] = useState<WorkspaceConnectionState>({
-    status: "connecting",
-  });
 
-  // Files
-  const [fileTree, setFileTree] = useState<WorkspaceFileNode[]>([]);
-  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  // --- Sub-hooks ---
+  // onConnectedRef holds the real init callback. We declare it as a ref so
+  // the connection hook (called first) can invoke whatever function is
+  // current at the time the connection succeeds, even though the functions
+  // it calls (loadSessions, etc.) are defined later in this hook body.
+  const onConnectedRef = useRef<() => Promise<void>>(() => Promise.resolve());
+
+  const { connection, isConnected } = useWorkspaceConnection(
+    slug,
+    enabled,
+    // The connection hook stores this in its own ref, so identity doesn't
+    // matter. We pass a thin wrapper that delegates to our ref.
+    () => onConnectedRef.current(),
+  );
+
+  const files = useWorkspaceFiles(slug);
+  const diffsHook = useWorkspaceDiffs(slug, enabled, isConnected);
+  useInstanceHeartbeat(slug, enabled);
 
   // Sessions
   const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
@@ -244,56 +317,83 @@ export function useWorkspace({
   const [isLoadingSessions, setIsLoadingSessions] = useState(false);
 
   // Messages
-  const [messages, setMessages] = useState<WorkspaceMessage[]>([]);
-  const [isLoadingMessages, setIsLoadingMessages] = useState(false);
-  const [isSending, setIsSending] = useState(false);
+  const [messagesBySession, setMessagesBySession] = useState<
+    Record<string, WorkspaceMessage[]>
+  >({});
+  const [loadingMessageSessionIds, setLoadingMessageSessionIds] = useState<string[]>([]);
+  const [sessionStreamStatus, setSessionStreamStatus] = useState<
+    Record<string, "submitted" | "streaming" | "error">
+  >({});
   const [isStartingNewSession, setIsStartingNewSession] = useState(false);
-  const isSendingRef = useRef(false); // Ref to track sending state without causing re-renders
-  // Sync ref so async callbacks can read the *current* activeSessionId
+  const sessionStreamStatusRef = useRef<
+    Record<string, "submitted" | "streaming" | "error">
+  >({});
+  const [unseenCompletedSessions, setUnseenCompletedSessions] = useState<Set<string>>(new Set());
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  const sessionsRef = useRef(sessions);
+  sessionsRef.current = sessions;
   const streamCounterRef = useRef(0);
-  const activeStreamRef = useRef<{
+  const activeStreamsRef = useRef(new Map<string, {
     token: number;
     sessionId: string;
     mode: "send" | "resume";
     targetMessageId: string;
     abortController: AbortController;
-  } | null>(null);
+  }>());
   const resumeFailureStateRef = useRef<Map<string, ResumeFailureState>>(new Map());
+  const sessionExecutorsRef = useRef(new Map<string, SerialJobExecutor>());
 
-  // Diffs
-  const [diffs, setDiffs] = useState<WorkspaceDiff[]>([]);
-  const [isLoadingDiffs, setIsLoadingDiffs] = useState(false);
-  const [diffsError, setDiffsError] = useState<string | null>(null);
-  const [diffsRefreshTrigger, setDiffsRefreshTrigger] = useState(0);
-  const [filesRefreshTrigger, setFilesRefreshTrigger] = useState(0);
-  const isLoadingDiffsRef = useRef(false);
-  const workspaceRefreshTimeoutRef = useRef<ReturnType<
-    typeof setTimeout
-  > | null>(null);
+  // Workspace refresh scheduling (diffs + files after stream completion)
+  const workspaceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Models
   const [models, setModels] = useState<AvailableModel[]>([]);
-  const [manualSelectedModel, setManualSelectedModel] = useState<AvailableModel | null>(
-    null
-  );
-  const [runtimeSelectedModel, setRuntimeSelectedModel] = useState<AvailableModel | null>(
-    null
-  );
   const [agentCatalog, setAgentCatalog] = useState<AgentCatalogItem[]>([]);
-  const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
+  const [sessionSelectionState, setSessionSelectionState] = useState<
+    Record<string, SessionSelectionState>
+  >({});
 
-  const isConnected = connection.status === "connected";
+  const messages = useMemo(
+    () => (activeSessionId ? messagesBySession[activeSessionId] ?? EMPTY_WORKSPACE_MESSAGES : EMPTY_WORKSPACE_MESSAGES),
+    [activeSessionId, messagesBySession]
+  );
+  const isLoadingMessages = activeSessionId
+    ? loadingMessageSessionIds.includes(activeSessionId)
+    : false;
+  const activeStreamStatus = activeSessionId ? sessionStreamStatus[activeSessionId] : undefined;
+  const isSending = activeStreamStatus === "submitted" || activeStreamStatus === "streaming";
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
-  const activeCatalogAgent = activeAgentId
-    ? findAgentInCatalog(agentCatalog, activeAgentId)
+  // Merge local streaming knowledge into sessions so UI indicators (green dot)
+  // reflect real-time streaming state, not just the polled API status.
+  const enrichedSessions = useMemo(() => {
+    const hasStreaming = Object.keys(sessionStreamStatus).length > 0;
+    if (!hasStreaming) return sessions;
+    return sessions.map((session) => {
+      const streamStatus = sessionStreamStatus[session.id];
+      if (
+        (streamStatus === "submitted" || streamStatus === "streaming") &&
+        session.status !== "busy"
+      ) {
+        return { ...session, status: "busy" as const };
+      }
+      return session;
+    });
+  }, [sessions, sessionStreamStatus]);
+
+  const activeSession = enrichedSessions.find((s) => s.id === activeSessionId) ?? null;
+  const primaryAgent = getPrimaryAgent(agentCatalog);
+  const primaryAgentId = primaryAgent?.id ?? null;
+  const currentSessionSelection = activeSessionId
+    ? sessionSelectionState[activeSessionId] ??
+      createDefaultSessionSelectionState(primaryAgentId)
+    : createDefaultSessionSelectionState(primaryAgentId);
+  const activeCatalogAgent = currentSessionSelection.activeAgentId
+    ? findAgentInCatalog(agentCatalog, currentSessionSelection.activeAgentId)
     : undefined;
-  const activeAgentName = activeAgentId
+  const activeAgentName = currentSessionSelection.activeAgentId
     ? activeCatalogAgent?.displayName ?? null
     : null;
-  const primaryAgent = getPrimaryAgent(agentCatalog);
   const agentDefaultModel = (() => {
     const primaryModel = parseModelString(primaryAgent?.model);
     if (!primaryModel) return null;
@@ -305,46 +405,107 @@ export function useWorkspace({
     );
   })();
   const selectedModel =
-    manualSelectedModel ?? runtimeSelectedModel ?? agentDefaultModel;
-  const hasManualModelSelection = manualSelectedModel !== null;
+    currentSessionSelection.manualModel ??
+    currentSessionSelection.runtimeModel ??
+    agentDefaultModel;
+  const hasManualModelSelection = currentSessionSelection.manualModel !== null;
 
-  const resetSessionSelectionState = useCallback(() => {
-    setManualSelectedModel(null);
-    setRuntimeSelectedModel(null);
-    setActiveAgentId(primaryAgent?.id ?? null);
-  }, [primaryAgent]);
+  // --- Session selection state helpers ---
 
-  const updateSelectedModel = useCallback((model: AvailableModel | null) => {
-    setManualSelectedModel(model);
-  }, []);
+  const updateSessionSelection = useCallback(
+    (
+      sessionId: string,
+      updater: (current: SessionSelectionState) => SessionSelectionState
+    ) => {
+      setSessionSelectionState((prev) => {
+        const current = prev[sessionId] ?? createDefaultSessionSelectionState(primaryAgentId);
+        const next = updater(current);
+        if (
+          next.manualModel === current.manualModel &&
+          next.runtimeModel === current.runtimeModel &&
+          next.activeAgentId === current.activeAgentId
+        ) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          [sessionId]: next,
+        };
+      });
+    },
+    [primaryAgentId]
+  );
+
+  const clearSessionSelectionState = useCallback(
+    (sessionId: string) => {
+      setSessionSelectionState((prev) => {
+        if (!(sessionId in prev)) return prev;
+
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+    },
+    []
+  );
+
+  const initializeSessionSelectionState = useCallback(
+    (sessionId: string) => {
+      updateSessionSelection(sessionId, () =>
+        createDefaultSessionSelectionState(primaryAgentId)
+      );
+    },
+    [primaryAgentId, updateSessionSelection]
+  );
+
+  const updateSelectedModel = useCallback(
+    (model: AvailableModel | null) => {
+      const sessionId = activeSessionIdRef.current;
+      if (!sessionId) return;
+
+      updateSessionSelection(sessionId, (current) => ({
+        ...current,
+        manualModel: model,
+      }));
+    },
+    [updateSessionSelection]
+  );
 
   const syncRuntimeSelectedModel = useCallback(
-    (providerId?: string, modelId?: string) => {
+    (sessionId: string, providerId?: string, modelId?: string) => {
       if (!providerId || !modelId) return;
 
-      setRuntimeSelectedModel((current) => {
+      updateSessionSelection(sessionId, (current) => {
         if (
-          current?.providerId === providerId &&
-          current?.modelId === modelId
+          current.runtimeModel?.providerId === providerId &&
+          current.runtimeModel?.modelId === modelId
         ) {
           return current;
         }
 
-        return resolveModelEntry(providerId, modelId, models);
+        return {
+          ...current,
+          runtimeModel: resolveModelEntry(providerId, modelId, models),
+        };
       });
     },
-    [models]
+    [models, updateSessionSelection]
   );
 
   const syncActiveAgentFromRuntime = useCallback(
-    (agentId: string) => {
-      setActiveAgentId((current) => {
+    (sessionId: string, agentId: string) => {
+      updateSessionSelection(sessionId, (current) => {
         const resolved = findAgentInCatalog(agentCatalog, agentId);
-        if (resolved) return resolved.id;
-        return current;
+        if (!resolved) return current;
+
+        return {
+          ...current,
+          activeAgentId: resolved.id,
+        };
       });
     },
-    [agentCatalog]
+    [agentCatalog, updateSessionSelection]
   );
 
   const extractRuntimeMetadata = useCallback((items: WorkspaceMessage[]) => {
@@ -375,96 +536,108 @@ export function useWorkspace({
     return { agentId: null, model: null };
   }, []);
 
-  // Check connection
-  const checkConnection = useCallback(async () => {
-    const result = await checkConnectionAction(slug);
-    setConnection(result);
-    return result.status === "connected";
-  }, [slug]);
+  // --- Message helpers ---
 
-  // Load files
-  const refreshFiles = useCallback(async () => {
-    setIsLoadingFiles(true);
-    try {
-      const result = await loadFileTreeAction(slug);
-      if (result.ok && result.tree) {
-        setFileTree(result.tree);
-      }
-    } finally {
-      setIsLoadingFiles(false);
+  const updateSessionMessages = useCallback(
+    (
+      sessionId: string,
+      updater: SetStateAction<WorkspaceMessage[]>
+    ) => {
+      setMessagesBySession((prev) => {
+        const previousMessages = prev[sessionId] ?? [];
+        const nextMessages =
+          typeof updater === "function"
+            ? updater(previousMessages)
+            : updater;
+
+        if (
+          nextMessages === previousMessages ||
+          areMessageListsEqual(previousMessages, nextMessages)
+        ) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          [sessionId]: nextMessages,
+        };
+      });
+    },
+    []
+  );
+
+  const getSessionExecutor = useCallback((sessionId: string): SerialJobExecutor => {
+    let executor = sessionExecutorsRef.current.get(sessionId);
+    if (!executor) {
+      executor = new SerialJobExecutor();
+      sessionExecutorsRef.current.set(sessionId, executor);
     }
-  }, [slug]);
+    return executor;
+  }, []);
 
-  // Read single file
-  const readFile = useCallback(
-    async (path: string) => {
-      const agentResult = await readWorkspaceFileAction(slug, path);
-      if (agentResult.ok && agentResult.content) {
-        return {
-          content: agentResult.content.content,
-          type: agentResult.content.type,
-          hash: agentResult.hash,
-        };
+  const setSessionLoading = useCallback((sessionId: string, isLoading: boolean) => {
+    setLoadingMessageSessionIds((prev) => {
+      if (isLoading) {
+        return prev.includes(sessionId) ? prev : [...prev, sessionId];
       }
 
-      const result = await readFileAction(slug, path);
-      if (result.ok && result.content) {
-        return { content: result.content.content, type: result.content.type };
-      }
+      return prev.filter((id) => id !== sessionId);
+    });
+  }, []);
 
-      return null;
+  const setSessionStreamStatusTo = useCallback(
+    (sessionId: string, status: "submitted" | "streaming" | "error" | "ready") => {
+      setSessionStreamStatus((prev) => {
+        if (status === "ready") {
+          if (!(sessionId in prev)) return prev;
+
+          // If the session was actively streaming and is not the currently
+          // viewed session, mark it as "unseen completed" so the UI can
+          // show a green indicator until the user visits it.
+          const wasStreaming = prev[sessionId] === "submitted" || prev[sessionId] === "streaming";
+          if (wasStreaming && sessionId !== activeSessionIdRef.current) {
+            setUnseenCompletedSessions((s) => {
+              if (s.has(sessionId)) return s;
+              const next = new Set(s);
+              next.add(sessionId);
+              return next;
+            });
+          }
+
+          const next = { ...prev };
+          delete next[sessionId];
+          sessionStreamStatusRef.current = next;
+          return next;
+        }
+
+        if (prev[sessionId] === status) return prev;
+
+        const next = { ...prev, [sessionId]: status };
+        sessionStreamStatusRef.current = next;
+        return next;
+      });
     },
-    [slug]
+    []
   );
 
-  const writeFile = useCallback(
-    async (path: string, content: string, expectedHash?: string) => {
-      const result = await writeWorkspaceFileAction(
-        slug,
-        path,
-        content,
-        expectedHash
-      );
-      if (result.ok) {
-        return { ok: true, hash: result.hash };
-      }
-      return { ok: false, error: result.error };
+  const syncRuntimeMetadataForSession = useCallback(
+    (sessionId: string, items: WorkspaceMessage[]) => {
+      const runtime = extractRuntimeMetadata(items);
+      updateSessionSelection(sessionId, (current) => ({
+        ...current,
+        activeAgentId: runtime.agentId
+          ? findAgentInCatalog(agentCatalog, runtime.agentId)?.id ?? current.activeAgentId
+          : primaryAgentId,
+        runtimeModel: runtime.model
+          ? resolveModelEntry(runtime.model.providerId, runtime.model.modelId, models)
+          : null,
+      }));
     },
-    [slug]
+    [agentCatalog, extractRuntimeMetadata, models, primaryAgentId, updateSessionSelection]
   );
 
-  const deleteFile = useCallback(
-    async (path: string) => {
-      const result = await deleteWorkspaceFileAction(slug, path);
-      return result.ok;
-    },
-    [slug]
-  );
+  // --- Sessions ---
 
-  const applyPatch = useCallback(
-    async (patch: string) => {
-      const result = await applyWorkspacePatchAction(slug, patch);
-      return result.ok;
-    },
-    [slug]
-  );
-
-  const discardFileChanges = useCallback(
-    async (path: string) => {
-      try {
-        const result = await discardWorkspaceFileChangesAction(slug, path);
-        return result;
-      } catch (e) {
-        return {
-          ok: false,
-          error: e instanceof Error ? e.message : "discard_failed",
-        };
-      }
-    },
-    [slug]
-  );
-
-  // Load sessions
   const loadSessions = useCallback(async () => {
     console.log("[useWorkspace] loadSessions: loading...");
     setIsLoadingSessions(true);
@@ -480,6 +653,20 @@ export function useWorkspace({
         setSessions(result.sessions);
         const sessions = result.sessions;
         const sessionIds = new Set(sessions.map((session) => session.id));
+        setSessionSelectionState((prev) => {
+          let changed = false;
+          const next: Record<string, SessionSelectionState> = {};
+
+          for (const [sessionId, state] of Object.entries(prev)) {
+            if (!sessionIds.has(sessionId)) {
+              changed = true;
+              continue;
+            }
+            next[sessionId] = state;
+          }
+
+          return changed ? next : prev;
+        });
         const currentSessionId = activeSessionIdRef.current;
         const storedSessionId = loadStoredActiveSessionId(activeSessionStorageKey);
         const firstRootSession = sessions.find(
@@ -503,7 +690,6 @@ export function useWorkspace({
           );
           activeSessionIdRef.current = nextActiveSessionId;
           setActiveSessionId(nextActiveSessionId);
-          setMessages([]);
         }
       }
     } finally {
@@ -511,68 +697,97 @@ export function useWorkspace({
     }
   }, [activeSessionStorageKey, slug]);
 
-  const abortActiveStream = useCallback(() => {
-    if (activeStreamRef.current) {
-      activeStreamRef.current.abortController.abort();
-      activeStreamRef.current = null;
-      streamCounterRef.current += 1;
-      setIsSending(false);
-      isSendingRef.current = false;
-    }
-  }, []);
+  // --- Stream management ---
 
-  // Select session
-  const selectSession = useCallback(
-    (id: string) => {
-      abortActiveStream();
-      setActiveSessionId(id);
-      activeSessionIdRef.current = id; // Sync ref immediately so in-flight refreshMessages can detect staleness
-      setMessages([]); // Clear messages when switching sessions
-      resetSessionSelectionState();
+  const abortSessionStream = useCallback(
+    (sessionId: string) => {
+      const activeStream = activeStreamsRef.current.get(sessionId);
+      if (!activeStream) return;
+
+      activeStream.abortController.abort();
+      activeStreamsRef.current.delete(sessionId);
+      streamCounterRef.current += 1;
+      setSessionStreamStatusTo(sessionId, "ready");
     },
-    [abortActiveStream, resetSessionSelectionState]
+    [setSessionStreamStatusTo]
   );
 
-  // Create session
+  const abortAllStreams = useCallback(() => {
+    for (const sessionId of activeStreamsRef.current.keys()) {
+      const activeStream = activeStreamsRef.current.get(sessionId);
+      activeStream?.abortController.abort();
+      setSessionStreamStatusTo(sessionId, "ready");
+    }
+    activeStreamsRef.current.clear();
+    streamCounterRef.current += 1;
+  }, [setSessionStreamStatusTo]);
+
+  const selectSession = useCallback(
+    (id: string) => {
+      setActiveSessionId(id);
+      activeSessionIdRef.current = id;
+
+      // Clear "unseen completed" flag when the user visits this session
+      setUnseenCompletedSessions((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    },
+    []
+  );
+
   const createSession = useCallback(
     async (title?: string) => {
       const result = await createSessionAction(slug, title);
       if (result.ok && result.session) {
         setSessions((prev) => [result.session!, ...prev]);
         setActiveSessionId(result.session.id);
-        activeSessionIdRef.current = result.session.id; // Sync ref immediately so in-flight refreshMessages can detect staleness
-        setMessages([]);
-        resetSessionSelectionState();
+        activeSessionIdRef.current = result.session.id;
+        updateSessionMessages(result.session.id, []);
+        initializeSessionSelectionState(result.session.id);
         return result.session;
       }
       return null;
     },
-    [resetSessionSelectionState, slug]
+    [initializeSessionSelectionState, slug, updateSessionMessages]
   );
 
-  // Delete session
   const deleteSession = useCallback(
     async (id: string) => {
       const result = await deleteSessionAction(slug, id);
       if (result.ok) {
+        abortSessionStream(id);
         setSessions((prev) => {
           const filtered = prev.filter((s) => s.id !== id);
-          // Select another session if the deleted one was active
-          if (activeSessionId === id && filtered.length > 0) {
-            setActiveSessionId(filtered[0].id);
-          } else if (filtered.length === 0) {
-            setActiveSessionId(null);
-          }
+          const nextActiveSessionId =
+            activeSessionIdRef.current === id
+              ? filtered[0]?.id ?? null
+              : activeSessionIdRef.current;
+
+          activeSessionIdRef.current = nextActiveSessionId;
+          setActiveSessionId(nextActiveSessionId);
           return filtered;
         });
+        setMessagesBySession((prev) => {
+          if (!(id in prev)) return prev;
+
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        setLoadingMessageSessionIds((prev) => prev.filter((sessionId) => sessionId !== id));
+        setSessionStreamStatusTo(id, "ready");
+        clearSessionSelectionState(id);
+        sessionExecutorsRef.current.delete(id);
         return true;
       }
       return false;
     },
-    [slug, activeSessionId]
+    [abortSessionStream, clearSessionSelectionState, slug]
   );
 
-  // Rename session
   const renameSession = useCallback(
     async (id: string, title: string) => {
       const result = await updateSessionAction(slug, id, title);
@@ -587,97 +802,90 @@ export function useWorkspace({
     [slug]
   );
 
-  // Load messages for active session
-  const refreshMessages = useCallback(async () => {
-    if (!activeSessionId) {
+  // --- Messages ---
+
+  const refreshMessages = useCallback(async (sessionIdOverride?: string) => {
+    const targetSessionId = sessionIdOverride ?? activeSessionIdRef.current;
+
+    if (!targetSessionId) {
       console.log(
         "[useWorkspace] refreshMessages: no activeSessionId, skipping"
       );
       return;
     }
 
-    // Don't refresh if we're currently sending a message (use ref to avoid dependency)
-    if (isSendingRef.current) {
+    const targetStatus = sessionStreamStatusRef.current[targetSessionId];
+    if (
+      targetStatus === "submitted" || targetStatus === "streaming" ||
+      activeStreamsRef.current.has(targetSessionId)
+    ) {
       console.log(
-        "[useWorkspace] refreshMessages: skipping, currently sending"
+        "[useWorkspace] refreshMessages: skipping, active stream in progress"
       );
       return;
     }
 
-    const targetSessionId = activeSessionId;
-
-    console.log(
-      "[useWorkspace] refreshMessages: loading for session",
-      targetSessionId
-    );
-    setIsLoadingMessages(true);
-    try {
-      const result = await listMessagesAction(slug, targetSessionId);
-
-      // If the active session changed while the request was in flight,
-      // discard this result to avoid overwriting messages from the new session.
-      if (activeSessionIdRef.current !== targetSessionId) return;
-
+    const executor = getSessionExecutor(targetSessionId);
+    await executor.run(async () => {
       console.log(
-        "[useWorkspace] refreshMessages result:",
-        result.ok,
-        "messages:",
-        result.messages?.length
+        "[useWorkspace] refreshMessages: loading for session",
+        targetSessionId
       );
-      if (result.ok && result.messages) {
-        const pendingIds = new Set(
-          result.messages.filter((message) => message.pending).map((message) => message.id)
-        );
-        for (const [messageId] of resumeFailureStateRef.current) {
-          if (!pendingIds.has(messageId)) {
-            resumeFailureStateRef.current.delete(messageId);
-          }
-        }
+      setSessionLoading(targetSessionId, true);
+      try {
+        const result = await listMessagesAction(slug, targetSessionId);
 
-        const hydratedMessages: WorkspaceMessage[] = result.messages.map(
-          (message): WorkspaceMessage => {
-            const resumeState = resumeFailureStateRef.current.get(message.id);
-            if (
-              message.role === "assistant" &&
-              message.pending &&
-              resumeState?.suppressed
-            ) {
-              return {
-                ...message,
-                pending: false,
-                statusInfo: { status: "error", detail: "resume_exhausted" },
-              };
+        console.log(
+          "[useWorkspace] refreshMessages result:",
+          result.ok,
+          "messages:",
+          result.messages?.length
+        );
+        if (result.ok && result.messages) {
+          const pendingIds = new Set(
+            result.messages.filter((message) => message.pending).map((message) => message.id)
+          );
+          for (const [messageId] of resumeFailureStateRef.current) {
+            if (!pendingIds.has(messageId)) {
+              resumeFailureStateRef.current.delete(messageId);
             }
-
-            return message;
           }
-        );
 
-        setMessages(hydratedMessages);
+          const hydratedMessages: WorkspaceMessage[] = result.messages.map(
+            (message): WorkspaceMessage => {
+              const resumeState = resumeFailureStateRef.current.get(message.id);
+              if (
+                message.role === "assistant" &&
+                message.pending &&
+                resumeState?.suppressed
+              ) {
+                return {
+                  ...message,
+                  pending: false,
+                  statusInfo: { status: "error", detail: "resume_exhausted" },
+                };
+              }
 
-        const runtime = extractRuntimeMetadata(hydratedMessages);
-        if (runtime.agentId) {
-          syncActiveAgentFromRuntime(runtime.agentId);
-        } else {
-          setActiveAgentId(primaryAgent?.id ?? null);
+              return message;
+            }
+          );
+
+          updateSessionMessages(targetSessionId, hydratedMessages);
+          syncRuntimeMetadataForSession(targetSessionId, hydratedMessages);
         }
-        if (runtime.model) {
-          syncRuntimeSelectedModel(runtime.model.providerId, runtime.model.modelId);
-        } else {
-          setRuntimeSelectedModel(null);
-        }
+      } finally {
+        setSessionLoading(targetSessionId, false);
       }
-    } finally {
-      setIsLoadingMessages(false);
-    }
+    });
   }, [
     slug,
-    activeSessionId,
-    extractRuntimeMetadata,
-    primaryAgent,
-    syncActiveAgentFromRuntime,
-    syncRuntimeSelectedModel,
+    getSessionExecutor,
+    setSessionLoading,
+    syncRuntimeMetadataForSession,
+    updateSessionMessages,
   ]);
+
+  // --- SSE streaming ---
 
   const deriveStatusInfoFromPart = useCallback((part: MessagePart) => {
     switch (part.type) {
@@ -735,8 +943,8 @@ export function useWorkspace({
   }, []);
 
   const upsertMessagePart = useCallback(
-    (messageId: string, part: MessagePart) => {
-      setMessages((prev) =>
+    (sessionId: string, messageId: string, part: MessagePart) => {
+      updateSessionMessages(sessionId, (prev) =>
         prev.map((m) => {
           if (m.id !== messageId) return m;
           const nextParts = m.parts ? [...m.parts] : [];
@@ -766,7 +974,7 @@ export function useWorkspace({
         })
       );
     },
-    [deriveStatusInfoFromPart]
+    [deriveStatusInfoFromPart, updateSessionMessages]
   );
 
   const scheduleWorkspaceRefresh = useCallback(() => {
@@ -774,10 +982,10 @@ export function useWorkspace({
 
     workspaceRefreshTimeoutRef.current = setTimeout(() => {
       workspaceRefreshTimeoutRef.current = null;
-      setDiffsRefreshTrigger((prev) => prev + 1);
-      setFilesRefreshTrigger((prev) => prev + 1);
+      diffsHook.triggerDiffsRefresh();
+      void files.refreshFiles();
     }, 250);
-  }, []);
+  }, [diffsHook, files]);
 
   type StreamMode = "send" | "resume";
   type StreamOptions = {
@@ -800,24 +1008,23 @@ export function useWorkspace({
       attachments,
       contextPaths,
     }: StreamOptions) => {
-      abortActiveStream();
+      abortSessionStream(sessionId);
 
       const token = streamCounterRef.current + 1;
       streamCounterRef.current = token;
       const abortController = new AbortController();
-      activeStreamRef.current = {
+      activeStreamsRef.current.set(sessionId, {
         token,
         sessionId,
         mode,
         targetMessageId,
         abortController,
-      };
+      });
 
-      setIsSending(true);
-      isSendingRef.current = true;
+      setSessionStreamStatusTo(sessionId, "submitted");
 
       if (mode === "resume") {
-        setMessages((prev) =>
+        updateSessionMessages(sessionId, (prev) =>
           prev.map((m) =>
             m.id === targetMessageId
               ? {
@@ -836,12 +1043,31 @@ export function useWorkspace({
       let streamCompleted = false;
       let receivedAssistantPart = false;
       let receivedStreamData = false;
+      let resumePollInterval: ReturnType<typeof setInterval> | null = null;
+
+      // Pre-check: if the message has already completed (e.g. OpenCode
+      // finished while the page was reloading), skip the SSE subscription.
+      if (mode === "resume") {
+        const preCheck = await listMessagesAction(slug, sessionId);
+        if (preCheck.ok && preCheck.messages) {
+          const target = preCheck.messages.find((m) => m.id === targetMessageId);
+          if (target && !target.pending) {
+            resumeFailureStateRef.current.delete(targetMessageId);
+            updateSessionMessages(sessionId, preCheck.messages);
+            syncRuntimeMetadataForSession(sessionId, preCheck.messages);
+            activeStreamsRef.current.delete(sessionId);
+            setSessionStreamStatusTo(sessionId, "ready");
+            scheduleWorkspaceRefresh();
+            return;
+          }
+        }
+      }
 
       const flushBufferedParts = (messageId: string) => {
         const buffered = bufferedParts.get(messageId);
         if (!buffered || buffered.length === 0) return;
         receivedAssistantPart = true;
-        buffered.forEach((part) => upsertMessagePart(targetMessageId, part));
+        buffered.forEach((part) => upsertMessagePart(sessionId, targetMessageId, part));
         bufferedParts.delete(messageId);
       };
 
@@ -853,14 +1079,14 @@ export function useWorkspace({
         if (mode === "resume") {
           if (messageId !== targetMessageId) return;
           receivedAssistantPart = true;
-          transformed.forEach((p) => upsertMessagePart(targetMessageId, p));
+          transformed.forEach((p) => upsertMessagePart(sessionId, targetMessageId, p));
           return;
         }
 
         if (assistantMessageId) {
           if (messageId !== assistantMessageId) return;
           receivedAssistantPart = true;
-          transformed.forEach((p) => upsertMessagePart(targetMessageId, p));
+          transformed.forEach((p) => upsertMessagePart(sessionId, targetMessageId, p));
           return;
         }
 
@@ -875,7 +1101,7 @@ export function useWorkspace({
         detail?: string
       ) => {
         const isTerminal = status === "complete" || status === "error";
-        setMessages((prev) =>
+        updateSessionMessages(sessionId, (prev) =>
           prev.map((m) => {
             if (m.id !== targetMessageId) return m;
             return {
@@ -915,6 +1141,28 @@ export function useWorkspace({
           throw new Error("No response body");
         }
 
+        // During resume, periodically poll the message API so we detect
+        // completion even when no SSE events arrive (e.g. subagent work
+        // produces events on the child session, not the parent).
+        if (mode === "resume") {
+          resumePollInterval = setInterval(async () => {
+            try {
+              const poll = await listMessagesAction(slug, sessionId);
+              if (poll.ok && poll.messages) {
+                const target = poll.messages.find((m) => m.id === targetMessageId);
+                if (target && !target.pending) {
+                  streamCompleted = true;
+                  updateSessionMessages(sessionId, poll.messages);
+                  syncRuntimeMetadataForSession(sessionId, poll.messages);
+                  abortController.abort();
+                }
+              }
+            } catch {
+              // Ignore individual poll errors
+            }
+          }, RESUME_POLL_INTERVAL_MS);
+        }
+
         const decoder = new TextDecoder();
         let buffer = "";
 
@@ -938,6 +1186,7 @@ export function useWorkspace({
             } else if (line === "" && eventData) {
               try {
                 receivedStreamData = true;
+                setSessionStreamStatusTo(sessionId, "streaming");
                 const data = JSON.parse(eventData);
 
                 switch (eventType) {
@@ -964,21 +1213,18 @@ export function useWorkspace({
                   }
 
                   case "assistant-meta": {
-                    if (
-                      typeof data.providerID === "string" &&
-                      typeof data.modelID === "string"
-                    ) {
-                      syncRuntimeSelectedModel(data.providerID, data.modelID);
+                    if (typeof data.providerID === "string" && typeof data.modelID === "string") {
+                      syncRuntimeSelectedModel(sessionId, data.providerID, data.modelID);
                     }
                     if (typeof data.agent === "string") {
-                      syncActiveAgentFromRuntime(data.agent);
+                      syncActiveAgentFromRuntime(sessionId, data.agent);
                     }
                     break;
                   }
 
                   case "agent": {
                     if (typeof data.agent === "string") {
-                      syncActiveAgentFromRuntime(data.agent);
+                      syncActiveAgentFromRuntime(sessionId, data.agent);
                     }
                     break;
                   }
@@ -1026,34 +1272,46 @@ export function useWorkspace({
           error instanceof Error ? error.message : "Unknown error"
         );
       } finally {
-        const isLatest = streamCounterRef.current === token;
+        if (resumePollInterval) {
+          clearInterval(resumePollInterval);
+        }
+
+        const isLatest = activeStreamsRef.current.get(sessionId)?.token === token;
 
         if (mode === "resume") {
           if (streamCompleted || receivedAssistantPart) {
             resumeFailureStateRef.current.delete(targetMessageId);
           } else {
-            const nextState = recordResumeFailure(
-              resumeFailureStateRef.current.get(targetMessageId),
-              Date.now()
-            );
-            resumeFailureStateRef.current.set(targetMessageId, nextState);
+            // If the session is still actively processing, don't record a
+            // resume failure — the auto-resume effect will retry once the
+            // pending key is re-evaluated after the next message refresh.
+            const sessionStillBusy =
+              sessionsRef.current.find((s) => s.id === sessionId)?.status === "busy";
 
-            updateStatus(
-              "error",
-              undefined,
-              nextState.suppressed ? "resume_exhausted" : "resume_incomplete"
-            );
+            if (!sessionStillBusy) {
+              const nextState = recordResumeFailure(
+                resumeFailureStateRef.current.get(targetMessageId),
+                Date.now()
+              );
+              resumeFailureStateRef.current.set(targetMessageId, nextState);
+
+              updateStatus(
+                "error",
+                undefined,
+                nextState.suppressed ? "resume_exhausted" : "resume_incomplete"
+              );
+            }
           }
         }
 
         if (isLatest) {
-          await new Promise((resolve) => setTimeout(resolve, 120));
+          await new Promise((resolve) => setTimeout(resolve, 250));
           const loadLatestMessages = async () => {
-            const attempts =
-              mode === "send" && assistantMessageId ? 3 : 1;
+            const MAX_ATTEMPTS =
+              mode === "send" && assistantMessageId ? 5 : 1;
             let latestResult = await listMessagesAction(slug, sessionId);
 
-            for (let attempt = 1; attempt < attempts; attempt += 1) {
+            for (let attempt = 1; attempt < MAX_ATTEMPTS; attempt += 1) {
               if (!latestResult.ok || !latestResult.messages) {
                 return latestResult;
               }
@@ -1068,7 +1326,9 @@ export function useWorkspace({
                 return latestResult;
               }
 
-              await new Promise((resolve) => setTimeout(resolve, 120));
+              // Exponential backoff: 250ms, 500ms, 1000ms, 2000ms
+              const delay = 250 * Math.pow(2, attempt - 1);
+              await new Promise((resolve) => setTimeout(resolve, delay));
               latestResult = await listMessagesAction(slug, sessionId);
             }
 
@@ -1129,10 +1389,11 @@ export function useWorkspace({
               }
             }
 
-            setMessages(hydratedMessages);
+            updateSessionMessages(sessionId, hydratedMessages);
+            syncRuntimeMetadataForSession(sessionId, hydratedMessages);
           } else {
             if (mode === "send" && !receivedStreamData) {
-              setMessages((prev) =>
+              updateSessionMessages(sessionId, (prev) =>
                 prev.filter((message) => !message.id.startsWith("temp-"))
               );
             }
@@ -1145,23 +1406,26 @@ export function useWorkspace({
         }
 
         if (isLatest) {
-          setIsSending(false);
-          isSendingRef.current = false;
-          activeStreamRef.current = null;
+          activeStreamsRef.current.delete(sessionId);
+          setSessionStreamStatusTo(sessionId, "ready");
         }
       }
     },
     [
-      abortActiveStream,
+      abortSessionStream,
       slug,
       upsertMessagePart,
       syncActiveAgentFromRuntime,
       syncRuntimeSelectedModel,
       scheduleWorkspaceRefresh,
+      setSessionStreamStatusTo,
+      syncRuntimeMetadataForSession,
+      updateSessionMessages,
     ]
   );
 
-  // Send message with SSE streaming
+  // --- Send message ---
+
   const sendMessage = useCallback(
     async (
       text: string,
@@ -1175,11 +1439,11 @@ export function useWorkspace({
       console.log("[useWorkspace] sendMessage called", {
         text,
         model,
-        activeSessionId,
+        activeSessionId: activeSessionIdRef.current,
         options,
       });
 
-      if (isSendingRef.current) return;
+      const targetSessionId = activeSessionIdRef.current;
 
       const messageAttachments = (options?.attachments ?? []).filter(
         (attachment) =>
@@ -1200,7 +1464,7 @@ export function useWorkspace({
         setIsStartingNewSession(true);
       }
 
-      let sessionId = activeSessionId;
+      let sessionId = targetSessionId;
       if (forceNewSession || !sessionId) {
         if (forceNewSession) {
           setIsStartingNewSession(true);
@@ -1216,14 +1480,23 @@ export function useWorkspace({
         }
       }
 
-      if (!sessionId) return;
+      if (!sessionId) return false;
+
+      const currentStatus = sessionStreamStatusRef.current[sessionId];
+      if (currentStatus === "submitted" || currentStatus === "streaming") {
+        return false;
+      }
 
       let resolvedModel = model;
       if (!resolvedModel) {
-        if (manualSelectedModel) {
+        const selection =
+          sessionSelectionState[sessionId] ??
+          createDefaultSessionSelectionState(primaryAgentId);
+
+        if (selection.manualModel) {
           resolvedModel = {
-            providerId: manualSelectedModel.providerId,
-            modelId: manualSelectedModel.modelId,
+            providerId: selection.manualModel.providerId,
+            modelId: selection.manualModel.modelId,
           };
         }
       }
@@ -1263,9 +1536,8 @@ export function useWorkspace({
         statusInfo: { status: "thinking" },
       };
 
-      abortActiveStream();
-      setMessages((prev) => [...prev, tempUserMsg, tempAssistantMsg]);
-      await streamChat({
+      updateSessionMessages(sessionId, (prev) => [...prev, tempUserMsg, tempAssistantMsg]);
+      void streamChat({
         sessionId,
         mode: "send",
         targetMessageId: tempAssistantMsgId,
@@ -1274,70 +1546,44 @@ export function useWorkspace({
         attachments: messageAttachments,
         contextPaths: messageContextPaths,
       });
+      return true;
     },
     [
-      abortActiveStream,
-      activeSessionId,
       createSession,
-      manualSelectedModel,
+      primaryAgentId,
+      sessionSelectionState,
       streamChat,
+      updateSessionMessages,
     ]
   );
 
-  // Abort session
+  // --- Abort ---
+
   const abortSession = useCallback(async () => {
     if (!activeSessionId) return;
-    abortActiveStream();
+    updateSessionMessages(activeSessionId, (prev) =>
+      prev.map((message) => {
+        if (message.role !== "assistant" || !message.pending) return message;
+
+        return {
+          ...message,
+          pending: false,
+          statusInfo: { status: "error", detail: "cancelled" },
+        };
+      })
+    );
+    abortSessionStream(activeSessionId);
     await abortSessionAction(slug, activeSessionId);
-  }, [abortActiveStream, slug, activeSessionId]);
+  }, [abortSessionStream, activeSessionId, slug, updateSessionMessages]);
 
-  // Load diffs
-  const refreshDiffs = useCallback(async (options?: { force?: boolean }) => {
-    if (!enabled) return;
-    if (!options?.force && !isConnected) return;
+  // --- Models & agents loading ---
 
-    // Avoid overlapping refreshes (interval + manual triggers)
-    if (isLoadingDiffsRef.current) return;
-
-    setIsLoadingDiffs(true);
-    isLoadingDiffsRef.current = true;
-    try {
-      console.log("[useWorkspace] refreshDiffs: loading...");
-      const result = await getWorkspaceDiffsAction(slug);
-      if (result.ok && result.diffs) {
-        setDiffs(result.diffs);
-        setDiffsError(null);
-        console.log(
-          "[useWorkspace] refreshDiffs result:",
-          true,
-          "diffs:",
-          result.diffs.length
-        );
-      } else {
-        const err = result.error ?? "unknown";
-        setDiffsError(err);
-        console.log(
-          "[useWorkspace] refreshDiffs result:",
-          false,
-          "error:",
-          err
-        );
-      }
-    } finally {
-      setIsLoadingDiffs(false);
-      isLoadingDiffsRef.current = false;
-    }
-  }, [slug, enabled, isConnected]);
-
-  // Load models
   const loadModels = useCallback(async () => {
     const result = await listModelsAction(slug);
     if (!result.ok || !result.models) return;
 
     let nextModels = result.models;
 
-    // Defense in depth: filter providers based on server credential status.
-    // (This prevents UI showing providers without keys even if OpenCode lists them.)
     try {
       const response = await fetch(`/api/u/${slug}/providers`, {
         cache: "no-store",
@@ -1346,7 +1592,7 @@ export function useWorkspace({
         const data = (await response.json()) as {
           providers?: Array<{ providerId: ProviderId; status: string }>;
         };
-        const enabled = new Set(
+        const enabledProviders = new Set(
           (data.providers ?? [])
             .filter((p) => p.status === "enabled")
             .map((p) => p.providerId)
@@ -1354,7 +1600,7 @@ export function useWorkspace({
 
         nextModels = nextModels.filter((m) => {
           if (!PROVIDERS.includes(m.providerId as ProviderId)) return true;
-          return enabled.has(m.providerId as ProviderId);
+          return enabledProviders.has(m.providerId as ProviderId);
         });
       }
     } catch {
@@ -1363,16 +1609,43 @@ export function useWorkspace({
 
     setModels(nextModels);
 
-    setManualSelectedModel((current) => {
-      if (!current) return null;
-      if (!hasModelEntry(current.providerId, current.modelId, nextModels)) {
-        return null;
+    setSessionSelectionState((prev) => {
+      let changed = false;
+      const next: Record<string, SessionSelectionState> = {};
+
+      for (const [sessionId, state] of Object.entries(prev)) {
+        const manualModel = state.manualModel
+          ? hasModelEntry(state.manualModel.providerId, state.manualModel.modelId, nextModels)
+            ? resolveModelEntry(
+                state.manualModel.providerId,
+                state.manualModel.modelId,
+                nextModels
+              )
+            : null
+          : null;
+        const runtimeModel = state.runtimeModel
+          ? resolveModelEntry(
+              state.runtimeModel.providerId,
+              state.runtimeModel.modelId,
+              nextModels
+            )
+          : null;
+        const nextState: SessionSelectionState = {
+          ...state,
+          manualModel,
+          runtimeModel,
+        };
+
+        next[sessionId] = nextState;
+        if (
+          nextState.manualModel !== state.manualModel ||
+          nextState.runtimeModel !== state.runtimeModel
+        ) {
+          changed = true;
+        }
       }
-      return resolveModelEntry(current.providerId, current.modelId, nextModels);
-    });
-    setRuntimeSelectedModel((current) => {
-      if (!current) return null;
-      return resolveModelEntry(current.providerId, current.modelId, nextModels);
+
+      return changed ? next : prev;
     });
   }, [slug]);
 
@@ -1389,83 +1662,51 @@ export function useWorkspace({
       const primary = agents.find((agent) => agent.isPrimary);
 
       setAgentCatalog(agents);
-      setActiveAgentId((current) => {
-        if (current) {
-          const resolvedCurrent = findAgentInCatalog(agents, current);
-          if (resolvedCurrent) {
-            return resolvedCurrent.id;
+      setSessionSelectionState((prev) => {
+        let changed = false;
+        const next: Record<string, SessionSelectionState> = {};
+
+        for (const [sessionId, state] of Object.entries(prev)) {
+          const resolvedCurrent = state.activeAgentId
+            ? findAgentInCatalog(agents, state.activeAgentId)
+            : undefined;
+          const nextState: SessionSelectionState = {
+            ...state,
+            activeAgentId: resolvedCurrent?.id ?? primary?.id ?? state.activeAgentId,
+          };
+
+          next[sessionId] = nextState;
+          if (nextState.activeAgentId !== state.activeAgentId) {
+            changed = true;
           }
         }
-        return primary?.id ?? current;
+
+        return changed ? next : prev;
       });
     } catch {
       // keep defaults when catalog is unavailable
     }
   }, [slug]);
 
-  // Initial load when connected - with retry on failure
-  useEffect(() => {
-    if (!enabled) {
-      setConnection({ status: "connecting" });
-      return;
-    }
+  // Wire the real init callback now that all functions are defined.
+  onConnectedRef.current = async () => {
+    await Promise.all([
+      files.refreshFiles(),
+      loadSessions(),
+      loadModels(),
+      loadAgentCatalog(),
+      diffsHook.refreshDiffs({ force: true }),
+    ]);
+  };
 
-    let mounted = true;
-    let retryTimeout: ReturnType<typeof setTimeout> | null = null;
-    let retryCount = 0;
-    const MAX_RETRIES = 10;
-    const BASE_DELAY = 1000;
+  // --- Effects ---
 
-    async function init() {
-      const connected = await checkConnection();
-      if (!mounted) return;
-
-      if (connected) {
-        retryCount = 0; // Reset on success
-        // Load initial data in parallel
-        await Promise.all([
-          refreshFiles(),
-          loadSessions(),
-          loadModels(),
-          loadAgentCatalog(),
-          refreshDiffs({ force: true }),
-        ]);
-      } else if (retryCount < MAX_RETRIES) {
-        // Retry with exponential backoff (1s, 2s, 4s, 8s... capped at 30s)
-        retryCount++;
-        const delay = Math.min(BASE_DELAY * Math.pow(2, retryCount - 1), 30000);
-        console.log(
-          `[useWorkspace] Connection failed, retrying in ${delay}ms (attempt ${retryCount}/${MAX_RETRIES})`
-        );
-        retryTimeout = setTimeout(() => {
-          if (mounted) init();
-        }, delay);
-      } else {
-        console.log("[useWorkspace] Max retries reached, giving up");
-      }
-    }
-
-    init();
-
-    return () => {
-      mounted = false;
-      if (retryTimeout) clearTimeout(retryTimeout);
-    };
-  }, [
-    checkConnection,
-    refreshFiles,
-    loadSessions,
-    loadModels,
-    loadAgentCatalog,
-    refreshDiffs,
-    enabled,
-  ]);
-
-  // Load messages when active session changes
+  // Persist active session to storage
   useEffect(() => {
     persistActiveSessionId(activeSessionStorageKey, activeSessionId);
   }, [activeSessionId, activeSessionStorageKey]);
 
+  // Load messages when active session changes
   useEffect(() => {
     console.log(
       "[useWorkspace] activeSessionId changed:",
@@ -1474,18 +1715,44 @@ export function useWorkspace({
       isConnected
     );
     if (activeSessionId && isConnected) {
-      refreshMessages();
+      refreshMessages(activeSessionId);
     }
   }, [activeSessionId, isConnected, refreshMessages]);
 
+  // Derive a stable fingerprint of pending assistant messages so the resume
+  // effect only re-runs when the *set* of pending IDs changes — not on every
+  // content/part update that occurs during active streaming.
+  const pendingAssistantKey = useMemo(() => {
+    const pending: string[] = [];
+    for (const m of messages) {
+      if (m.role === "assistant" && m.pending) {
+        pending.push(m.id);
+      }
+    }
+    return pending.join(",");
+  }, [messages]);
+
+  // Keep a ref to messages so the resume effect can read the latest list
+  // without re-subscribing on every content change.
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
+
+  // Auto-resume pending assistant messages
   useEffect(() => {
     if (!activeSessionId || !isConnected) return;
-    if (isSendingRef.current) return;
+    const resumeStatus = sessionStreamStatusRef.current[activeSessionId];
+    if (resumeStatus === "submitted" || resumeStatus === "streaming") return;
 
+    const existingStream = activeStreamsRef.current.get(activeSessionId);
+    if (existingStream) {
+      return;
+    }
+
+    const currentMessages = messagesRef.current;
     const now = Date.now();
     const sessionBusy = activeSession?.status === "busy";
 
-    const stalePendingWithoutParts = [...messages].reverse().find((m) => {
+    const stalePendingWithoutParts = [...currentMessages].reverse().find((m) => {
       if (m.role !== "assistant" || !m.pending) return false;
       if (m.parts.length > 0) return false;
       if (typeof m.timestampRaw !== "number") return false;
@@ -1493,7 +1760,7 @@ export function useWorkspace({
     });
 
     if (stalePendingWithoutParts && !sessionBusy) {
-      setMessages((prev) =>
+      updateSessionMessages(activeSessionId, (prev) =>
         prev.map((m) => {
           if (m.id !== stalePendingWithoutParts.id) return m;
           return {
@@ -1506,7 +1773,7 @@ export function useWorkspace({
       return;
     }
 
-    const pendingAssistant = [...messages]
+    const pendingAssistant = [...currentMessages]
       .reverse()
       .find((m) => {
         if (m.role !== "assistant" || !m.pending) return false;
@@ -1525,80 +1792,20 @@ export function useWorkspace({
         return;
       }
 
-      const activeStream = activeStreamRef.current;
-      if (
-        !activeStream ||
-        activeStream.sessionId !== activeSessionId ||
-        activeStream.mode !== "resume"
-      ) {
-        streamChat({
-          sessionId: activeSessionId,
-          mode: "resume",
-          targetMessageId: pendingAssistant.id,
-        });
-      }
-      return;
-    }
-
-    const activeStream = activeStreamRef.current;
-    if (
-      activeStream &&
-      activeStream.sessionId === activeSessionId &&
-      activeStream.mode === "resume"
-    ) {
-      abortActiveStream();
+      streamChat({
+        sessionId: activeSessionId,
+        mode: "resume",
+        targetMessageId: pendingAssistant.id,
+      });
     }
   }, [
-    abortActiveStream,
     activeSession?.status,
     activeSessionId,
     isConnected,
-    messages,
+    pendingAssistantKey,
     streamChat,
+    updateSessionMessages,
   ]);
-
-  // Refresh diffs when triggered by message completion
-  useEffect(() => {
-    if (diffsRefreshTrigger > 0 && isConnected) {
-      refreshDiffs();
-    }
-  }, [diffsRefreshTrigger, isConnected, refreshDiffs]);
-
-  useEffect(() => {
-    if (filesRefreshTrigger > 0 && isConnected) {
-      refreshFiles();
-    }
-  }, [filesRefreshTrigger, isConnected, refreshFiles]);
-
-  // Keep the workspace instance alive while this tab remains open.
-  useEffect(() => {
-    if (!enabled) return;
-
-    let cancelled = false;
-
-    const heartbeat = async () => {
-      try {
-        await fetch(`/api/instances/${slug}/activity`, {
-          method: "PATCH",
-          cache: "no-store",
-        });
-      } catch {
-        // best-effort
-      }
-    };
-
-    void heartbeat();
-
-    const interval = setInterval(() => {
-      if (cancelled) return;
-      void heartbeat();
-    }, INSTANCE_ACTIVITY_HEARTBEAT_MS);
-
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [enabled, slug]);
 
   // Poll for session status updates
   useEffect(() => {
@@ -1606,37 +1813,61 @@ export function useWorkspace({
 
     const interval = setInterval(() => {
       loadSessions();
-      refreshDiffs();
+      diffsHook.refreshDiffs();
+
+      const currentSessions = sessionsRef.current;
+      const currentActiveSessionId = activeSessionIdRef.current;
+      const sessionIdsToRefresh = new Set<string>();
+      currentSessions.forEach((session) => {
+        if (session.status === "busy") {
+          sessionIdsToRefresh.add(session.id);
+        }
+      });
+      if (currentActiveSessionId) {
+        sessionIdsToRefresh.add(currentActiveSessionId);
+      }
+
+      sessionIdsToRefresh.forEach((sessionId) => {
+        void refreshMessages(sessionId);
+      });
     }, pollInterval);
 
     return () => clearInterval(interval);
-  }, [isConnected, pollInterval, loadSessions, refreshDiffs]);
+  }, [
+    isConnected,
+    loadSessions,
+    pollInterval,
+    diffsHook,
+    refreshMessages,
+  ]);
 
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (workspaceRefreshTimeoutRef.current) {
         clearTimeout(workspaceRefreshTimeoutRef.current);
         workspaceRefreshTimeoutRef.current = null;
       }
-      abortActiveStream();
+      abortAllStreams();
     };
-  }, [abortActiveStream]);
+  }, [abortAllStreams]);
 
   return {
     connection,
     isConnected,
-    fileTree,
-    isLoadingFiles,
-    refreshFiles,
-    readFile,
-    writeFile,
-    deleteFile,
-    applyPatch,
-    discardFileChanges,
-    sessions,
+    fileTree: files.fileTree,
+    isLoadingFiles: files.isLoadingFiles,
+    refreshFiles: files.refreshFiles,
+    readFile: files.readFile,
+    writeFile: files.writeFile,
+    deleteFile: files.deleteFile,
+    applyPatch: files.applyPatch,
+    discardFileChanges: files.discardFileChanges,
+    sessions: enrichedSessions,
     activeSessionId,
     activeSession,
     isLoadingSessions,
+    unseenCompletedSessions,
     selectSession,
     createSession,
     deleteSession,
@@ -1648,10 +1879,10 @@ export function useWorkspace({
     sendMessage,
     abortSession,
     refreshMessages,
-    diffs,
-    isLoadingDiffs,
-    diffsError,
-    refreshDiffs,
+    diffs: diffsHook.diffs,
+    isLoadingDiffs: diffsHook.isLoadingDiffs,
+    diffsError: diffsHook.diffsError,
+    refreshDiffs: diffsHook.refreshDiffs,
     models,
     agentDefaultModel,
     selectedModel,

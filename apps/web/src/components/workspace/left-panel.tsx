@@ -106,6 +106,7 @@ type LeftPanelProps = {
   // Sessions
   sessions: WorkspaceSession[];
   activeSessionId: string | null;
+  unseenCompletedSessions: ReadonlySet<string>;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
 
@@ -193,6 +194,7 @@ export function LeftPanel({
   slug,
   sessions,
   activeSessionId,
+  unseenCompletedSessions,
   onSelectSession,
   onCreateSession,
   agents,
@@ -488,6 +490,7 @@ export function LeftPanel({
             <SessionsPanel
               sessions={sessions}
               activeSessionId={activeSessionId}
+              unseenCompletedSessions={unseenCompletedSessions}
               onSelectSession={onSelectSession}
               onCreateSession={onCreateSession}
               query={searchQuery}
