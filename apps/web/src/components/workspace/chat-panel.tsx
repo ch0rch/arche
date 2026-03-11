@@ -1331,13 +1331,54 @@ export function ChatPanel({
 
   return (
     <div className="flex h-full flex-col text-card-foreground">
-      {/* Session header */}
+      {/* Session header — shows tabs when multiple sessions exist, otherwise plain title */}
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/10 pl-2 pr-2">
-        <div className="min-w-0 flex-1 px-2">
-          <p className="truncate text-sm font-medium text-foreground">
-            {activeSession?.title ?? "No active session"}
-          </p>
-        </div>
+        {sessionTabs.length > 1 ? (
+          <div className="min-w-0 flex-1 overflow-x-auto scrollbar-none">
+            <div className="flex items-center gap-1">
+              {sessionTabs.map((sessionTab) => {
+                const isSubtask = sessionTab.depth > 0;
+                const isActive = sessionTab.id === activeSessionId;
+                const isBusy = sessionTab.status === "busy";
+                const isError = sessionTab.status === "error";
+
+                return (
+                  <button
+                    key={sessionTab.id}
+                    type="button"
+                    onClick={() => onSelectSessionTab?.(sessionTab.id)}
+                    className={cn(
+                      "flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors",
+                      isActive
+                        ? "bg-primary/10 text-primary"
+                        : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                    )}
+                  >
+                    {isSubtask ? (
+                      <TreeStructure size={12} weight={isActive ? "fill" : "bold"} className="shrink-0" />
+                    ) : (
+                      <ChatCircle size={12} weight={isActive ? "fill" : "bold"} className="shrink-0" />
+                    )}
+                    {isBusy ? (
+                      <SpinnerGap size={11} className="shrink-0 animate-spin text-primary" />
+                    ) : isError ? (
+                      <XCircle size={11} weight="fill" className="shrink-0 text-destructive" />
+                    ) : null}
+                    <span className={cn(isActive ? "whitespace-nowrap" : "max-w-[180px] truncate")}>
+                      {sessionTab.title}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="min-w-0 flex-1 px-2">
+            <p className="truncate text-sm font-medium text-foreground">
+              {activeSession?.title ?? "No active session"}
+            </p>
+          </div>
+        )}
         {activeSession ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1362,45 +1403,6 @@ export function ChatPanel({
           </DropdownMenu>
         ) : null}
       </div>
-
-      {sessionTabs.length > 1 ? (
-        <div className="border-b border-white/10 px-2 py-2">
-          <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
-            {sessionTabs.map((sessionTab) => {
-              const isSubtask = sessionTab.depth > 0;
-              const isActive = sessionTab.id === activeSessionId;
-              const isBusy = sessionTab.status === "busy";
-              const isError = sessionTab.status === "error";
-
-              return (
-                <button
-                  key={sessionTab.id}
-                  type="button"
-                  onClick={() => onSelectSessionTab?.(sessionTab.id)}
-                  className={cn(
-                    "flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors",
-                    isActive
-                      ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
-                  )}
-                >
-                  {isSubtask ? (
-                    <TreeStructure size={12} weight={isActive ? "fill" : "bold"} />
-                  ) : (
-                    <ChatCircle size={12} weight={isActive ? "fill" : "bold"} />
-                  )}
-                  {isBusy ? (
-                    <SpinnerGap size={11} className="animate-spin text-primary" />
-                  ) : isError ? (
-                    <XCircle size={11} weight="fill" className="text-destructive" />
-                  ) : null}
-                  <span className="max-w-[180px] truncate">{sessionTab.title}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
 
       {/* Messages area */}
       <div className="workspace-chat-content flex-1 overflow-y-auto px-6 py-6 scrollbar-custom" style={chatContentStyle}>
