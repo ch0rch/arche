@@ -1090,6 +1090,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               slug={slug}
               sessions={rootSessions}
               activeSessionId={activeRootSessionId}
+              unseenCompletedSessions={workspace.unseenCompletedSessions}
               onSelectSession={handleSelectSession}
               onCreateSession={handleCreateSession}
               agents={workspace.agentCatalog}

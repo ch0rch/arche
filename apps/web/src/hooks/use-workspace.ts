@@ -244,6 +244,7 @@ export type UseWorkspaceReturn = {
   activeSessionId: string | null;
   activeSession: WorkspaceSession | null;
   isLoadingSessions: boolean;
+  unseenCompletedSessions: ReadonlySet<string>;
   selectSession: (id: string) => void;
   createSession: (title?: string) => Promise<WorkspaceSession | null>;
   deleteSession: (id: string) => Promise<boolean>;
@@ -327,6 +328,7 @@ export function useWorkspace({
   const sessionStreamStatusRef = useRef<
     Record<string, "submitted" | "streaming" | "error">
   >({});
+  const [unseenCompletedSessions, setUnseenCompletedSessions] = useState<Set<string>>(new Set());
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
   const sessionsRef = useRef(sessions);
@@ -588,6 +590,20 @@ export function useWorkspace({
       setSessionStreamStatus((prev) => {
         if (status === "ready") {
           if (!(sessionId in prev)) return prev;
+
+          // If the session was actively streaming and is not the currently
+          // viewed session, mark it as "unseen completed" so the UI can
+          // show a green indicator until the user visits it.
+          const wasStreaming = prev[sessionId] === "submitted" || prev[sessionId] === "streaming";
+          if (wasStreaming && sessionId !== activeSessionIdRef.current) {
+            setUnseenCompletedSessions((s) => {
+              if (s.has(sessionId)) return s;
+              const next = new Set(s);
+              next.add(sessionId);
+              return next;
+            });
+          }
+
           const next = { ...prev };
           delete next[sessionId];
           sessionStreamStatusRef.current = next;
@@ -710,6 +726,14 @@ export function useWorkspace({
     (id: string) => {
       setActiveSessionId(id);
       activeSessionIdRef.current = id;
+
+      // Clear "unseen completed" flag when the user visits this session
+      setUnseenCompletedSessions((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     },
     []
   );
@@ -1843,6 +1867,7 @@ export function useWorkspace({
     activeSessionId,
     activeSession,
     isLoadingSessions,
+    unseenCompletedSessions,
     selectSession,
     createSession,
     deleteSession,

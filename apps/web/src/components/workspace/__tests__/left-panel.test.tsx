@@ -71,6 +71,7 @@ const defaultProps = {
   slug: "alice",
   sessions,
   activeSessionId: "s1" as string | null,
+  unseenCompletedSessions: new Set<string>() as ReadonlySet<string>,
   onSelectSession: vi.fn(),
   onCreateSession: vi.fn(),
   agents,
