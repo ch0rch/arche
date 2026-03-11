@@ -368,6 +368,71 @@ describe("ChatPanel textarea", () => {
     );
   });
 
+  it("does not auto-scroll when the user has scrolled away from the bottom", async () => {
+    // Globally stub scrollIntoView which doesn't exist in jsdom
+    const scrollIntoViewMock = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoViewMock;
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { rerender } = render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatPanel
+          slug={"alice"}
+          sessions={[{ id: "s1", title: "Chat", status: "idle", updatedAt: "now", agent: "OpenCode" }]}
+          messages={[
+            { id: "m1", sessionId: "s1", role: "assistant", content: "Hello", timestamp: "now" },
+          ]}
+          activeSessionId={"s1"}
+          openFilePaths={[]}
+          onCloseSession={vi.fn()}
+          onOpenFile={vi.fn()}
+          onSendMessage={vi.fn().mockResolvedValue(true)}
+        />
+      </WorkspaceThemeProvider>
+    );
+
+    // Initial load triggers scroll — clear and set up for the real assertion
+    scrollIntoViewMock.mockClear();
+
+    // Find the scroll container and simulate the user scrolling up
+    const scrollContainer = document.querySelector(".workspace-chat-content");
+    expect(scrollContainer).toBeTruthy();
+
+    Object.defineProperty(scrollContainer!, "scrollTop", { value: 0, writable: true, configurable: true });
+    Object.defineProperty(scrollContainer!, "clientHeight", { value: 400, writable: true, configurable: true });
+    Object.defineProperty(scrollContainer!, "scrollHeight", { value: 2000, writable: true, configurable: true });
+    fireEvent.scroll(scrollContainer!);
+
+    scrollIntoViewMock.mockClear();
+
+    // Re-render with updated messages (simulates new streaming content)
+    rerender(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatPanel
+          slug={"alice"}
+          sessions={[{ id: "s1", title: "Chat", status: "idle", updatedAt: "now", agent: "OpenCode" }]}
+          messages={[
+            { id: "m1", sessionId: "s1", role: "assistant", content: "Hello", timestamp: "now" },
+            { id: "m2", sessionId: "s1", role: "assistant", content: "New content", timestamp: "now", pending: true },
+          ]}
+          activeSessionId={"s1"}
+          openFilePaths={[]}
+          onCloseSession={vi.fn()}
+          onOpenFile={vi.fn()}
+          onSendMessage={vi.fn().mockResolvedValue(true)}
+        />
+      </WorkspaceThemeProvider>
+    );
+
+    // scrollIntoView should NOT have been called because user scrolled away
+    expect(scrollIntoViewMock).not.toHaveBeenCalled();
+  });
+
   it("renders subagent sessions as read-only inspection views", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
