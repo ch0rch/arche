@@ -258,16 +258,34 @@ export async function POST(
   // Create SSE stream
   const encoder = new TextEncoder()
   
-  const stream = new ReadableStream({
+   const stream = new ReadableStream({
     async start(controller) {
+      // Track whether the downstream client (browser) has disconnected.
+      // When true we keep reading from OpenCode's event stream so the
+      // session is not aborted, but we stop trying to enqueue data.
+      let clientGone = false
+
+      if (request.signal) {
+        request.signal.addEventListener('abort', () => { clientGone = true }, { once: true })
+      }
+
       const sendEvent = (event: string, data: unknown) => {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        if (clientGone) return
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+        } catch {
+          clientGone = true
+        }
       }
       
       let aborted = false
       let promptSent = Boolean(resume)
       let promptAcknowledged = Boolean(resume)
       
+      // Shared reference so the finally block can always clean up the reader,
+      // even if the error occurred before the reader was assigned.
+      let eventReader: ReadableStreamDefaultReader<Uint8Array> | null = null
+
       try {
         sendEvent('status', { status: 'connecting' })
 
@@ -293,6 +311,7 @@ export async function POST(
         }
 
         const reader = eventsResponse.body.getReader()
+        eventReader = reader
         const decoder = new TextDecoder()
         let parseState = INITIAL_SSE_PARSE_STATE
 
@@ -748,8 +767,13 @@ export async function POST(
           error: error instanceof Error ? error.message : 'Unknown error' 
         })
       } finally {
+        // Always clean up the OpenCode event reader to release the HTTP
+        // connection, even when an enqueue error skipped releaseLock above.
+        if (eventReader) {
+          await eventReader.cancel().catch(() => undefined)
+        }
         console.log('[stream] Closing stream')
-        controller.close()
+        try { controller.close() } catch { /* already closed/errored */ }
       }
     }
   })

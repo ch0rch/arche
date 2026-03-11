@@ -1274,4 +1274,330 @@ describe("useWorkspace streaming", () => {
       });
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Session indicator enrichment
+  // -----------------------------------------------------------------------
+
+  describe("session indicator enrichment", () => {
+    it("marks an idle session as busy when it has an active stream", async () => {
+      const sse = createSSEStream();
+      stubFetchWithStream(() => sse);
+
+      const result = await renderConnectedHook();
+
+      // Session starts as idle
+      const before = result.current.sessions.find((s) => s.id === "s1");
+      expect(before?.status).toBe("idle");
+
+      // Start sending — triggers submitted/streaming status
+      await act(async () => {
+        result.current.sendMessage("hello");
+        await Promise.resolve();
+      });
+
+      // Push an SSE event so status transitions to "streaming"
+      act(() => {
+        sse.push(sseEvent("status", { status: "thinking" }));
+      });
+
+      await waitFor(() => {
+        const session = result.current.sessions.find((s) => s.id === "s1");
+        expect(session?.status).toBe("busy");
+      });
+
+      // Close and let the stream finish
+      act(() => { sse.close(); });
+    });
+
+    it("keeps a polled busy session as busy regardless of streaming status", async () => {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [{ id: "s1", title: "Existing", status: "busy", updatedAt: "now" }],
+      });
+      stubFetchWithStream(() => createSSEStream());
+
+      const result = await renderConnectedHook();
+
+      await waitFor(() => {
+        const session = result.current.sessions.find((s) => s.id === "s1");
+        expect(session?.status).toBe("busy");
+      });
+    });
+
+    it("returns idle status when no streaming is active", async () => {
+      stubFetchWithStream(() => createSSEStream());
+
+      const result = await renderConnectedHook();
+
+      const session = result.current.sessions.find((s) => s.id === "s1");
+      expect(session?.status).toBe("idle");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Resume pre-check
+  // -----------------------------------------------------------------------
+
+  describe("resume pre-check", () => {
+    it("skips SSE subscription when resume pre-check finds the message already complete", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [{ id: "s1", title: "Existing", status: "busy", updatedAt: "now" }],
+      });
+
+      // Initial load returns pending message
+      opencodeMocks.listMessagesAction.mockResolvedValueOnce({
+        ok: true,
+        messages: [
+          {
+            id: "msg-1",
+            sessionId: "s1",
+            role: "assistant",
+            content: "partial",
+            timestamp: "now",
+            timestampRaw: Date.now(),
+            parts: [{ type: "text", text: "partial" }],
+            pending: true,
+          },
+        ],
+      });
+
+      // Pre-check (called by streamChat before opening SSE) returns complete
+      opencodeMocks.listMessagesAction.mockResolvedValueOnce({
+        ok: true,
+        messages: [
+          {
+            id: "msg-1",
+            sessionId: "s1",
+            role: "assistant",
+            content: "full response",
+            timestamp: "now",
+            timestampRaw: Date.now(),
+            parts: [{ type: "text", text: "full response" }],
+            pending: false,
+          },
+        ],
+      });
+
+      let streamFetched = false;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          if (String(input) === "/api/u/alice/agents") {
+            return { ok: true, json: async () => ({ agents: DEFAULT_AGENTS }) };
+          }
+          if (String(input) === "/api/w/alice/chat/stream") {
+            streamFetched = true;
+            return { ok: true, body: createSSEStream() };
+          }
+          throw new Error(`Unexpected fetch: ${String(input)}`);
+        })
+      );
+
+      const result = await renderConnectedHook();
+
+      // Give time for resume effect + pre-check to fire
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+        await Promise.resolve();
+      });
+
+      // SSE stream should NOT have been opened
+      expect(streamFetched).toBe(false);
+
+      // Message should be updated with the complete content
+      await waitFor(() => {
+        const msg = result.current.messages.find((m) => m.id === "msg-1");
+        expect(msg?.pending).toBe(false);
+        expect(msg?.content).toBe("full response");
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Resume busy-session tolerance
+  // -----------------------------------------------------------------------
+
+  describe("resume busy-session tolerance", () => {
+    it("does not record resume failure when session is still busy after stream ends", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [{ id: "s1", title: "Existing", status: "busy", updatedAt: "now" }],
+      });
+      opencodeMocks.listMessagesAction.mockResolvedValue({
+        ok: true,
+        messages: [
+          {
+            id: "msg-1",
+            sessionId: "s1",
+            role: "assistant",
+            content: "partial",
+            timestamp: "now",
+            timestampRaw: Date.now(),
+            parts: [{ type: "text", text: "partial" }],
+            pending: true,
+          },
+        ],
+      });
+
+      const sse = createSSEStream();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          if (String(input) === "/api/u/alice/agents") {
+            return { ok: true, json: async () => ({ agents: DEFAULT_AGENTS }) };
+          }
+          if (String(input) === "/api/w/alice/chat/stream") {
+            return { ok: true, body: sse };
+          }
+          throw new Error(`Unexpected fetch: ${String(input)}`);
+        })
+      );
+
+      const result = await renderConnectedHook();
+
+      // Wait for resume to open the stream
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+        await Promise.resolve();
+      });
+
+      // Close the stream without any assistant data (simulates timeout/disconnect)
+      act(() => { sse.close(); });
+
+      // Wait for finally block to run
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+        await Promise.resolve();
+      });
+
+      // The message should still be pending (not marked as resume_incomplete)
+      // because the session is still busy
+      await waitFor(() => {
+        const msg = result.current.messages.find((m) => m.id === "msg-1");
+        expect(msg?.pending).toBe(true);
+        expect(msg?.statusInfo?.detail).not.toBe("resume_incomplete");
+        expect(msg?.statusInfo?.detail).not.toBe("resume_exhausted");
+      });
+
+      // Cleanup: close any remaining streams by aborting
+      act(() => {
+        result.current.abortSession();
+      });
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Resume poll complement
+  // -----------------------------------------------------------------------
+
+  describe("resume poll complement", () => {
+    it("detects message completion via polling during resume and aborts SSE", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [{ id: "s1", title: "Existing", status: "busy", updatedAt: "now" }],
+      });
+
+      // Initial messages load: pending
+      opencodeMocks.listMessagesAction.mockResolvedValueOnce({
+        ok: true,
+        messages: [
+          {
+            id: "msg-1",
+            sessionId: "s1",
+            role: "assistant",
+            content: "partial",
+            timestamp: "now",
+            timestampRaw: Date.now(),
+            parts: [{ type: "text", text: "partial" }],
+            pending: true,
+          },
+        ],
+      });
+
+      // Pre-check: still pending
+      opencodeMocks.listMessagesAction.mockResolvedValueOnce({
+        ok: true,
+        messages: [
+          {
+            id: "msg-1",
+            sessionId: "s1",
+            role: "assistant",
+            content: "partial",
+            timestamp: "now",
+            timestampRaw: Date.now(),
+            parts: [{ type: "text", text: "partial" }],
+            pending: true,
+          },
+        ],
+      });
+
+      // Poll at ~4s: now complete
+      opencodeMocks.listMessagesAction.mockResolvedValue({
+        ok: true,
+        messages: [
+          {
+            id: "msg-1",
+            sessionId: "s1",
+            role: "assistant",
+            content: "finished response",
+            timestamp: "now",
+            timestampRaw: Date.now(),
+            parts: [{ type: "text", text: "finished response" }],
+            pending: false,
+          },
+        ],
+      });
+
+      const sse = createSSEStream();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          if (String(input) === "/api/u/alice/agents") {
+            return { ok: true, json: async () => ({ agents: DEFAULT_AGENTS }) };
+          }
+          if (String(input) === "/api/w/alice/chat/stream") {
+            return { ok: true, body: sse };
+          }
+          throw new Error(`Unexpected fetch: ${String(input)}`);
+        })
+      );
+
+      const result = await renderConnectedHook();
+
+      // Wait for resume to open the stream
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+        await Promise.resolve();
+      });
+
+      // Advance past the poll interval (4000ms) so the poll fires.
+      // Use multiple small steps to let microtasks (abort propagation,
+      // async finally) interleave with timer advancement.
+      for (let i = 0; i < 12; i++) {
+        await act(async () => {
+          vi.advanceTimersByTime(500);
+          await new Promise((r) => setTimeout(r, 0));
+        });
+      }
+
+      // The poll should have detected completion and updated messages.
+      // Note: isSending transition depends on the full async abort chain
+      // completing (AbortError -> catch -> finally -> setStatus), which
+      // is already covered by other tests; here we verify the poll-driven
+      // message update which is the core behavior of this feature.
+      await waitFor(() => {
+        const msg = result.current.messages.find((m) => m.id === "msg-1");
+        expect(msg?.pending).toBe(false);
+        expect(msg?.content).toBe("finished response");
+      });
+    });
+  });
 });

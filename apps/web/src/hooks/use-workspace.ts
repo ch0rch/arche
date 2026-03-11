@@ -43,6 +43,7 @@ export type AgentCatalogItem = {
 };
 
 const STALE_PENDING_ASSISTANT_MS = 5_000;
+const RESUME_POLL_INTERVAL_MS = 4_000;
 const EMPTY_WORKSPACE_MESSAGES: WorkspaceMessage[] = [];
 
 function areStatusInfoEqual(
@@ -361,7 +362,24 @@ export function useWorkspace({
   const activeStreamStatus = activeSessionId ? sessionStreamStatus[activeSessionId] : undefined;
   const isSending = activeStreamStatus === "submitted" || activeStreamStatus === "streaming";
 
-  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
+  // Merge local streaming knowledge into sessions so UI indicators (green dot)
+  // reflect real-time streaming state, not just the polled API status.
+  const enrichedSessions = useMemo(() => {
+    const hasStreaming = Object.keys(sessionStreamStatus).length > 0;
+    if (!hasStreaming) return sessions;
+    return sessions.map((session) => {
+      const streamStatus = sessionStreamStatus[session.id];
+      if (
+        (streamStatus === "submitted" || streamStatus === "streaming") &&
+        session.status !== "busy"
+      ) {
+        return { ...session, status: "busy" as const };
+      }
+      return session;
+    });
+  }, [sessions, sessionStreamStatus]);
+
+  const activeSession = enrichedSessions.find((s) => s.id === activeSessionId) ?? null;
   const primaryAgent = getPrimaryAgent(agentCatalog);
   const primaryAgentId = primaryAgent?.id ?? null;
   const currentSessionSelection = activeSessionId
@@ -1001,6 +1019,25 @@ export function useWorkspace({
       let streamCompleted = false;
       let receivedAssistantPart = false;
       let receivedStreamData = false;
+      let resumePollInterval: ReturnType<typeof setInterval> | null = null;
+
+      // Pre-check: if the message has already completed (e.g. OpenCode
+      // finished while the page was reloading), skip the SSE subscription.
+      if (mode === "resume") {
+        const preCheck = await listMessagesAction(slug, sessionId);
+        if (preCheck.ok && preCheck.messages) {
+          const target = preCheck.messages.find((m) => m.id === targetMessageId);
+          if (target && !target.pending) {
+            resumeFailureStateRef.current.delete(targetMessageId);
+            updateSessionMessages(sessionId, preCheck.messages);
+            syncRuntimeMetadataForSession(sessionId, preCheck.messages);
+            activeStreamsRef.current.delete(sessionId);
+            setSessionStreamStatusTo(sessionId, "ready");
+            scheduleWorkspaceRefresh();
+            return;
+          }
+        }
+      }
 
       const flushBufferedParts = (messageId: string) => {
         const buffered = bufferedParts.get(messageId);
@@ -1078,6 +1115,28 @@ export function useWorkspace({
         const reader = response.body?.getReader();
         if (!reader) {
           throw new Error("No response body");
+        }
+
+        // During resume, periodically poll the message API so we detect
+        // completion even when no SSE events arrive (e.g. subagent work
+        // produces events on the child session, not the parent).
+        if (mode === "resume") {
+          resumePollInterval = setInterval(async () => {
+            try {
+              const poll = await listMessagesAction(slug, sessionId);
+              if (poll.ok && poll.messages) {
+                const target = poll.messages.find((m) => m.id === targetMessageId);
+                if (target && !target.pending) {
+                  streamCompleted = true;
+                  updateSessionMessages(sessionId, poll.messages);
+                  syncRuntimeMetadataForSession(sessionId, poll.messages);
+                  abortController.abort();
+                }
+              }
+            } catch {
+              // Ignore individual poll errors
+            }
+          }, RESUME_POLL_INTERVAL_MS);
         }
 
         const decoder = new TextDecoder();
@@ -1189,23 +1248,35 @@ export function useWorkspace({
           error instanceof Error ? error.message : "Unknown error"
         );
       } finally {
+        if (resumePollInterval) {
+          clearInterval(resumePollInterval);
+        }
+
         const isLatest = activeStreamsRef.current.get(sessionId)?.token === token;
 
         if (mode === "resume") {
           if (streamCompleted || receivedAssistantPart) {
             resumeFailureStateRef.current.delete(targetMessageId);
           } else {
-            const nextState = recordResumeFailure(
-              resumeFailureStateRef.current.get(targetMessageId),
-              Date.now()
-            );
-            resumeFailureStateRef.current.set(targetMessageId, nextState);
+            // If the session is still actively processing, don't record a
+            // resume failure — the auto-resume effect will retry once the
+            // pending key is re-evaluated after the next message refresh.
+            const sessionStillBusy =
+              sessionsRef.current.find((s) => s.id === sessionId)?.status === "busy";
 
-            updateStatus(
-              "error",
-              undefined,
-              nextState.suppressed ? "resume_exhausted" : "resume_incomplete"
-            );
+            if (!sessionStillBusy) {
+              const nextState = recordResumeFailure(
+                resumeFailureStateRef.current.get(targetMessageId),
+                Date.now()
+              );
+              resumeFailureStateRef.current.set(targetMessageId, nextState);
+
+              updateStatus(
+                "error",
+                undefined,
+                nextState.suppressed ? "resume_exhausted" : "resume_incomplete"
+              );
+            }
           }
         }
 
@@ -1768,7 +1839,7 @@ export function useWorkspace({
     deleteFile: files.deleteFile,
     applyPatch: files.applyPatch,
     discardFileChanges: files.discardFileChanges,
-    sessions,
+    sessions: enrichedSessions,
     activeSessionId,
     activeSession,
     isLoadingSessions,
