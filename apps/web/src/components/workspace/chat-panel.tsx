@@ -1519,13 +1519,16 @@ export function ChatPanel({
     setInputValue(e.target.value);
   }, []);
 
-  // Get the current status from the last pending message (if any)
+  // Get the current status from the last pending message (if any).
+  // Only show transient statuses (thinking, tool calls) while actively streaming.
+  // Error statuses from stale pending messages are hidden when no stream is active.
   const currentStatus = useMemo(() => {
     const lastMessage = messages[messages.length - 1];
     if (!lastMessage?.pending || !lastMessage?.statusInfo) return null;
     if (lastMessage.statusInfo.status === "complete" || lastMessage.statusInfo.status === "idle") return null;
+    if (lastMessage.statusInfo.status === "error" && !isSending) return null;
     return lastMessage.statusInfo;
-  }, [messages]);
+  }, [messages, isSending]);
 
   return (
     <div className="flex h-full flex-col text-card-foreground">
