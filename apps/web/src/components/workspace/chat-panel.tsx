@@ -968,7 +968,6 @@ export function ChatPanel({
   selectedModel,
   hasManualModelSelection = false,
   onSelectModel,
-  activeAgentName,
   isReadOnly = false,
   onReturnToMainConversation,
   pendingInsert,
@@ -1748,21 +1747,11 @@ export function ChatPanel({
       {/* Input area */}
       <div className="glass-panel -mb-px mx-3 rounded-t-2xl px-4 pb-4 pt-3">
         {/* Model selector and context - same row */}
-        {(models.length > 0 || normalizedOpenFilePaths.length > 0 || activeAgentName) && (
+        {(models.length > 0 || normalizedOpenFilePaths.length > 0) && (
           <div className="mb-3 flex items-center gap-4">
-            {activeAgentName && (
-              <span className="text-xs text-foreground">
-                {activeAgentName}
-              </span>
-            )}
-
             {/* Model selector */}
             {models.length > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  using
-                </span>
-                <DropdownMenu onOpenChange={(open) => { if (!open) setModelSearch(""); }}>
+              <DropdownMenu onOpenChange={(open) => { if (!open) setModelSearch(""); }}>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
@@ -1835,7 +1824,6 @@ export function ChatPanel({
                     </div>
                   </DropdownMenuContent>
                 </DropdownMenu>
-              </div>
             )}
 
             {/* Context button */}
