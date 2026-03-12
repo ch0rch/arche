@@ -1129,10 +1129,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
           {/* Center panel - Chat (floating) */}
           <div
-            className="glass-panel flex min-w-0 flex-1 overflow-hidden rounded-2xl"
+            className="flex min-w-0 flex-1 items-stretch justify-center"
             style={{ minWidth: minCenterWidth }}
           >
-            <div className="mx-auto flex h-full w-full max-w-[800px] flex-col">
+            <div className="glass-panel flex h-full w-full max-w-[800px] flex-col overflow-hidden rounded-2xl">
             <ChatPanel
               key={workspace.activeSessionId ?? "no-session"}
               slug={slug}
