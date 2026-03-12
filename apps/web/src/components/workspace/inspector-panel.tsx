@@ -287,7 +287,7 @@ function ExpandedInspectorPanel({
   };
 
   return (
-    <div className="glass-panel flex h-full flex-col overflow-hidden rounded-2xl text-card-foreground">
+    <div className="flex h-full flex-col overflow-hidden rounded-xl bg-foreground/[0.03] text-card-foreground">
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/10 pl-2 pr-2">
         <button
           type="button"
