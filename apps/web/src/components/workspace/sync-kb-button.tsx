@@ -17,11 +17,12 @@ type SyncKbButtonProps = {
   slug: string
   disabled?: boolean
   onComplete?: (status: SyncKbResult['status']) => void
+  variant?: 'default' | 'muted'
 }
 
 type SyncState = 'idle' | 'syncing' | 'synced' | 'conflicts' | 'error'
 
-export function SyncKbButton({ slug, disabled, onComplete }: SyncKbButtonProps) {
+export function SyncKbButton({ slug, disabled, onComplete, variant = 'default' }: SyncKbButtonProps) {
   const [state, setState] = useState<SyncState>('idle')
   const [conflicts, setConflicts] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -72,7 +73,7 @@ export function SyncKbButton({ slug, disabled, onComplete }: SyncKbButtonProps) 
     idle: {
       icon: ArrowsClockwise,
       label: 'Sync KB',
-      className: '',
+      className: variant === 'muted' ? 'text-muted-foreground' : '',
       weight: 'bold' as const,
     },
     syncing: {
@@ -113,7 +114,7 @@ export function SyncKbButton({ slug, disabled, onComplete }: SyncKbButtonProps) 
             <Button
               size="icon"
               variant="ghost"
-              className="h-7 w-7"
+              className={cn("h-7 w-7", variant === 'muted' && "text-muted-foreground hover:text-foreground")}
               onClick={handleSync}
               disabled={disabled || state === 'syncing'}
             >

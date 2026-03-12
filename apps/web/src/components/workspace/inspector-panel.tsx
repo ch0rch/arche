@@ -1,9 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { CaretLeft, CaretRight, File, GitDiff, X } from "@phosphor-icons/react";
+import { ArrowLineLeft, ArrowLineRight, CaretLeft, CaretRight, File, GitDiff, X } from "@phosphor-icons/react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useEditorDrafts, type SaveState } from "@/hooks/use-editor-drafts";
 import type { WorkspaceDiff } from "@/hooks/use-workspace";
 import { cn } from "@/lib/utils";
@@ -26,6 +32,10 @@ type InspectorPanelProps = {
   slug: string;
   activeTab: "preview" | "review";
   onTabChange: (tab: "preview" | "review") => void;
+  rightCollapsed: boolean;
+  onToggleRight: () => void;
+  pendingDiffsForBadge?: number;
+  onOpenReview?: () => void;
   openFiles: WorkspaceFile[];
   activeFilePath: string | null;
   onSelectFile: (path: string) => void;
@@ -45,10 +55,87 @@ type InspectorPanelProps = {
   onResolveConflict?: (path: string, content: string) => void;
 };
 
+// --- Minified (collapsed) panel ---
+
+function MinifiedInspectorPanel({
+  onToggleRight,
+  onTabChange,
+  pendingDiffsForBadge = 0,
+}: {
+  onToggleRight: () => void;
+  onTabChange: (tab: "preview" | "review") => void;
+  pendingDiffsForBadge?: number;
+}) {
+  const badgeLabel = pendingDiffsForBadge > 99 ? "99+" : String(pendingDiffsForBadge);
+
+  return (
+    <TooltipProvider delayDuration={400}>
+      <div className="flex h-full w-full flex-col items-center py-2 text-card-foreground">
+        {/* Toggle expand */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onToggleRight}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              aria-label="Expand panel"
+            >
+              <ArrowLineLeft size={16} weight="bold" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="left">Expand panel</TooltipContent>
+        </Tooltip>
+
+        <div className="my-2 h-px w-6 bg-border/40" />
+
+        {/* Working context */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => { onToggleRight(); onTabChange("preview"); }}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              aria-label="Working context"
+            >
+              <File size={16} weight="bold" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="left">Working context</TooltipContent>
+        </Tooltip>
+
+        {/* Review with badge */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => { onToggleRight(); onTabChange("review"); }}
+              className="relative flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              aria-label="Review"
+            >
+              <GitDiff size={16} weight="bold" />
+              {pendingDiffsForBadge > 0 && (
+                <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                  {badgeLabel}
+                </span>
+              )}
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="left">Review{pendingDiffsForBadge > 0 ? ` (${pendingDiffsForBadge})` : ""}</TooltipContent>
+        </Tooltip>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+// --- Expanded panel ---
+
 export function InspectorPanel({
   slug,
   activeTab,
   onTabChange,
+  rightCollapsed,
+  onToggleRight,
+  pendingDiffsForBadge = 0,
   openFiles,
   activeFilePath,
   onSelectFile,
@@ -63,6 +150,62 @@ export function InspectorPanel({
   onPublish,
   onResolveConflict
 }: InspectorPanelProps) {
+  // Minified state
+  if (rightCollapsed) {
+    return (
+      <MinifiedInspectorPanel
+        onToggleRight={onToggleRight}
+        onTabChange={onTabChange}
+        pendingDiffsForBadge={pendingDiffsForBadge}
+      />
+    );
+  }
+
+  // Expanded state
+  return (
+    <ExpandedInspectorPanel
+      slug={slug}
+      activeTab={activeTab}
+      onTabChange={onTabChange}
+      onToggleRight={onToggleRight}
+      pendingDiffsForBadge={pendingDiffsForBadge}
+      openFiles={openFiles}
+      activeFilePath={activeFilePath}
+      onSelectFile={onSelectFile}
+      onCloseFile={onCloseFile}
+      diffs={diffs}
+      isLoadingDiffs={isLoadingDiffs}
+      diffsError={diffsError}
+      onOpenFile={onOpenFile}
+      onReloadFile={onReloadFile}
+      onSaveFile={onSaveFile}
+      onDiscardFileChanges={onDiscardFileChanges}
+      onPublish={onPublish}
+      onResolveConflict={onResolveConflict}
+    />
+  );
+}
+
+function ExpandedInspectorPanel({
+  slug,
+  activeTab,
+  onTabChange,
+  onToggleRight,
+  pendingDiffsForBadge = 0,
+  openFiles,
+  activeFilePath,
+  onSelectFile,
+  onCloseFile,
+  diffs,
+  isLoadingDiffs,
+  diffsError,
+  onOpenFile,
+  onReloadFile,
+  onSaveFile,
+  onDiscardFileChanges,
+  onPublish,
+  onResolveConflict
+}: Omit<InspectorPanelProps, "rightCollapsed" | "onOpenReview">) {
   const pendingDiffs = diffs.length;
   const activeFile = openFiles.find((f) => f.path === activeFilePath) ?? null;
   const tabsRef = useRef<HTMLDivElement>(null);
@@ -144,8 +287,8 @@ export function InspectorPanel({
   };
 
   return (
-    <div className="flex h-full flex-col text-card-foreground">
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/10 pl-2 pr-2">
+    <div className="flex h-full flex-col overflow-hidden rounded-xl bg-foreground/[0.03] text-card-foreground">
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/5 pl-2 pr-2">
         <button
           type="button"
           onClick={() => onTabChange("preview")}
@@ -177,6 +320,16 @@ export function InspectorPanel({
             </span>
           ) : null}
         </button>
+
+        {/* Toggle collapse — aligned to the right */}
+        <button
+          type="button"
+          onClick={onToggleRight}
+          className="ml-auto flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+          aria-label="Collapse panel"
+        >
+          <ArrowLineRight size={14} weight="bold" />
+        </button>
       </div>
 
       <div className="relative flex-1 min-h-0">
@@ -187,7 +340,7 @@ export function InspectorPanel({
           {openFiles.length > 0 ? (
             <div className="flex h-full min-h-0 flex-col">
                 {/* File tabs */}
-                <div className="flex items-center border-b border-white/10">
+                <div className="flex items-center border-b border-white/5">
                   {canScrollLeft && (
                     <Button
                       size="icon"
@@ -279,7 +432,7 @@ export function InspectorPanel({
                             <span>{activeFile.updatedAt}</span>
                           </div>
                         </div>
-                        <div className="border-t border-white/10" />
+                        <div className="border-t border-white/5" />
                         <div className="px-6 py-6">
                           <MarkdownPreview content={activeFile.content} />
                         </div>

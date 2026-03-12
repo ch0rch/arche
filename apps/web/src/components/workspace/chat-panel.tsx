@@ -968,7 +968,6 @@ export function ChatPanel({
   selectedModel,
   hasManualModelSelection = false,
   onSelectModel,
-  activeAgentName,
   isReadOnly = false,
   onReturnToMainConversation,
   pendingInsert,
@@ -1533,7 +1532,7 @@ export function ChatPanel({
   return (
     <div className="flex h-full flex-col text-card-foreground">
       {/* Session header — shows tabs when multiple sessions exist, otherwise plain title */}
-      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-white/10 pl-2 pr-2">
+      <div className="glass-panel -mt-px mx-3 flex h-11 shrink-0 items-center gap-1 rounded-b-2xl pl-2 pr-2">
         {sessionTabs.length > 1 ? (
           <div className="min-w-0 flex-1 overflow-x-auto scrollbar-none">
             <div className="flex items-center gap-1">
@@ -1606,7 +1605,7 @@ export function ChatPanel({
       </div>
 
       {/* Messages area */}
-      <div ref={scrollContainerRef} onScroll={handleScrollContainer} className="workspace-chat-content flex-1 overflow-y-auto px-6 py-6 scrollbar-custom" style={chatContentStyle}>
+      <div ref={scrollContainerRef} onScroll={handleScrollContainer} className="workspace-chat-content mx-3 flex-1 overflow-y-auto px-6 py-6 scrollbar-custom" style={chatContentStyle}>
         {isStartingNewSession ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
             <div className="h-16 w-16 animate-spin rounded-full border-4 border-muted border-t-primary" />
@@ -1749,28 +1748,13 @@ export function ChatPanel({
       </div>
 
       {/* Input area */}
-      <div className="border-t border-white/10 px-6 py-5">
+      <div className="glass-panel -mb-px mx-3 rounded-t-2xl px-4 pb-4 pt-3">
         {/* Model selector and context - same row */}
-        {(models.length > 0 || normalizedOpenFilePaths.length > 0 || activeAgentName) && (
+        {(models.length > 0 || normalizedOpenFilePaths.length > 0) && (
           <div className="mb-3 flex items-center gap-4">
-            {activeAgentName && (
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Agent
-                </span>
-                <span className="rounded-lg bg-foreground/5 px-2.5 py-1.5 text-xs text-foreground">
-                  {activeAgentName}
-                </span>
-              </div>
-            )}
-
             {/* Model selector */}
             {models.length > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  Model
-                </span>
-                <DropdownMenu onOpenChange={(open) => { if (!open) setModelSearch(""); }}>
+              <DropdownMenu onOpenChange={(open) => { if (!open) setModelSearch(""); }}>
                   <DropdownMenuTrigger asChild>
                     <button
                       type="button"
@@ -1843,7 +1827,6 @@ export function ChatPanel({
                     </div>
                   </DropdownMenuContent>
                 </DropdownMenu>
-              </div>
             )}
 
             {/* Context button */}
