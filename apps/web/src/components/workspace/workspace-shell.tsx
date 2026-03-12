@@ -15,11 +15,12 @@ import {
 import { takeWorkspaceStartPrompt } from "@/lib/workspace-start-prompt";
 import { cn } from "@/lib/utils";
 
+import { Circle } from "@phosphor-icons/react";
+
 import { ChatPanel } from "./chat-panel";
+import { CosmicLoader } from "./cosmic-loader";
 import { LeftPanel } from "./left-panel";
 import { InspectorPanel } from "./inspector-panel";
-import { WorkspaceFooter } from "./workspace-footer";
-import { WorkspaceHeader } from "./workspace-header";
 
 type WorkspaceShellProps = {
   slug: string;
@@ -40,6 +41,7 @@ const MIN_CENTER_PX = 360;
 const DEFAULT_LEFT_RATIO = 0.15;
 const DEFAULT_RIGHT_RATIO = 0.3;
 const PANEL_GAP = 12; // Gap between floating panels in pixels
+const COLLAPSED_PANEL_PX = 48; // Width of minified (collapsed) panels
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -157,6 +159,12 @@ type FileContentCache = Record<
     hash?: string;
   }
 >;
+
+const statusConfig = {
+  active: { color: "text-emerald-500", pulse: true },
+  provisioning: { color: "text-amber-500", pulse: true },
+  offline: { color: "text-muted-foreground", pulse: false },
+};
 
 const PANEL_ANIM = "200ms ease-out";
 const PANEL_TRANSITION = `width ${PANEL_ANIM}, min-width ${PANEL_ANIM}, opacity ${PANEL_ANIM}, margin ${PANEL_ANIM}, border-width ${PANEL_ANIM}`;
@@ -886,7 +894,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
     const onMove = (moveEvent: PointerEvent) => {
       const minCenter = getMinCenter(rect.width);
-      const effectiveRight = rightCollapsed ? 0 : rightWidth + PANEL_GAP;
+      const effectiveRight = rightCollapsed ? COLLAPSED_PANEL_PX + PANEL_GAP : rightWidth + PANEL_GAP;
       const maxLeft = Math.max(MIN_LEFT_PX, rect.width - effectiveRight - minCenter - PANEL_GAP);
       const nextWidth = clamp(moveEvent.clientX - rect.left, MIN_LEFT_PX, maxLeft);
       setLeftWidth(nextWidth);
@@ -920,7 +928,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
     const onMove = (moveEvent: PointerEvent) => {
       const minCenter = getMinCenter(rect.width);
-      const effectiveLeft = leftCollapsed ? 0 : leftWidth + PANEL_GAP;
+      const effectiveLeft = leftCollapsed ? COLLAPSED_PANEL_PX + PANEL_GAP : leftWidth + PANEL_GAP;
       const maxRight = Math.max(MIN_RIGHT_PX, rect.width - effectiveLeft - minCenter - PANEL_GAP);
       const nextWidth = clamp(rect.right - moveEvent.clientX, MIN_RIGHT_PX, maxRight);
       setRightWidth(nextWidth);
@@ -951,6 +959,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
   // Loading screen while instance is starting
   if (instanceStatus !== 'running') {
+    const loadingStatus = instanceStatus === 'starting' ? 'provisioning' : 'offline';
+    const loadingStyle = statusConfig[loadingStatus as keyof typeof statusConfig];
     return (
       <div
         className={cn(
@@ -960,11 +970,13 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
         )}
       >
         <div className="flex h-full flex-col p-3">
-          <WorkspaceHeader
-            slug={slug}
-            status={instanceStatus === 'starting' ? 'provisioning' : 'offline'}
-          />
-          
+          <div className="flex items-center gap-2 p-4">
+            <span className="font-[family-name:var(--font-display)] text-base font-semibold tracking-tight">Archē</span>
+            <span className="text-sm text-muted-foreground">/</span>
+            <span className="text-sm text-muted-foreground">{slug}</span>
+            <Circle size={8} weight="fill" className={cn(loadingStyle.color, loadingStyle.pulse && "animate-pulse")} />
+          </div>
+
           <div className="relative z-10 flex flex-1 items-center justify-center">
             <div className="flex flex-col items-center gap-6 text-center">
               {instanceStatus === 'starting' && (
@@ -999,9 +1011,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               )}
               {instanceStatus === null && (
                 <>
-                  <div className="relative">
-                    <div className="h-16 w-16 animate-pulse rounded-full bg-muted" />
-                  </div>
+                  <CosmicLoader />
                   <div className="space-y-2">
                     <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
                       Connecting...
@@ -1018,6 +1028,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
   // Connecting to OpenCode screen
   if (!workspace.isConnected) {
+    const connectingStyle = statusConfig.provisioning;
     return (
       <div
         className={cn(
@@ -1027,22 +1038,22 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
         )}
       >
         <div className="flex h-full flex-col p-3">
-          <WorkspaceHeader
-            slug={slug}
-            status="provisioning"
-          />
-          
+          <div className="flex items-center gap-2 p-4">
+            <span className="font-[family-name:var(--font-display)] text-base font-semibold tracking-tight">Archē</span>
+            <span className="text-sm text-muted-foreground">/</span>
+            <span className="text-sm text-muted-foreground">{slug}</span>
+            <Circle size={8} weight="fill" className={cn(connectingStyle.color, connectingStyle.pulse && "animate-pulse")} />
+          </div>
+
           <div className="relative z-10 flex flex-1 items-center justify-center">
             <div className="flex flex-col items-center gap-6 text-center">
-              <div className="relative">
-                <div className="h-16 w-16 animate-spin rounded-full border-4 border-muted border-t-primary" />
-              </div>
+              <CosmicLoader />
               <div className="space-y-2">
                 <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
                   Connecting to OpenCode
                 </h2>
                 <p className="text-sm text-muted-foreground">
-                  {workspace.connection.status === 'error' 
+                  {workspace.connection.status === 'error'
                     ? `Error: ${workspace.connection.error}`
                     : 'Establishing connection...'}
                 </p>
@@ -1062,32 +1073,29 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
         themeClassName,
       )}
     >
-      {/* Outer padding container */}
-        <div className="flex h-full flex-col p-3 gap-3">
-          {/* Floating header */}
-          <WorkspaceHeader
-            slug={slug}
-            status="active"
-            onSyncComplete={handleSyncComplete}
-          />
-
+      {/* Outer padding container — no header/footer, panels fill 100% height */}
+        <div className="flex h-full flex-col px-3">
         {/* Main panels area */}
         <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1 gap-3">
           {/* Left panel - Sessions / Experts / Knowledge (floating) */}
           <div
-            className="shrink-0 overflow-hidden"
+            className="shrink-0 overflow-hidden py-3"
             style={{
-              width: leftCollapsed ? 0 : leftWidth,
-              minWidth: leftCollapsed ? 0 : MIN_LEFT_PX,
-              opacity: leftCollapsed ? 0 : 1,
-              marginRight: leftCollapsed ? -PANEL_GAP : 0,
+              width: leftCollapsed ? COLLAPSED_PANEL_PX : leftWidth,
+              minWidth: leftCollapsed ? COLLAPSED_PANEL_PX : MIN_LEFT_PX,
+              opacity: 1,
               transition: isDragging ? "none" : PANEL_TRANSITION,
             }}
-            aria-hidden={leftCollapsed}
           >
             <LeftPanel
               key={slug}
               slug={slug}
+              status="active"
+              leftCollapsed={leftCollapsed}
+              onToggleLeft={() => setLeftCollapsed(prev => !prev)}
+              onSyncComplete={handleSyncComplete}
+              onNavigateDashboard={() => router.push(`/u/${slug}`)}
+              onNavigateSettings={() => router.push(`/u/${slug}/settings/security`)}
               sessions={rootSessions}
               activeSessionId={activeRootSessionId}
               unseenCompletedSessions={workspace.unseenCompletedSessions}
@@ -1118,9 +1126,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
           {/* Center panel - Chat (floating) */}
           <div
-            className="glass-panel flex min-w-0 flex-1 flex-col overflow-hidden rounded-2xl"
+            className="flex min-w-0 flex-1 items-stretch justify-center"
             style={{ minWidth: minCenterWidth }}
           >
+            <div className="flex h-full w-full max-w-[800px] flex-col overflow-hidden">
             <ChatPanel
               key={workspace.activeSessionId ?? "no-session"}
               slug={slug}
@@ -1159,6 +1168,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               }
               onPendingInsertConsumed={handlePendingInsertConsumed}
             />
+            </div>
           </div>
 
           {/* Invisible resize handle for right panel - positioned in the gap */}
@@ -1175,21 +1185,22 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
           {/* Right panel - Inspector (floating) */}
           <div
-            className="glass-panel shrink-0 overflow-hidden rounded-2xl"
+            className="shrink-0 overflow-hidden py-3"
             style={{
-              width: rightCollapsed ? 0 : rightWidth,
-              minWidth: rightCollapsed ? 0 : MIN_RIGHT_PX,
-              opacity: rightCollapsed ? 0 : 1,
-              marginLeft: rightCollapsed ? -PANEL_GAP : 0,
-              borderWidth: rightCollapsed ? 0 : undefined,
+              width: rightCollapsed ? COLLAPSED_PANEL_PX : rightWidth,
+              minWidth: rightCollapsed ? COLLAPSED_PANEL_PX : MIN_RIGHT_PX,
+              opacity: 1,
               transition: isDragging ? "none" : PANEL_TRANSITION,
             }}
-            aria-hidden={rightCollapsed}
           >
             <InspectorPanel
               slug={slug}
               activeTab={rightTab}
               onTabChange={setRightTab}
+              rightCollapsed={rightCollapsed}
+              onToggleRight={handleToggleRight}
+              pendingDiffsForBadge={workspace.diffs.length}
+              onOpenReview={handleOpenReview}
               openFiles={openFiles}
               activeFilePath={activeFilePath}
               onSelectFile={handleSelectFile}
@@ -1206,17 +1217,6 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             />
           </div>
         </div>
-
-        {/* Floating footer */}
-        <WorkspaceFooter
-          slug={slug}
-          leftCollapsed={leftCollapsed}
-          rightCollapsed={rightCollapsed}
-          onToggleLeft={() => setLeftCollapsed(prev => !prev)}
-          onToggleRight={handleToggleRight}
-          onOpenReview={handleOpenReview}
-          pendingDiffs={workspace.diffs.length}
-        />
       </div>
     </div>
   );

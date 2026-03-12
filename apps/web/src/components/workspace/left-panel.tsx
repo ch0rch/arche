@@ -2,11 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
+  ArrowLineRight,
   ChatCircle,
+  Circle,
+  Cpu,
   Database,
+  GearSix,
   MagnifyingGlass,
+  Minus,
+  Palette,
+  Plugs,
   Plus,
   Robot,
+  ArrowLineLeft,
   SlidersHorizontal,
   X,
 } from "@phosphor-icons/react";
@@ -20,14 +28,32 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { SyncKbResult } from "@/app/api/instances/[slug]/sync-kb/route";
+import { useWorkspaceTheme } from "@/contexts/workspace-theme-context";
 import type { WorkspaceFileNode, WorkspaceSession } from "@/lib/opencode/types";
 import type { AgentCatalogItem } from "@/hooks/use-workspace";
+import { cn } from "@/lib/utils";
 
 import { AgentsPanel } from "./agents-panel";
 import { FileTreePanel } from "./file-tree-panel";
 import { SessionsPanel } from "./sessions-panel";
+import { SyncKbButton } from "./sync-kb-button";
 
 const MIN_SECTION_PX = 60;
 const SECTION_GAP = 12; // matches gap-3 between main panels
@@ -100,8 +126,55 @@ function getInitialLeftPanelState(key: string): NormalizedLeftPanelState {
   };
 }
 
+// --- Connector / Provider types (moved from workspace-footer) ---
+
+type ConnectorStatus = "ready" | "pending" | "disabled";
+type ProviderStatus = "enabled" | "disabled" | "missing";
+
+type ConnectorSummary = {
+  id: string;
+  name: string;
+  type: string;
+  status: ConnectorStatus;
+};
+
+type ProviderSummary = {
+  providerId: string;
+  status: ProviderStatus;
+  type?: string;
+  version?: number;
+};
+
+const statusConfig = {
+  active: { color: "text-emerald-500", pulse: true },
+  provisioning: { color: "text-amber-500", pulse: true },
+  offline: { color: "text-muted-foreground", pulse: false },
+};
+
+function connectorStatusInfo(status: ConnectorStatus): { label: string; dotClassName: string } {
+  if (status === "ready") return { label: "Working", dotClassName: "bg-emerald-500" };
+  if (status === "pending") return { label: "Pending", dotClassName: "bg-amber-500" };
+  return { label: "Not working", dotClassName: "bg-rose-500" };
+}
+
+function providerLabel(providerId: string): string {
+  if (providerId === "openai") return "OpenAI";
+  if (providerId === "anthropic") return "Anthropic";
+  if (providerId === "openrouter") return "OpenRouter";
+  if (providerId === "opencode") return "OpenCode Zen";
+  return providerId;
+}
+
+// --- Props ---
+
 type LeftPanelProps = {
   slug: string;
+  status: "active" | "provisioning" | "offline";
+  leftCollapsed: boolean;
+  onToggleLeft: () => void;
+  onSyncComplete?: (status: SyncKbResult["status"]) => void;
+  onNavigateDashboard: () => void;
+  onNavigateSettings: () => void;
 
   // Sessions
   sessions: WorkspaceSession[];
@@ -190,8 +263,216 @@ function SectionHeader({
   );
 }
 
+// --- Minified (collapsed) panel ---
+
+function MinifiedLeftPanel({
+  slug,
+  status,
+  onToggleLeft,
+  onExpandWithSection,
+  onSyncComplete,
+  onNavigateSettings,
+}: {
+  slug: string;
+  status: "active" | "provisioning" | "offline";
+  onToggleLeft: () => void;
+  onExpandWithSection: (section: "chats" | "knowledge" | "experts") => void;
+  onSyncComplete?: (status: SyncKbResult["status"]) => void;
+  onNavigateSettings: () => void;
+}) {
+  const {
+    themes,
+    themeId,
+    setThemeId,
+    chatFontFamily,
+    setChatFontFamily,
+    chatFontSize,
+    increaseChatFontSize,
+    decreaseChatFontSize,
+    canIncreaseChatFontSize,
+    canDecreaseChatFontSize,
+  } = useWorkspaceTheme();
+
+  const { lightThemes, darkThemes } = useMemo(() => ({
+    lightThemes: themes.filter((t) => !t.isDark),
+    darkThemes: themes.filter((t) => t.isDark),
+  }), [themes]);
+
+  return (
+    <TooltipProvider delayDuration={400}>
+      <div className="flex h-full w-full flex-col items-center py-2 text-card-foreground">
+        {/* Toggle expand */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onToggleLeft}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              aria-label="Expand panel"
+            >
+              <ArrowLineRight size={16} weight="bold" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Expand panel</TooltipContent>
+        </Tooltip>
+
+        <div className="my-2 h-px w-6 bg-border/40" />
+
+        {/* Section shortcuts — click expands panel and opens section */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => onExpandWithSection("chats")}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              aria-label="Chats"
+            >
+              <ChatCircle size={16} weight="bold" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Chats</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => onExpandWithSection("knowledge")}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              aria-label="Knowledge"
+            >
+              <Database size={16} weight="bold" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Knowledge</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={() => onExpandWithSection("experts")}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              aria-label="Experts"
+            >
+              <Robot size={16} weight="bold" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Experts</TooltipContent>
+        </Tooltip>
+
+        {/* Spacer */}
+        <div className="flex-1" />
+
+        {/* Action buttons — execute without expanding */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div>
+              <SyncKbButton
+                slug={slug}
+                disabled={status !== "active"}
+                onComplete={onSyncComplete}
+                variant="muted"
+              />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent side="right">Sync KB</TooltipContent>
+        </Tooltip>
+
+        {/* Theme picker */}
+        <DropdownMenu>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                  aria-label="Theme"
+                >
+                  <Palette size={16} weight="bold" />
+                </button>
+              </DropdownMenuTrigger>
+            </TooltipTrigger>
+            <TooltipContent side="right">Change theme</TooltipContent>
+          </Tooltip>
+          <DropdownMenuContent side="right" align="end" className="min-w-[220px]">
+            <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Light</DropdownMenuLabel>
+            {lightThemes.map((t) => (
+              <DropdownMenuItem key={t.id} onClick={() => setThemeId(t.id)} className={cn("flex items-center gap-3", themeId === t.id && "bg-primary/10")}>
+                <div className="flex h-5 w-8 overflow-hidden rounded-md border border-border/50">
+                  <div className="w-1/2" style={{ backgroundColor: t.swatches[0] }} />
+                  <div className="w-1/2" style={{ backgroundColor: t.swatches[1] }} />
+                </div>
+                <span className="text-sm">{t.name}</span>
+                {themeId === t.id && <span className="ml-auto text-[10px] text-primary">Active</span>}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Dark</DropdownMenuLabel>
+            {darkThemes.map((t) => (
+              <DropdownMenuItem key={t.id} onClick={() => setThemeId(t.id)} className={cn("flex items-center gap-3", themeId === t.id && "bg-primary/10")}>
+                <div className="flex h-5 w-8 overflow-hidden rounded-md border border-border/50">
+                  <div className="w-1/2" style={{ backgroundColor: t.swatches[0] }} />
+                  <div className="w-1/2" style={{ backgroundColor: t.swatches[1] }} />
+                </div>
+                <span className="text-sm">{t.name}</span>
+                {themeId === t.id && <span className="ml-auto text-[10px] text-primary">Active</span>}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <div className="px-2 py-1.5">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Font style</span>
+                <span className="text-xs font-medium text-foreground/80">{chatFontFamily === "sans" ? "Sans" : "Serif"}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Button type="button" size="sm" variant={chatFontFamily === "sans" ? "secondary" : "outline"} className="h-8" onClick={() => setChatFontFamily("sans")}>Sans</Button>
+                <Button type="button" size="sm" variant={chatFontFamily === "serif" ? "secondary" : "outline"} className="h-8" onClick={() => setChatFontFamily("serif")}>Serif</Button>
+              </div>
+            </div>
+            <DropdownMenuSeparator />
+            <div className="px-2 py-1.5">
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Font size</span>
+                <span className="text-xs font-medium tabular-nums text-foreground/80">{chatFontSize}px</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button type="button" size="icon" variant="outline" className="h-7 w-7" onClick={decreaseChatFontSize} disabled={!canDecreaseChatFontSize} aria-label="Decrease chat font size"><Minus size={14} weight="bold" /></Button>
+                <div className="flex-1 rounded-md border border-border/60 bg-muted/30 px-2.5 py-1 text-center text-xs text-muted-foreground">Chat only</div>
+                <Button type="button" size="icon" variant="outline" className="h-7 w-7" onClick={increaseChatFontSize} disabled={!canIncreaseChatFontSize} aria-label="Increase chat font size"><Plus size={14} weight="bold" /></Button>
+              </div>
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onNavigateSettings}
+              className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+              aria-label="Settings"
+            >
+              <GearSix size={16} weight="bold" />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="right">Settings</TooltipContent>
+        </Tooltip>
+      </div>
+    </TooltipProvider>
+  );
+}
+
+// --- Expanded panel ---
+
 export function LeftPanel({
   slug,
+  status,
+  leftCollapsed,
+  onToggleLeft,
+  onSyncComplete,
+  onNavigateDashboard,
+  onNavigateSettings,
   sessions,
   activeSessionId,
   unseenCompletedSessions,
@@ -206,6 +487,77 @@ export function LeftPanel({
   onCreateKnowledgeFile,
   searchInputRef,
 }: LeftPanelProps) {
+  const pendingSectionRef = useRef<"chats" | "knowledge" | "experts" | null>(null);
+
+  const handleExpandWithSection = useCallback((section: "chats" | "knowledge" | "experts") => {
+    pendingSectionRef.current = section;
+    onToggleLeft();
+  }, [onToggleLeft]);
+
+  // --- Minified state ---
+  if (leftCollapsed) {
+    return (
+      <MinifiedLeftPanel
+        slug={slug}
+        status={status}
+        onToggleLeft={onToggleLeft}
+        onExpandWithSection={handleExpandWithSection}
+        onSyncComplete={onSyncComplete}
+        onNavigateSettings={onNavigateSettings}
+      />
+    );
+  }
+
+  // --- Expanded state ---
+  return (
+    <ExpandedLeftPanel
+      slug={slug}
+      status={status}
+      leftCollapsed={leftCollapsed}
+      onToggleLeft={onToggleLeft}
+      onSyncComplete={onSyncComplete}
+      onNavigateDashboard={onNavigateDashboard}
+      onNavigateSettings={onNavigateSettings}
+      sessions={sessions}
+      activeSessionId={activeSessionId}
+      unseenCompletedSessions={unseenCompletedSessions}
+      onSelectSession={onSelectSession}
+      onCreateSession={onCreateSession}
+      agents={agents}
+      onSelectAgent={onSelectAgent}
+      onOpenExpertsSettings={onOpenExpertsSettings}
+      fileNodes={fileNodes}
+      activeFilePath={activeFilePath}
+      onSelectFile={onSelectFile}
+      onCreateKnowledgeFile={onCreateKnowledgeFile}
+      searchInputRef={searchInputRef}
+      pendingSectionRef={pendingSectionRef}
+    />
+  );
+}
+
+function ExpandedLeftPanel({
+  slug,
+  status,
+  onToggleLeft,
+  onSyncComplete,
+  onNavigateDashboard,
+  onNavigateSettings,
+  sessions,
+  activeSessionId,
+  unseenCompletedSessions,
+  onSelectSession,
+  onCreateSession,
+  agents,
+  onSelectAgent,
+  onOpenExpertsSettings,
+  fileNodes,
+  activeFilePath,
+  onSelectFile,
+  onCreateKnowledgeFile,
+  searchInputRef,
+  pendingSectionRef,
+}: LeftPanelProps & { pendingSectionRef?: RefObject<"chats" | "knowledge" | "experts" | null> }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const newFileNameRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -226,9 +578,90 @@ export function LeftPanel({
   const [midCollapsed, setMidCollapsed] = useState(initialPanelState.midCollapsed);
   const [bottomCollapsed, setBottomCollapsed] = useState(initialPanelState.bottomCollapsed);
 
+  // Expand the requested section when coming from a minified panel click
+  useEffect(() => {
+    const section = pendingSectionRef?.current;
+    if (!section) return;
+    pendingSectionRef.current = null;
+    if (section === "chats") setTopCollapsed(false);
+    else if (section === "knowledge") setMidCollapsed(false);
+    else if (section === "experts") setBottomCollapsed(false);
+  }); // intentionally no deps — runs every render but only acts when ref is set
+
   const directoryOptions = useMemo(
     () => collectDirectoryOptions(fileNodes),
     [fileNodes]
+  );
+
+  // Theme
+  const {
+    themes,
+    themeId,
+    setThemeId,
+    chatFontFamily,
+    setChatFontFamily,
+    chatFontSize,
+    increaseChatFontSize,
+    decreaseChatFontSize,
+    canIncreaseChatFontSize,
+    canDecreaseChatFontSize,
+  } = useWorkspaceTheme();
+
+  const { lightThemes, darkThemes } = useMemo(() => ({
+    lightThemes: themes.filter((t) => !t.isDark),
+    darkThemes: themes.filter((t) => t.isDark),
+  }), [themes]);
+
+  // Connectors / providers
+  const [connectors, setConnectors] = useState<ConnectorSummary[]>([]);
+  const [isLoadingConnectors, setIsLoadingConnectors] = useState(true);
+  const [providers, setProviders] = useState<ProviderSummary[]>([]);
+  const [isLoadingProviders, setIsLoadingProviders] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadConnectors = async () => {
+      try {
+        const response = await fetch(`/api/u/${slug}/connectors`, { cache: "no-store" });
+        const data = (await response.json().catch(() => null)) as { connectors?: ConnectorSummary[] } | null;
+        if (!response.ok || cancelled) return;
+        setConnectors(Array.isArray(data?.connectors) ? data.connectors : []);
+      } finally {
+        if (!cancelled) setIsLoadingConnectors(false);
+      }
+    };
+
+    const loadProviders = async () => {
+      try {
+        const response = await fetch(`/api/u/${slug}/providers`, { cache: "no-store" });
+        const data = (await response.json().catch(() => null)) as { providers?: ProviderSummary[] } | null;
+        if (!response.ok || cancelled) return;
+        setProviders(Array.isArray(data?.providers) ? data.providers : []);
+      } finally {
+        if (!cancelled) setIsLoadingProviders(false);
+      }
+    };
+
+    loadConnectors().catch(() => { if (!cancelled) setIsLoadingConnectors(false); });
+    loadProviders().catch(() => { if (!cancelled) setIsLoadingProviders(false); });
+
+    const interval = setInterval(() => {
+      loadConnectors().catch(() => {});
+      loadProviders().catch(() => {});
+    }, 30000);
+
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [slug]);
+
+  const activeConnectors = useMemo(
+    () => connectors.filter((c) => c.status === "ready").length,
+    [connectors]
+  );
+
+  const activeProviders = useMemo(
+    () => providers.filter((p) => p.status === "enabled"),
+    [providers]
   );
 
   useEffect(() => {
@@ -434,14 +867,44 @@ export function LeftPanel({
     minHeight: 0,
   });
 
+  const statusStyle = statusConfig[status];
+
   return (
     <div
       ref={containerRef}
       className="flex h-full flex-col text-card-foreground"
       style={{ gap: SECTION_GAP }}
     >
-      {/* Search bar */}
-      <label className="glass-panel flex shrink-0 items-center gap-2 rounded-2xl px-3 py-2 transition-colors hover:bg-foreground/5 focus-within:bg-foreground/5">
+      {/* Panel header — logo, slug, status, toggle (no container) */}
+      <div className="flex h-10 shrink-0 items-center gap-2 px-3">
+        <button
+          type="button"
+          onClick={onNavigateDashboard}
+          className="flex items-center gap-1.5 truncate transition-colors hover:opacity-80"
+        >
+          <span className="font-[family-name:var(--font-display)] text-base font-semibold tracking-tight">
+            Archē
+          </span>
+          <span className="text-sm text-muted-foreground">/</span>
+          <span className="truncate text-sm text-muted-foreground">{slug}</span>
+        </button>
+        <Circle
+          size={8}
+          weight="fill"
+          className={cn(statusStyle.color, statusStyle.pulse && "animate-pulse")}
+        />
+        <button
+          type="button"
+          onClick={onToggleLeft}
+          className="ml-auto flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+          aria-label="Collapse panel"
+        >
+          <ArrowLineLeft size={14} weight="bold" />
+        </button>
+      </div>
+
+      {/* Search bar (no container) */}
+      <label className="mt-0.5 mb-1.5 flex shrink-0 items-center gap-2 rounded-xl px-3 py-2 transition-colors hover:bg-foreground/5 focus-within:bg-foreground/5">
           <MagnifyingGlass size={14} className="shrink-0 text-muted-foreground/50" />
           <input
             ref={searchInputRef}
@@ -475,7 +938,7 @@ export function LeftPanel({
       {/* Section 1: Chats */}
       <div
         style={sectionStyle(topCollapsed, effectiveTop)}
-        className="glass-panel flex min-h-0 flex-col overflow-hidden rounded-2xl"
+        className="flex min-h-0 flex-col overflow-hidden rounded-xl bg-foreground/[0.03]"
       >
         <SectionHeader
           icon={ChatCircle}
@@ -515,7 +978,7 @@ export function LeftPanel({
       {/* Section 2: Knowledge */}
       <div
         style={sectionStyle(midCollapsed, effectiveMid)}
-        className="glass-panel flex min-h-0 flex-col overflow-hidden rounded-2xl"
+        className="flex min-h-0 flex-col overflow-hidden rounded-xl bg-foreground/[0.03]"
       >
         <SectionHeader
           icon={Database}
@@ -554,7 +1017,7 @@ export function LeftPanel({
       {/* Section 3: Experts */}
       <div
         style={sectionStyle(bottomCollapsed, effectiveBot)}
-        className="glass-panel flex min-h-0 flex-col overflow-hidden rounded-2xl"
+        className="flex min-h-0 flex-col overflow-hidden rounded-xl bg-foreground/[0.03]"
       >
         <SectionHeader
           icon={Robot}
@@ -569,6 +1032,192 @@ export function LeftPanel({
             <AgentsPanel agents={agents} onSelectAgent={onSelectAgent} query={searchQuery} />
           </div>
         </div>
+      </div>
+
+      {/* Bottom bar — connectors & providers (left) | sync, theme, settings (right) */}
+      <div className="flex shrink-0 items-center gap-1 px-2 py-1.5">
+        <TooltipProvider delayDuration={400}>
+          {/* Left group: Connectors + Providers */}
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                    aria-label="Connectors"
+                  >
+                    <Plugs size={14} weight="bold" />
+                    {!isLoadingConnectors && <span className="tabular-nums">{activeConnectors}</span>}
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="top">Connectors</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent side="top" align="start" className="w-72">
+              <DropdownMenuLabel>Connector status</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {connectors.length === 0 ? (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">No connectors configured.</p>
+              ) : (
+                <div className="space-y-1 px-1 py-1">
+                  {connectors.map((connector) => {
+                    const info = connectorStatusInfo(connector.status);
+                    return (
+                      <div key={connector.id} className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs hover:bg-accent">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-foreground">{connector.name}</p>
+                          <p className="text-[11px] text-muted-foreground">{connector.type}</p>
+                        </div>
+                        <div className="ml-3 flex items-center gap-1.5 text-muted-foreground">
+                          <span className={cn("h-2 w-2 rounded-full", info.dotClassName)} />
+                          <span>{info.label}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex items-center gap-1 rounded-lg px-1.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                    aria-label="Providers"
+                  >
+                    <Cpu size={14} weight="bold" />
+                    {!isLoadingProviders && <span className="tabular-nums">{activeProviders.length}</span>}
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="top">Providers</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent side="top" align="start" className="w-72">
+              <DropdownMenuLabel>Provider status</DropdownMenuLabel>
+              <DropdownMenuSeparator />
+              {isLoadingProviders ? (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading providers...</p>
+              ) : activeProviders.length === 0 ? (
+                <p className="px-2 py-1.5 text-xs text-muted-foreground">No active providers.</p>
+              ) : (
+                <div className="space-y-1 px-1 py-1">
+                  {activeProviders.map((provider) => (
+                    <div key={provider.providerId} className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm text-foreground">{providerLabel(provider.providerId)}</p>
+                        <p className="text-[11px] text-muted-foreground">
+                          {provider.type ?? "api"}
+                          {provider.version ? ` · v${provider.version}` : ""}
+                        </p>
+                      </div>
+                      <div className="ml-3 flex items-center gap-1.5 text-muted-foreground">
+                        <span className="h-2 w-2 rounded-full bg-emerald-500" />
+                        <span>Active</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Spacer */}
+          <div className="flex-1" />
+
+          {/* Right group: Sync + Theme + Settings */}
+          <SyncKbButton
+            slug={slug}
+            disabled={status !== "active"}
+            onComplete={onSyncComplete}
+            variant="muted"
+          />
+
+          {/* Theme picker */}
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                    aria-label="Change theme"
+                  >
+                    <Palette size={14} weight="bold" />
+                  </button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="top">Change theme</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent side="top" align="start" className="min-w-[220px]">
+              <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Light</DropdownMenuLabel>
+              {lightThemes.map((t) => (
+                <DropdownMenuItem key={t.id} onClick={() => setThemeId(t.id)} className={cn("flex items-center gap-3", themeId === t.id && "bg-primary/10")}>
+                  <div className="flex h-5 w-8 overflow-hidden rounded-md border border-border/50">
+                    <div className="w-1/2" style={{ backgroundColor: t.swatches[0] }} />
+                    <div className="w-1/2" style={{ backgroundColor: t.swatches[1] }} />
+                  </div>
+                  <span className="text-sm">{t.name}</span>
+                  {themeId === t.id && <span className="ml-auto text-[10px] text-primary">Active</span>}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Dark</DropdownMenuLabel>
+              {darkThemes.map((t) => (
+                <DropdownMenuItem key={t.id} onClick={() => setThemeId(t.id)} className={cn("flex items-center gap-3", themeId === t.id && "bg-primary/10")}>
+                  <div className="flex h-5 w-8 overflow-hidden rounded-md border border-border/50">
+                    <div className="w-1/2" style={{ backgroundColor: t.swatches[0] }} />
+                    <div className="w-1/2" style={{ backgroundColor: t.swatches[1] }} />
+                  </div>
+                  <span className="text-sm">{t.name}</span>
+                  {themeId === t.id && <span className="ml-auto text-[10px] text-primary">Active</span>}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <div className="px-2 py-1.5">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Font style</span>
+                  <span className="text-xs font-medium text-foreground/80">{chatFontFamily === "sans" ? "Sans" : "Serif"}</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <Button type="button" size="sm" variant={chatFontFamily === "sans" ? "secondary" : "outline"} className="h-8" onClick={() => setChatFontFamily("sans")}>Sans</Button>
+                  <Button type="button" size="sm" variant={chatFontFamily === "serif" ? "secondary" : "outline"} className="h-8" onClick={() => setChatFontFamily("serif")}>Serif</Button>
+                </div>
+              </div>
+              <DropdownMenuSeparator />
+              <div className="px-2 py-1.5">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Font size</span>
+                  <span className="text-xs font-medium tabular-nums text-foreground/80">{chatFontSize}px</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button type="button" size="icon" variant="outline" className="h-7 w-7" onClick={decreaseChatFontSize} disabled={!canDecreaseChatFontSize} aria-label="Decrease chat font size"><Minus size={14} weight="bold" /></Button>
+                  <div className="flex-1 rounded-md border border-border/60 bg-muted/30 px-2.5 py-1 text-center text-xs text-muted-foreground">Chat only</div>
+                  <Button type="button" size="icon" variant="outline" className="h-7 w-7" onClick={increaseChatFontSize} disabled={!canIncreaseChatFontSize} aria-label="Increase chat font size"><Plus size={14} weight="bold" /></Button>
+                </div>
+              </div>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Settings */}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onNavigateSettings}
+                className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
+                aria-label="Settings"
+              >
+                <GearSix size={14} weight="bold" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Settings</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </div>
 
       <Dialog open={isCreateFileDialogOpen} onOpenChange={handleCreateFileDialogChange}>

@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { LeftPanel } from "@/components/workspace/left-panel";
+import { WorkspaceThemeProvider } from "@/contexts/workspace-theme-context";
 import type { AgentCatalogItem } from "@/hooks/use-workspace";
 import type { WorkspaceFileNode, WorkspaceSession } from "@/lib/opencode/types";
 
@@ -69,6 +70,12 @@ const agents: AgentCatalogItem[] = [
 
 const defaultProps = {
   slug: "alice",
+  status: "active" as const,
+  leftCollapsed: false,
+  onToggleLeft: vi.fn(),
+  onSyncComplete: vi.fn(),
+  onNavigateDashboard: vi.fn(),
+  onNavigateSettings: vi.fn(),
   sessions,
   activeSessionId: "s1" as string | null,
   unseenCompletedSessions: new Set<string>() as ReadonlySet<string>,
@@ -84,17 +91,31 @@ const defaultProps = {
   searchInputRef: createRef<HTMLInputElement>(),
 };
 
+function renderLeftPanel(overrides?: Partial<typeof defaultProps>) {
+  return render(
+    <WorkspaceThemeProvider storageScope="alice">
+      <LeftPanel {...defaultProps} {...overrides} />
+    </WorkspaceThemeProvider>
+  );
+}
+
 beforeEach(() => {
   localStorage.clear();
+  // Mock fetch for connectors/providers
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    ok: true,
+    json: () => Promise.resolve({ connectors: [], providers: [] }),
+  }));
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("LeftPanel", () => {
   it("filters sections using internal search state", () => {
-    render(<LeftPanel {...defaultProps} />);
+    renderLeftPanel();
 
     const searchInput = screen.getByLabelText("Search chats, knowledge, and experts");
     if (!(searchInput instanceof HTMLInputElement)) {
@@ -123,7 +144,7 @@ describe("LeftPanel", () => {
   it("creates a markdown file in the selected directory", async () => {
     const onCreateKnowledgeFile = vi.fn().mockResolvedValue({ ok: true as const });
 
-    render(<LeftPanel {...defaultProps} onCreateKnowledgeFile={onCreateKnowledgeFile} />);
+    renderLeftPanel({ onCreateKnowledgeFile });
 
     const createFileButtons = screen.getAllByRole("button", { name: "Create file" });
     fireEvent.click(createFileButtons[createFileButtons.length - 1]);
@@ -146,7 +167,7 @@ describe("LeftPanel", () => {
       JSON.stringify({ topCollapsed: true, midCollapsed: false, bottomCollapsed: true })
     );
 
-    render(<LeftPanel {...defaultProps} />);
+    renderLeftPanel();
 
     // The Chats section header should be present but its content collapsed
     // We verify by checking the aria-hidden or structure; simpler: check toggle button clicks work
@@ -162,7 +183,7 @@ describe("LeftPanel", () => {
   });
 
   it("persists subpanel collapsed state to storage on toggle", () => {
-    render(<LeftPanel {...defaultProps} />);
+    renderLeftPanel();
 
     // The persist effect runs on mount with default state
     // Toggle the Chats section to collapsed
