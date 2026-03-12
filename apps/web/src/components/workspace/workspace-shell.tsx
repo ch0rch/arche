@@ -1077,7 +1077,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       )}
     >
       {/* Outer padding container — no header/footer, panels fill 100% height */}
-        <div className="flex h-full flex-col p-3">
+        <div className="flex h-full flex-col px-3">
         {/* Main panels area */}
         <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1 gap-3">
           {/* Left panel - Sessions / Experts / Knowledge (floating) */}
