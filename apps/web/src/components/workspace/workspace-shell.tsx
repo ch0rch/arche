@@ -356,7 +356,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
       const key = event.key.toLowerCase();
 
-      if (key === "i") {
+      if (key === ".") {
         event.preventDefault();
         void handleCreateSession();
         return;

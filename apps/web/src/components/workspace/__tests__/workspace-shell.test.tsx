@@ -83,7 +83,7 @@ describe("WorkspaceShell", () => {
     createSessionMock.mockClear();
   });
 
-  it("creates a new session with Command+I", async () => {
+  it("creates a new session with Command+Period", async () => {
     render(<WorkspaceShell slug="alice" />);
 
     await waitFor(() => {
@@ -92,7 +92,7 @@ describe("WorkspaceShell", () => {
 
     window.dispatchEvent(
       new KeyboardEvent("keydown", {
-        key: "i",
+        key: ".",
         metaKey: true,
         bubbles: true,
       })
