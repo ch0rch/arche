@@ -10,9 +10,11 @@ import { cn } from '@/lib/utils'
 import {
   DEFAULT_CHAT_FONT_FAMILY,
   DEFAULT_CHAT_FONT_SIZE,
+  DEFAULT_DARK_MODE,
   DEFAULT_THEME_ID,
   getWorkspaceChatFontFamilyCookieName,
   getWorkspaceChatFontSizeCookieName,
+  getWorkspaceDarkModeCookieName,
   getWorkspaceThemeCookieName,
   isWorkspaceChatFontFamily,
   isWorkspaceChatFontSize,
@@ -42,6 +44,7 @@ export default async function DashboardLayout({
   }
 
   const storedThemeId = cookieStore.get(getWorkspaceThemeCookieName(slug))?.value
+  const storedDarkMode = cookieStore.get(getWorkspaceDarkModeCookieName(slug))?.value
   const initialChatFontFamily = storedChatFontFamily && isWorkspaceChatFontFamily(storedChatFontFamily)
     ? storedChatFontFamily
     : DEFAULT_CHAT_FONT_FAMILY
@@ -49,6 +52,7 @@ export default async function DashboardLayout({
   const initialThemeId = storedThemeId && isWorkspaceThemeId(storedThemeId)
     ? storedThemeId
     : DEFAULT_THEME_ID
+  const initialIsDark = storedDarkMode === 'true' ? true : storedDarkMode === 'false' ? false : DEFAULT_DARK_MODE
   const macDesktopWindowInset = shouldUseCurrentMacOsInsetTitleBar()
 
   return (
@@ -57,6 +61,7 @@ export default async function DashboardLayout({
       storageScope={slug}
       initialChatFontFamily={initialChatFontFamily}
       initialChatFontSize={isWorkspaceChatFontSize(initialChatFontSize) ? initialChatFontSize : DEFAULT_CHAT_FONT_SIZE}
+      initialIsDark={initialIsDark}
       initialThemeId={initialThemeId}
     >
       <DashboardThemeShell>

@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { InspectorPanel } from "@/components/workspace/inspector-panel";
 
@@ -17,21 +17,24 @@ vi.mock("@/components/workspace/review-panel", () => ({
   ReviewPanel: () => <div>review-panel</div>,
 }));
 
-beforeAll(() => {
-  vi.stubGlobal(
-    "ResizeObserver",
-    class ResizeObserver {
-      observe() {}
-      disconnect() {}
-    }
-  );
-});
-
-afterEach(() => {
-  cleanup();
-});
-
 describe("InspectorPanel", () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      }
+    );
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
   const defaultProps = {
     slug: "alice",
     activeTab: "preview" as const,
@@ -55,6 +58,21 @@ describe("InspectorPanel", () => {
     onToggleRight: vi.fn(),
   };
 
+  it("downloads the active file from the preview toolbar", () => {
+    const onDownloadFile = vi.fn();
+
+    render(
+      <InspectorPanel
+        {...defaultProps}
+        onDownloadFile={onDownloadFile}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /download notes.md/i }));
+
+    expect(onDownloadFile).toHaveBeenCalledWith("notes.md");
+  });
+
   it("hides review features when workspace agent support is disabled", () => {
     render(
       <InspectorPanel
@@ -67,7 +85,7 @@ describe("InspectorPanel", () => {
     expect(screen.queryByText("review-panel")).toBeNull();
   });
 
-  it("renders markdown preview instead of the editor when workspace agent support is disabled", () => {
+  it("renders markdown preview instead of editor when workspace agent support is disabled", () => {
     render(
       <InspectorPanel
         {...defaultProps}

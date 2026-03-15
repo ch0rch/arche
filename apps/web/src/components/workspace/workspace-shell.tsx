@@ -12,6 +12,7 @@ import {
   isProtectedWorkspacePath,
   normalizeWorkspacePath,
 } from "@/lib/workspace-paths";
+import { downloadWorkspaceFile } from "@/lib/workspace-file-download";
 import { takeWorkspaceStartPrompt } from "@/lib/workspace-start-prompt";
 import { cn } from "@/lib/utils";
 
@@ -359,11 +360,23 @@ export function WorkspaceShell({
     });
   }, [leftCollapsed]);
 
+  const handleCreateSession = useCallback(async () => {
+    await workspace.createSession();
+  }, [workspace]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing) return;
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
-      if (event.key.toLowerCase() !== "k") return;
+      const key = event.key.toLowerCase();
+
+      if (key === ".") {
+        event.preventDefault();
+        void handleCreateSession();
+        return;
+      }
+
+      if (key !== "k") return;
 
       event.preventDefault();
       focusSearchInput();
@@ -373,7 +386,7 @@ export function WorkspaceShell({
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [focusSearchInput]);
+  }, [focusSearchInput, handleCreateSession]);
 
   // File viewing state
   const safeInitialFilePath = useMemo(() => {
@@ -865,13 +878,23 @@ export function WorkspaceShell({
     workspace.selectSession(sessionId);
   }, [workspace]);
 
-  const handleCreateSession = useCallback(async () => {
-    await workspace.createSession(`Session ${rootSessions.length + 1}`);
-  }, [rootSessions.length, workspace]);
-
   const handleCloseSession = useCallback(async (sessionId: string) => {
     await workspace.deleteSession(sessionId);
   }, [workspace]);
+
+  const handleRenameSession = useCallback(
+    async (sessionId: string, title: string) => {
+      return workspace.renameSession(sessionId, title);
+    },
+    [workspace]
+  );
+
+  const handleDownloadFile = useCallback(
+    (path: string) => {
+      downloadWorkspaceFile(slug, path);
+    },
+    [slug]
+  );
 
   // Agent mention insertion
   const [pendingInsert, setPendingInsert] = useState<{
@@ -972,13 +995,11 @@ export function WorkspaceShell({
   }, [leftCollapsed, leftWidth]);
 
   // Get theme from context
-  const { theme } = useWorkspaceTheme();
+  const { themeId, isDark } = useWorkspaceTheme();
 
-  // Build dark mode classes based on theme variant
-  const darkModeClasses = theme.isDark
-    ? `dark dark-${theme.darkVariant}`
-    : "";
-  const themeClassName = `theme-${theme.id}`;
+  // Build theme classes
+  const darkModeClasses = isDark ? "dark" : "";
+  const themeClassName = `theme-${themeId}`;
 
   // Loading screen while instance is starting
   if (instanceStatus !== 'running') {
@@ -1100,7 +1121,7 @@ export function WorkspaceShell({
       )}
     >
       {/* Outer padding container — no header/footer, panels fill 100% height */}
-        <div className="flex h-full flex-col px-3">
+        <div className="flex h-full flex-col pl-3">
         {/* Main panels area */}
         <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1 gap-3">
           {/* Left panel - Sessions / Experts / Knowledge (floating) */}
@@ -1133,6 +1154,7 @@ export function WorkspaceShell({
               fileNodes={workspace.fileTree}
               activeFilePath={activeFilePath}
               onSelectFile={handleOpenFile}
+              onDownloadFile={workspaceAgentEnabled ? handleDownloadFile : undefined}
               onCreateKnowledgeFile={handleCreateKnowledgeFile}
               canCreateKnowledgeFile={workspaceAgentEnabled}
               searchInputRef={searchInputRef}
@@ -1168,6 +1190,7 @@ export function WorkspaceShell({
               sessionTabs={activeSessionTabs}
               openFilePaths={openFilePaths}
               onCloseSession={handleCloseSession}
+              onRenameSession={handleRenameSession}
               onSelectSessionTab={handleSelectSessionTab}
               onOpenFile={handleOpenFile}
               onShowContext={() => {
@@ -1211,9 +1234,9 @@ export function WorkspaceShell({
             />
           )}
 
-          {/* Right panel - Inspector (floating) */}
+          {/* Right panel - Inspector */}
           <div
-            className="shrink-0 overflow-hidden py-3"
+            className={cn("shrink-0 overflow-hidden", rightCollapsed && "py-3 pr-3")}
             style={{
               width: rightCollapsed ? COLLAPSED_PANEL_PX : rightWidth,
               minWidth: rightCollapsed ? COLLAPSED_PANEL_PX : MIN_RIGHT_PX,
@@ -1238,6 +1261,7 @@ export function WorkspaceShell({
               isLoadingDiffs={workspace.isLoadingDiffs}
               diffsError={workspace.diffsError}
               onOpenFile={handleOpenFile}
+              onDownloadFile={workspaceAgentEnabled ? handleDownloadFile : undefined}
               onReloadFile={handleReloadFile}
               onSaveFile={workspaceAgentEnabled ? handleSaveFile : undefined}
               onDiscardFileChanges={workspaceAgentEnabled ? handleDiscardFileChanges : undefined}

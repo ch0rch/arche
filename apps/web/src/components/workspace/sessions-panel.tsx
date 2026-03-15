@@ -44,12 +44,7 @@ export function SessionsPanel({
         <div className="flex flex-col items-center justify-center gap-2 text-center">
           <ChatCircle size={24} weight="bold" className="text-muted-foreground/50" />
           <p className="text-xs text-muted-foreground">No chats yet</p>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs text-muted-foreground"
-            onClick={onCreateSession}
-          >
+          <Button size="sm" className="h-7 px-2 text-xs" onClick={onCreateSession}>
             <Plus size={12} weight="bold" className="mr-1" />
             New chat
           </Button>
@@ -62,7 +57,7 @@ export function SessionsPanel({
     return (
       <div className="flex flex-1 flex-col">
         <div className="px-3 pt-3 pb-2">
-          <Button variant="ghost" size="sm" className="w-full text-muted-foreground" onClick={onCreateSession}><Plus size={14} weight="bold" className="mr-1.5" />New chat</Button>
+          <Button size="sm" className="w-full" onClick={onCreateSession}><Plus size={14} weight="bold" className="mr-1.5" />New chat</Button>
         </div>
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
           <ChatCircle size={24} weight="bold" className="text-muted-foreground/50" />

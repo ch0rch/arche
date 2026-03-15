@@ -1,6 +1,14 @@
 "use client";
 
-import { useRef, useState, useEffect, useMemo, useCallback, type CSSProperties } from "react";
+import {
+  useRef,
+  useState,
+  useEffect,
+  useMemo,
+  useCallback,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react";
 import {
   ArrowClockwise,
   CaretDown,
@@ -9,6 +17,7 @@ import {
   CheckCircle,
   Circle,
   Copy,
+  DownloadSimple,
   DotsThree,
   File,
   FolderOpen,
@@ -54,6 +63,10 @@ import {
 } from "@/components/ui/dialog";
 import { useWorkspaceTheme } from "@/contexts/workspace-theme-context";
 import type { AvailableModel, MessagePart } from "@/lib/opencode/types";
+import {
+  buildWorkspaceSessionMarkdown,
+  getWorkspaceSessionExportFilename,
+} from "@/lib/workspace-session-export";
 import { getWorkspaceToolDisplay } from "@/lib/workspace-tool-display";
 import { formatAttachmentSize } from "@/lib/workspace-attachments";
 import { cn } from "@/lib/utils";
@@ -73,6 +86,7 @@ type ChatPanelProps = {
   sessionTabs?: Array<{ id: string; title: string; depth: number; status?: string }>;
   openFilePaths: string[];
   onCloseSession: (id: string) => void;
+  onRenameSession?: (id: string, title: string) => Promise<boolean>;
   onSelectSessionTab?: (id: string) => void;
   onOpenFile: (path: string) => void;
   onShowContext?: () => void;
@@ -274,6 +288,111 @@ function MessageFooter({ message, showTimestamp = true }: { message: ChatMessage
           {actionButtons}
         </>
       )}
+    </div>
+  );
+}
+
+const CHAT_ERROR_MESSAGES: Record<string, { title: string; description?: string }> = {
+  cancelled: {
+    title: "Response cancelled",
+    description: "The message was stopped before it finished.",
+  },
+  forbidden: {
+    title: "Permission denied",
+    description: "You are not allowed to perform this action.",
+  },
+  instance_unavailable: {
+    title: "Workspace unavailable",
+    description: "The workspace is not ready right now. Try again in a moment.",
+  },
+  missing_fields: {
+    title: "Message couldn't be sent",
+    description: "The request was incomplete, so it never reached the model.",
+  },
+  rate_limited: {
+    title: "Rate limited",
+    description: "Too many requests were sent at once. Try again in a moment.",
+  },
+  resume_exhausted: {
+    title: "Couldn't resume response",
+    description: "We retried the interrupted response, but it still could not be recovered.",
+  },
+  resume_incomplete: {
+    title: "Response interrupted",
+    description: "The previous response could not be resumed completely.",
+  },
+  stream_incomplete: {
+    title: "Response interrupted",
+    description: "The model stopped before returning any visible content.",
+  },
+  too_many_attachments: {
+    title: "Too many attachments",
+    description: "Remove some files and try sending the message again.",
+  },
+  unauthorized: {
+    title: "Session expired",
+    description: "Sign in again and retry your message.",
+  },
+};
+
+function humanizeChatErrorCode(code: string): string {
+  if (!/^[a-z0-9_]+$/.test(code)) return code;
+  const phrase = code.replace(/_/g, " ");
+  return phrase.charAt(0).toUpperCase() + phrase.slice(1);
+}
+
+function getChatErrorCopy(detail?: string): { title: string; description?: string } {
+  const source = detail?.trim();
+  if (!source) {
+    return {
+      title: "Message failed",
+      description: "Something went wrong before the assistant could answer.",
+    };
+  }
+
+  const mapped = CHAT_ERROR_MESSAGES[source];
+  if (mapped) return mapped;
+
+  if (/^[a-z0-9_]+$/.test(source)) {
+    return {
+      title: "Message failed",
+      description: humanizeChatErrorCode(source),
+    };
+  }
+
+  return {
+    title: "Message failed",
+    description: source,
+  };
+}
+
+function downloadMarkdownFile(filename: string, content: string) {
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}
+
+function AssistantErrorNotice({ detail }: { detail?: string }) {
+  const copy = getChatErrorCopy(detail);
+
+  return (
+    <div className="my-2 rounded-xl border border-destructive/25 bg-destructive/5 px-3.5 py-3 text-sm">
+      <div className="flex items-start gap-2.5">
+        <XCircle size={16} weight="fill" className="shrink-0 text-destructive" />
+        <div className="min-w-0">
+          <p className="leading-none font-medium text-foreground">{copy.title}</p>
+          {copy.description ? (
+            <p className="mt-1 text-sm text-muted-foreground">{copy.description}</p>
+          ) : null}
+        </div>
+      </div>
     </div>
   );
 }
@@ -509,7 +628,6 @@ function DelegationCard({
 
         const isRunning = part.state.status === "running" || part.state.status === "pending";
         const isError = part.state.status === "error";
-        const isComplete = part.state.status === "completed";
 
         // Try to find a matching child session tab for this delegation
         const matchingTab = sessionTabs?.find((tab) => {
@@ -527,7 +645,6 @@ function DelegationCard({
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 {isRunning && <SpinnerGap size={14} className="shrink-0 animate-spin text-primary" />}
                 {isError && <XCircle size={14} weight="fill" className="shrink-0 text-destructive" />}
-                {isComplete && <CheckCircle size={14} weight="fill" className="shrink-0 text-primary" />}
                 <TreeStructure size={14} weight="fill" className="shrink-0 text-primary" />
                 <span className="text-xs font-medium text-foreground">
                   {agentLabel ? `Delegated to ${agentLabel}` : "Delegated task"}
@@ -629,22 +746,22 @@ function ToolGroup({
           setIsOpen(prev => !prev);
         }}
         className={cn(
-          "flex w-full items-center gap-2 px-3 py-2 text-xs",
+          "flex w-full items-start gap-2 px-3 py-2 text-xs",
           canExpand ? "cursor-pointer" : "cursor-default"
         )}
       >
-        <div className="flex min-w-0 items-center gap-2">
-          {isRunning && <SpinnerGap size={12} className="animate-spin text-primary" />}
-          {!isRunning && isError && <XCircle size={12} weight="fill" className="text-destructive" />}
-          {!isRunning && !isError && <CheckCircle size={12} weight="fill" className="text-primary" />}
-          <span className="font-medium">{toolLabel}</span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            {isRunning && <SpinnerGap size={12} className="animate-spin text-primary" />}
+            {!isRunning && isError && <XCircle size={12} weight="fill" className="text-destructive" />}
+            {!isRunning && !isError && <CheckCircle size={12} weight="fill" className="text-primary" />}
+            <span className="shrink-0 whitespace-nowrap font-medium">{toolLabel}</span>
+          </div>
           {showSummary && (
-            <span className="min-w-0 truncate text-muted-foreground">
-              {summary}
-            </span>
+            <p className="mt-0.5 truncate pl-5 text-muted-foreground">{summary}</p>
           )}
         </div>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           {totalCount > 1 && (
             <span className="chat-text-micro text-muted-foreground">
               {completedCount > 0 ? `${completedCount} done` : ""}
@@ -958,6 +1075,7 @@ export function ChatPanel({
   sessionTabs = [],
   openFilePaths,
   onCloseSession,
+  onRenameSession,
   onSelectSessionTab,
   onOpenFile,
   onShowContext,
@@ -999,6 +1117,9 @@ export function ChatPanel({
   );
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const preventSessionMenuAutoFocusRef = useRef(false);
+  const ignoreNextTitleBlurRef = useRef(false);
   const [inputValue, setInputValue] = useState("");
   const [modelSearch, setModelSearch] = useState("");
   const [attachments, setAttachments] = useState<WorkspaceAttachment[]>([]);
@@ -1013,6 +1134,10 @@ export function ChatPanel({
   const [contextMode, setContextMode] = useState<ContextMode>("auto");
   const [manualContextPaths, setManualContextPaths] = useState<string[]>([]);
   const [connectorNamesById, setConnectorNamesById] = useState<Record<string, string>>({});
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [isSavingTitle, setIsSavingTitle] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const selectedAttachments = useMemo(
     () => {
@@ -1046,6 +1171,107 @@ export function ChatPanel({
     () => new Set(normalizedOpenFilePaths),
     [normalizedOpenFilePaths]
   );
+
+  const isEditingActiveSessionTitle = Boolean(
+    activeSession && editingSessionId === activeSession.id
+  );
+
+  const cancelSessionRename = useCallback(() => {
+    if (isSavingTitle) return;
+
+    setEditingSessionId(null);
+    setDraftTitle("");
+    setRenameError(null);
+  }, [isSavingTitle]);
+
+  const startSessionRename = useCallback(() => {
+    if (!activeSession || !onRenameSession) return;
+
+    preventSessionMenuAutoFocusRef.current = true;
+    setEditingSessionId(activeSession.id);
+    setDraftTitle(activeSession.title);
+    setRenameError(null);
+  }, [activeSession, onRenameSession]);
+
+  const submitSessionRename = useCallback(async (rawTitle?: string) => {
+    if (!activeSession || !onRenameSession || isSavingTitle) return;
+    if (editingSessionId !== activeSession.id) return;
+
+    const nextTitle = (rawTitle ?? titleInputRef.current?.value ?? draftTitle).trim();
+    if (!nextTitle || nextTitle === activeSession.title) {
+      cancelSessionRename();
+      return;
+    }
+
+    setIsSavingTitle(true);
+    setRenameError(null);
+
+    const renamed = await onRenameSession(activeSession.id, nextTitle);
+
+    setIsSavingTitle(false);
+
+    if (!renamed) {
+      setRenameError("rename_failed");
+      return;
+    }
+
+    setEditingSessionId(null);
+    setDraftTitle("");
+    setRenameError(null);
+  }, [
+    activeSession,
+    cancelSessionRename,
+    draftTitle,
+    editingSessionId,
+    isSavingTitle,
+    onRenameSession,
+  ]);
+
+  const handleTitleInputKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        ignoreNextTitleBlurRef.current = true;
+        requestAnimationFrame(() => {
+          ignoreNextTitleBlurRef.current = false;
+        });
+        void submitSessionRename(event.currentTarget.value);
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        cancelSessionRename();
+      }
+    },
+    [cancelSessionRename, submitSessionRename]
+  );
+
+  const handleExportSessionMarkdown = useCallback(() => {
+    if (!activeSession || typeof document === "undefined") return;
+
+    const markdown = buildWorkspaceSessionMarkdown(activeSession.title, messages);
+    const filename = getWorkspaceSessionExportFilename(activeSession.title);
+    downloadMarkdownFile(filename, markdown);
+  }, [activeSession, messages]);
+
+  useEffect(() => {
+    setEditingSessionId(null);
+    setDraftTitle("");
+    setIsSavingTitle(false);
+    setRenameError(null);
+  }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!isEditingActiveSessionTitle) return;
+
+    const frameId = requestAnimationFrame(() => {
+      titleInputRef.current?.focus();
+      titleInputRef.current?.select();
+    });
+
+    return () => cancelAnimationFrame(frameId);
+  }, [isEditingActiveSessionTitle]);
 
   const effectiveContextPaths = useMemo(() => {
     if (contextMode === "off") return [];
@@ -1544,18 +1770,72 @@ export function ChatPanel({
     return lastMessage.statusInfo;
   }, [messages, isSending]);
 
+  const titleInputClassName = cn(
+    "h-8 min-w-[180px] rounded-md border bg-background/80 px-2.5 text-sm font-medium text-foreground outline-none transition-colors",
+    "focus-visible:ring-2 focus-visible:ring-ring/30 focus-visible:ring-offset-0",
+    renameError
+      ? "border-destructive/40 focus-visible:ring-destructive/20"
+      : "border-primary/20 focus-visible:ring-primary/20"
+  );
+
   return (
     <div className="flex h-full flex-col text-card-foreground">
       {/* Session header — shows tabs when multiple sessions exist, otherwise plain title */}
-      <div className="glass-panel -mt-px mx-3 flex h-11 shrink-0 items-center gap-1 rounded-b-2xl pl-2 pr-2">
+      <div className="mx-3 mt-2 flex min-h-11 shrink-0 items-center gap-2 border-b border-border/35 px-2 py-1">
         {sessionTabs.length > 1 ? (
           <div className="min-w-0 flex-1 overflow-x-auto scrollbar-none">
             <div className="flex items-center gap-1">
               {sessionTabs.map((sessionTab) => {
                 const isSubtask = sessionTab.depth > 0;
                 const isActive = sessionTab.id === activeSessionId;
+                const isEditing = isActive && editingSessionId === sessionTab.id;
                 const isBusy = sessionTab.status === "busy";
                 const isError = sessionTab.status === "error";
+
+                if (isEditing) {
+                  return (
+                    <div
+                      key={sessionTab.id}
+                      className={cn(
+                        "flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1",
+                        isActive ? "bg-primary/10 text-primary" : "text-muted-foreground"
+                      )}
+                    >
+                      {isSubtask ? (
+                        <TreeStructure size={12} weight="fill" className="shrink-0" />
+                      ) : (
+                        <ChatCircle size={12} weight="fill" className="shrink-0" />
+                      )}
+                      {isBusy ? (
+                        <SpinnerGap size={11} className="shrink-0 animate-spin text-primary" />
+                      ) : isError ? (
+                        <XCircle size={11} weight="fill" className="shrink-0 text-destructive" />
+                      ) : null}
+                      <input
+                        ref={titleInputRef}
+                        value={draftTitle}
+                        onBlur={(event) => {
+                          if (ignoreNextTitleBlurRef.current) {
+                            ignoreNextTitleBlurRef.current = false;
+                            return;
+                          }
+
+                          void submitSessionRename(event.currentTarget.value);
+                        }}
+                        onChange={(event) => {
+                          setDraftTitle(event.target.value);
+                          if (renameError) {
+                            setRenameError(null);
+                          }
+                        }}
+                        onKeyDown={handleTitleInputKeyDown}
+                        className={cn(titleInputClassName, "w-[min(240px,45vw)] text-xs")}
+                        aria-label="Session title"
+                        disabled={isSavingTitle}
+                      />
+                    </div>
+                  );
+                }
 
                 return (
                   <button
@@ -1589,11 +1869,39 @@ export function ChatPanel({
           </div>
         ) : (
           <div className="min-w-0 flex-1 px-2">
-            <p className="truncate text-sm font-medium text-foreground">
-              {activeSession?.title ?? "No active session"}
-            </p>
+            {isEditingActiveSessionTitle ? (
+              <input
+                ref={titleInputRef}
+                value={draftTitle}
+                onBlur={(event) => {
+                  if (ignoreNextTitleBlurRef.current) {
+                    ignoreNextTitleBlurRef.current = false;
+                    return;
+                  }
+
+                  void submitSessionRename(event.currentTarget.value);
+                }}
+                onChange={(event) => {
+                  setDraftTitle(event.target.value);
+                  if (renameError) {
+                    setRenameError(null);
+                  }
+                }}
+                onKeyDown={handleTitleInputKeyDown}
+                className={cn(titleInputClassName, "w-full")}
+                aria-label="Session title"
+                disabled={isSavingTitle}
+              />
+            ) : (
+              <p className="truncate text-sm font-medium text-foreground">
+                {activeSession?.title ?? "No active session"}
+              </p>
+            )}
           </div>
         )}
+        {renameError ? (
+          <span className="chat-text-note shrink-0 text-destructive">Rename failed</span>
+        ) : null}
         {activeSession ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -1606,9 +1914,29 @@ export function ChatPanel({
                 <DotsThree size={16} weight="bold" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" sideOffset={4}>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={4}
+              onCloseAutoFocus={(event) => {
+                if (!preventSessionMenuAutoFocusRef.current) return;
+
+                event.preventDefault();
+                preventSessionMenuAutoFocusRef.current = false;
+              }}
+            >
+              {onRenameSession ? (
+                <DropdownMenuItem onSelect={startSessionRename}>
+                  <PencilSimple size={14} />
+                  Rename session
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem onSelect={handleExportSessionMarkdown}>
+                <DownloadSimple size={14} />
+                Export to MD
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuItem
-                onClick={() => onCloseSession(activeSession.id)}
+                onSelect={() => onCloseSession(activeSession.id)}
                 className="text-destructive focus:text-destructive"
               >
                 <X size={14} />
@@ -1642,6 +1970,10 @@ export function ChatPanel({
               // i.e., if there's no next message, or the next message is in a different minute
               const nextMessage = messages[index + 1];
               const showTimestamp = !nextMessage || !isSameMinute(message.timestampRaw, nextMessage.timestampRaw);
+              const assistantErrorDetail =
+                message.role === "assistant" && message.statusInfo?.status === "error"
+                  ? message.statusInfo.detail
+                  : undefined;
               
               return (
                 <div
@@ -1701,8 +2033,8 @@ export function ChatPanel({
                           </ReactMarkdown>
                         </div>
                       ) : null}
-                      {/* Don't show anything for empty pending messages - status indicator is at the bottom */}
-                      
+                      {assistantErrorDetail ? <AssistantErrorNotice detail={assistantErrorDetail} /> : null}
+                       
                       {message.attachments && message.attachments.length > 0 ? (
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {message.attachments.map((attachment) => (
@@ -1763,7 +2095,7 @@ export function ChatPanel({
       </div>
 
       {/* Input area */}
-      <div className="glass-panel -mb-px mx-3 rounded-t-2xl px-4 pb-4 pt-3">
+      <div className="glass-panel -mb-px mx-3 rounded-t-2xl px-4 pb-4 pt-4">
         {/* Model selector and context - same row */}
         {(models.length > 0 || normalizedOpenFilePaths.length > 0) && (
           <div className="mb-3 flex items-center gap-4">
@@ -1967,9 +2299,9 @@ export function ChatPanel({
         )}
 
         {isReadOnly ? (
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
-            <div className="flex items-center gap-2 text-amber-50/90">
-              <Info size={16} weight="fill" className="text-amber-300" />
+          <div className="flex items-center justify-between gap-3 rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-100">
+            <div className="flex items-center gap-2 text-amber-800 dark:text-amber-50/90">
+              <Info size={16} weight="fill" className="text-amber-500 dark:text-amber-300" />
               <span>Subagent sessions are read-only. Return to the main conversation to continue chatting.</span>
             </div>
             {onReturnToMainConversation ? (
@@ -2137,7 +2469,7 @@ export function ChatPanel({
             onPaste={handleTextareaPaste}
             className="max-h-[200px] flex-1 resize-none bg-transparent px-1.5 py-1.5 text-sm leading-5 text-foreground outline-none placeholder:text-muted-foreground/60"
             placeholder="Type a message..."
-            disabled={isSending || isStartingNewSession || !onSendMessage}
+            disabled={isStartingNewSession || !onSendMessage}
             rows={1}
           />
           <Button

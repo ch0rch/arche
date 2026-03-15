@@ -361,6 +361,8 @@ export function useWorkspace({
   activeSessionIdRef.current = activeSessionId;
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
+  const sessionMutationVersionRef = useRef(0);
+  const sessionLoadRequestIdRef = useRef(0);
   const streamCounterRef = useRef(0);
   const activeStreamsRef = useRef(new Map<string, {
     token: number;
@@ -371,6 +373,7 @@ export function useWorkspace({
   }>());
   const resumeFailureStateRef = useRef<Map<string, ResumeFailureState>>(new Map());
   const sessionExecutorsRef = useRef(new Map<string, SerialJobExecutor>());
+  const isMountedRef = useRef(true);
 
   // Workspace refresh scheduling (diffs + files after stream completion)
   const workspaceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -664,9 +667,18 @@ export function useWorkspace({
     [agentCatalog, extractRuntimeMetadata, models, primaryAgentId, updateSessionSelection]
   );
 
+  const markSessionsMutated = useCallback(() => {
+    sessionMutationVersionRef.current += 1;
+    return sessionMutationVersionRef.current;
+  }, []);
+
   // --- Sessions ---
 
   const loadSessions = useCallback(async () => {
+    const requestId = sessionLoadRequestIdRef.current + 1;
+    sessionLoadRequestIdRef.current = requestId;
+    const mutationVersionAtStart = sessionMutationVersionRef.current;
+
     console.log("[useWorkspace] loadSessions: loading...");
     setIsLoadingSessions(true);
     try {
@@ -678,8 +690,17 @@ export function useWorkspace({
         result.sessions?.length
       );
       if (result.ok && result.sessions) {
-        setSessions(result.sessions);
+        if (requestId !== sessionLoadRequestIdRef.current) {
+          return;
+        }
+
+        if (mutationVersionAtStart !== sessionMutationVersionRef.current) {
+          return;
+        }
+
         const sessions = result.sessions;
+
+        setSessions(sessions);
         const sessionIds = new Set(sessions.map((session) => session.id));
         setSessionSelectionState((prev) => {
           let changed = false;
@@ -721,7 +742,9 @@ export function useWorkspace({
         }
       }
     } finally {
-      setIsLoadingSessions(false);
+      if (requestId === sessionLoadRequestIdRef.current) {
+        setIsLoadingSessions(false);
+      }
     }
   }, [activeSessionStorageKey, slug]);
 
@@ -770,6 +793,7 @@ export function useWorkspace({
     async (title?: string) => {
       const result = await createSessionAction(slug, title);
       if (result.ok && result.session) {
+        markSessionsMutated();
         setSessions((prev) => [result.session!, ...prev]);
         setActiveSessionId(result.session.id);
         activeSessionIdRef.current = result.session.id;
@@ -779,13 +803,14 @@ export function useWorkspace({
       }
       return null;
     },
-    [initializeSessionSelectionState, slug, updateSessionMessages]
+    [initializeSessionSelectionState, markSessionsMutated, slug, updateSessionMessages]
   );
 
   const deleteSession = useCallback(
     async (id: string) => {
       const result = await deleteSessionAction(slug, id);
       if (result.ok) {
+        markSessionsMutated();
         abortSessionStream(id);
         setSessions((prev) => {
           const filtered = prev.filter((s) => s.id !== id);
@@ -813,21 +838,42 @@ export function useWorkspace({
       }
       return false;
     },
-    [abortSessionStream, clearSessionSelectionState, slug]
+    [
+      abortSessionStream,
+      clearSessionSelectionState,
+      markSessionsMutated,
+      setSessionStreamStatusTo,
+      slug,
+    ]
   );
 
   const renameSession = useCallback(
     async (id: string, title: string) => {
-      const result = await updateSessionAction(slug, id, title);
-      if (result.ok && result.session) {
+      const nextTitle = title.trim();
+      if (!nextTitle) return false;
+
+      markSessionsMutated();
+      const result = await updateSessionAction(slug, id, nextTitle);
+      if (result.ok) {
         setSessions((prev) =>
-          prev.map((s) => (s.id === id ? result.session! : s))
+          prev.map((session) => {
+            if (session.id !== id) return session;
+
+            return {
+              ...session,
+              ...(result.session ?? {}),
+              title: nextTitle,
+            };
+          })
         );
         return true;
       }
+
+      // On failure, re-sync from backend to restore the real state.
+      void loadSessions();
       return false;
     },
-    [slug]
+    [loadSessions, markSessionsMutated, slug]
   );
 
   // --- Messages ---
@@ -1071,6 +1117,7 @@ export function useWorkspace({
       let streamCompleted = false;
       let receivedAssistantPart = false;
       let receivedStreamData = false;
+      let terminalErrorDetail: string | null = null;
       let resumePollInterval: ReturnType<typeof setInterval> | null = null;
 
       // Pre-check: if the message has already completed (e.g. OpenCode
@@ -1275,6 +1322,7 @@ export function useWorkspace({
                   }
 
                   case "error": {
+                    terminalErrorDetail = typeof data.error === "string" ? data.error : terminalErrorDetail;
                     updateStatus("error", undefined, data.error);
                     streamCompleted = true;
                     break;
@@ -1294,10 +1342,11 @@ export function useWorkspace({
           return;
         }
         console.error("[useWorkspace] Streaming error:", error);
+        terminalErrorDetail = error instanceof Error ? error.message : "Unknown error";
         updateStatus(
           "error",
           undefined,
-          error instanceof Error ? error.message : "Unknown error"
+          terminalErrorDetail
         );
       } finally {
         if (resumePollInterval) {
@@ -1332,8 +1381,12 @@ export function useWorkspace({
           }
         }
 
-        if (isLatest) {
+        if (isLatest && isMountedRef.current) {
           await new Promise((resolve) => setTimeout(resolve, 250));
+          if (!isMountedRef.current) {
+            return;
+          }
+
           const loadLatestMessages = async () => {
             const MAX_ATTEMPTS =
               mode === "send" && assistantMessageId ? 5 : 1;
@@ -1364,7 +1417,11 @@ export function useWorkspace({
           };
 
           const result = await loadLatestMessages();
-          if (result.ok && result.messages) {
+          if (!isMountedRef.current) {
+            return;
+          }
+
+          if (result?.ok && result.messages) {
             const pendingIds = new Set(
               result.messages.filter((message) => message.pending).map((message) => message.id)
             );
@@ -1411,29 +1468,50 @@ export function useWorkspace({
                   return {
                     ...message,
                     pending: false,
-                    statusInfo: { status: "error", detail: "stream_incomplete" },
+                    statusInfo: {
+                      status: "error",
+                      detail: terminalErrorDetail ?? "stream_incomplete",
+                    },
                   };
                 });
               }
             }
 
-            updateSessionMessages(sessionId, hydratedMessages);
-            syncRuntimeMetadataForSession(sessionId, hydratedMessages);
-          } else {
-            if (mode === "send" && !receivedStreamData) {
-              updateSessionMessages(sessionId, (prev) =>
-                prev.filter((message) => !message.id.startsWith("temp-"))
-              );
-            }
+            if (
+              mode === "send" &&
+              !receivedStreamData &&
+              terminalErrorDetail &&
+              hydratedMessages.length === 0
+            ) {
+              const fallbackTerminalErrorDetail = terminalErrorDetail;
 
+              updateSessionMessages(sessionId, (prev) =>
+                prev.map((message) => {
+                  if (message.id !== assistantMessageId) return message;
+                  return {
+                    ...message,
+                    pending: false,
+                    statusInfo: { status: "error", detail: fallbackTerminalErrorDetail },
+                  };
+                })
+              );
+            } else {
+              updateSessionMessages(sessionId, hydratedMessages);
+              syncRuntimeMetadataForSession(sessionId, hydratedMessages);
+            }
+          } else {
             if (!streamCompleted && !receivedAssistantPart) {
-              updateStatus("error", undefined, "stream_incomplete");
+              updateStatus(
+                "error",
+                undefined,
+                terminalErrorDetail ?? "stream_incomplete"
+              );
             }
           }
           scheduleWorkspaceRefresh();
         }
 
-        if (isLatest) {
+        if (isLatest && isMountedRef.current) {
           activeStreamsRef.current.delete(sessionId);
           setSessionStreamStatusTo(sessionId, "ready");
         }
@@ -1867,6 +1945,7 @@ export function useWorkspace({
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      isMountedRef.current = false;
       if (workspaceRefreshTimeoutRef.current) {
         clearTimeout(workspaceRefreshTimeoutRef.current);
         workspaceRefreshTimeoutRef.current = null;
