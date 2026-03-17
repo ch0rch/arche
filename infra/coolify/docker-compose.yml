@@ -76,7 +76,9 @@ services:
       OPENCODE_IMAGE: ${OPENCODE_IMAGE:-ghcr.io/peaberry-studio/arche/workspace:latest}
       OPENCODE_NETWORK: arche_internal
 
-      # Knowledge Base (optional)
+      # Knowledge Base
+      KB_CONTENT_HOST_PATH: ${KB_CONTENT_HOST_PATH:-/opt/arche/kb-content}
+      KB_CONFIG_HOST_PATH: ${KB_CONFIG_HOST_PATH:-/opt/arche/kb-config}
       KB_HOST_PATH: ${KB_HOST_PATH:-}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
@@ -95,6 +97,11 @@ services:
         condition: service_healthy
     labels:
       - coolify.managed=true
+      # When this service is connected to multiple networks (e.g. arche_internal + Coolify service
+      # network), Traefik may pick the wrong IP. Set COOLIFY_SERVICE_NETWORK in Coolify's
+      # environment variables to the Coolify-generated network name (visible in docker network ls)
+      # to force Traefik to use the correct network for routing.
+      - traefik.docker.network=${COOLIFY_SERVICE_NETWORK:-}
 
 networks:
   default:
