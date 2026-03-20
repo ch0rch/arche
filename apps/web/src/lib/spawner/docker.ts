@@ -90,6 +90,24 @@ function getContainerClient(): Docker {
   });
 }
 
+async function ensureImageExists(image: string): Promise<void> {
+  const docker = getContainerClient();
+  try {
+    await docker.getImage(image).inspect();
+  } catch {
+    // Image not present locally — pull it
+    await new Promise<void>((resolve, reject) => {
+      docker.pull(image, (err: Error | null, stream: NodeJS.ReadableStream) => {
+        if (err) return reject(err);
+        docker.modem.followProgress(stream, (progressErr: Error | null) => {
+          if (progressErr) reject(progressErr);
+          else resolve();
+        });
+      });
+    });
+  }
+}
+
 export async function createContainer(
   slug: string,
   password: string,
@@ -98,6 +116,7 @@ export async function createContainer(
   gitAuthor?: { name: string; email?: string }
 ) {
   const docker = getContainerClient();
+  await ensureImageExists(getOpencodeImage());
   const containerName = `opencode-${slug}`;
   const volumeName = `arche-workspace-${slug}`;
   const opencodeShareVolumeName = `arche-opencode-share-${slug}`;

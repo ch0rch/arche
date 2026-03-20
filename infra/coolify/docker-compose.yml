@@ -107,6 +107,7 @@ networks:
   default:
   internal:
     name: arche_internal
+    external: true
 
 volumes:
   postgres_data:
