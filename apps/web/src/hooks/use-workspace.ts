@@ -21,6 +21,7 @@ import type {
 } from "@/lib/opencode/types";
 import { extractTextContent, transformParts } from "@/lib/opencode/transform";
 import { PROVIDERS, type ProviderId } from "@/lib/providers/types";
+import { INITIAL_SSE_PARSE_STATE, parseSseChunk } from "@/lib/sse-parser";
 import {
   canAutoResume,
   recordResumeFailure,
@@ -40,6 +41,11 @@ export type AgentCatalogItem = {
   displayName: string;
   model?: string;
   isPrimary: boolean;
+};
+
+type ProviderStatusEntry = {
+  providerId: ProviderId;
+  status: string;
 };
 
 const STALE_PENDING_ASSISTANT_MS = 5_000;
@@ -92,6 +98,85 @@ function areMessagesEqual(left: WorkspaceMessage, right: WorkspaceMessage): bool
 function areMessageListsEqual(left: WorkspaceMessage[], right: WorkspaceMessage[]): boolean {
   if (left.length !== right.length) return false;
   return left.every((message, index) => areMessagesEqual(message, right[index]));
+}
+
+function extractPartDeltaText(delta: unknown): string | null {
+  if (typeof delta === "string") {
+    return delta;
+  }
+
+  if (!delta || typeof delta !== "object") {
+    return null;
+  }
+
+  const maybeText = (delta as { text?: unknown }).text;
+  return typeof maybeText === "string" ? maybeText : null;
+}
+
+function applyDeltaToPart(
+  messageId: string,
+  part: unknown,
+  delta: unknown,
+  textAccumulatorByPart: Map<string, string>
+): unknown {
+  if (!part || typeof part !== "object") {
+    return part;
+  }
+
+  const partRecord = part as Record<string, unknown>;
+  const partType = partRecord.type;
+  if (partType !== "text" && partType !== "reasoning") {
+    return part;
+  }
+
+  const partId =
+    typeof partRecord.id === "string" && partRecord.id.trim().length > 0
+      ? partRecord.id
+      : `${String(partType)}:${messageId}`;
+  const accumulatorKey = `${messageId}:${partId}`;
+  const partText = typeof partRecord.text === "string" ? partRecord.text : "";
+
+  if (partText.length > 0) {
+    textAccumulatorByPart.set(accumulatorKey, partText);
+    return {
+      ...partRecord,
+      id: partId,
+    };
+  }
+
+  const deltaText = extractPartDeltaText(delta);
+  if (!deltaText || deltaText.length === 0) {
+    return {
+      ...partRecord,
+      id: partId,
+    };
+  }
+
+  const nextText = `${textAccumulatorByPart.get(accumulatorKey) ?? ""}${deltaText}`;
+  textAccumulatorByPart.set(accumulatorKey, nextText);
+
+  return {
+    ...partRecord,
+    id: partId,
+    text: nextText,
+  };
+}
+
+export function filterModelsByProviderStatus(
+  models: AvailableModel[],
+  providerStatuses: ProviderStatusEntry[]
+): AvailableModel[] {
+  const enabledProviders = new Set(
+    providerStatuses
+      .filter((provider) => provider.status === "enabled")
+      .map((provider) => provider.providerId)
+  );
+
+  return models.filter((model) => {
+    if (!PROVIDERS.includes(model.providerId as ProviderId)) return true;
+    if (model.providerId === "opencode") return true;
+    return enabledProviders.has(model.providerId as ProviderId);
+  });
 }
 
 function getActiveSessionStorageKey(slug: string): string {
@@ -216,6 +301,9 @@ export type UseWorkspaceOptions = {
   pollInterval?: number;
   /** Skip connection attempts when false */
   enabled?: boolean;
+  workspaceAgentEnabled?: boolean;
+  /** Enable instance heartbeat for idle timeout (web mode) */
+  reaperEnabled?: boolean;
 };
 
 export type UseWorkspaceReturn = {
@@ -289,6 +377,8 @@ export function useWorkspace({
   slug,
   pollInterval = 5000,
   enabled = true,
+  workspaceAgentEnabled = true,
+  reaperEnabled = true,
 }: UseWorkspaceOptions): UseWorkspaceReturn {
   const activeSessionStorageKey = getActiveSessionStorageKey(slug);
 
@@ -307,9 +397,13 @@ export function useWorkspace({
     () => onConnectedRef.current(),
   );
 
-  const files = useWorkspaceFiles(slug);
-  const diffsHook = useWorkspaceDiffs(slug, enabled, isConnected);
-  useInstanceHeartbeat(slug, enabled);
+  const files = useWorkspaceFiles(slug, workspaceAgentEnabled);
+  const diffsHook = useWorkspaceDiffs(
+    slug,
+    enabled && workspaceAgentEnabled,
+    isConnected
+  );
+  useInstanceHeartbeat(slug, enabled && reaperEnabled);
 
   // Sessions
   const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
@@ -345,6 +439,7 @@ export function useWorkspace({
   }>());
   const resumeFailureStateRef = useRef<Map<string, ResumeFailureState>>(new Map());
   const sessionExecutorsRef = useRef(new Map<string, SerialJobExecutor>());
+  const latestStreamTokensRef = useRef(new Map<string, number>());
   const isMountedRef = useRef(true);
 
   // Workspace refresh scheduling (diffs + files after stream completion)
@@ -729,6 +824,9 @@ export function useWorkspace({
 
       activeStream.abortController.abort();
       activeStreamsRef.current.delete(sessionId);
+      if (latestStreamTokensRef.current.get(sessionId) === activeStream.token) {
+        latestStreamTokensRef.current.delete(sessionId);
+      }
       streamCounterRef.current += 1;
       setSessionStreamStatusTo(sessionId, "ready");
     },
@@ -739,6 +837,7 @@ export function useWorkspace({
     for (const sessionId of activeStreamsRef.current.keys()) {
       const activeStream = activeStreamsRef.current.get(sessionId);
       activeStream?.abortController.abort();
+      latestStreamTokensRef.current.delete(sessionId);
       setSessionStreamStatusTo(sessionId, "ready");
     }
     activeStreamsRef.current.clear();
@@ -1066,6 +1165,7 @@ export function useWorkspace({
         targetMessageId,
         abortController,
       });
+      latestStreamTokensRef.current.set(sessionId, token);
 
       setSessionStreamStatusTo(sessionId, "submitted");
 
@@ -1086,6 +1186,7 @@ export function useWorkspace({
       let assistantMessageId: string | null =
         mode === "resume" ? targetMessageId : null;
       const bufferedParts = new Map<string, MessagePart[]>();
+      const textAccumulatorByPart = new Map<string, string>();
       let streamCompleted = false;
       let receivedAssistantPart = false;
       let receivedStreamData = false;
@@ -1118,9 +1219,10 @@ export function useWorkspace({
         bufferedParts.delete(messageId);
       };
 
-      const handlePartUpdate = (part: unknown, messageId?: string) => {
+      const handlePartUpdate = (part: unknown, delta: unknown, messageId?: string) => {
         if (!messageId) return;
-        const transformed = transformParts([part]);
+        const withDelta = applyDeltaToPart(messageId, part, delta, textAccumulatorByPart);
+        const transformed = transformParts([withDelta]);
         if (transformed.length === 0) return;
 
         if (mode === "resume") {
@@ -1211,102 +1313,97 @@ export function useWorkspace({
         }
 
         const decoder = new TextDecoder();
-        let buffer = "";
+        let parseState = INITIAL_SSE_PARSE_STATE;
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
+          const parsed = parseSseChunk(parseState, decoder.decode(value, { stream: true }));
+          parseState = parsed.state;
 
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
+          for (const parsedEvent of parsed.events) {
+            try {
+              receivedStreamData = true;
+              setSessionStreamStatusTo(sessionId, "streaming");
+              const data = JSON.parse(parsedEvent.data);
 
-          let eventType = "";
-          let eventData = "";
-
-          for (const line of lines) {
-            if (line.startsWith("event:")) {
-              eventType = line.slice(6).trim();
-            } else if (line.startsWith("data:")) {
-              eventData = line.slice(5).trim();
-            } else if (line === "" && eventData) {
-              try {
-                receivedStreamData = true;
-                setSessionStreamStatusTo(sessionId, "streaming");
-                const data = JSON.parse(eventData);
-
-                switch (eventType) {
-                  case "status": {
-                    const status = data.status as MessageStatus;
-                    updateStatus(status, data.toolName, data.detail);
-                    if (status === "complete" || status === "error") {
-                      streamCompleted = true;
-                    }
-                    break;
+              switch (parsedEvent.event) {
+                case "status": {
+                  const status = data.status as MessageStatus;
+                  updateStatus(status, data.toolName, data.detail);
+                  if (status === "complete" || status === "error") {
+                    streamCompleted = true;
                   }
+                  break;
+                }
 
-                  case "message": {
-                    if (
-                      mode === "send" &&
-                      data.role === "assistant" &&
-                      !assistantMessageId &&
-                      typeof data.id === "string"
-                    ) {
-                      assistantMessageId = data.id;
-                      flushBufferedParts(data.id);
-                    }
-                    break;
+                case "message": {
+                  if (
+                    mode === "send" &&
+                    data.role === "assistant" &&
+                    !assistantMessageId &&
+                    typeof data.id === "string"
+                  ) {
+                    assistantMessageId = data.id;
+                    flushBufferedParts(data.id);
                   }
+                  break;
+                }
 
-                  case "assistant-meta": {
-                    if (typeof data.providerID === "string" && typeof data.modelID === "string") {
-                      syncRuntimeSelectedModel(sessionId, data.providerID, data.modelID);
-                    }
-                    if (typeof data.agent === "string") {
-                      syncActiveAgentFromRuntime(sessionId, data.agent);
-                    }
-                    break;
+                case "assistant-meta": {
+                  if (typeof data.providerID === "string" && typeof data.modelID === "string") {
+                    syncRuntimeSelectedModel(sessionId, data.providerID, data.modelID);
                   }
+                  if (typeof data.agent === "string") {
+                    syncActiveAgentFromRuntime(sessionId, data.agent);
+                  }
+                  break;
+                }
 
-                  case "agent": {
-                    if (typeof data.agent === "string") {
-                      syncActiveAgentFromRuntime(sessionId, data.agent);
-                    }
-                    break;
+                case "agent": {
+                  if (typeof data.agent === "string") {
+                    syncActiveAgentFromRuntime(sessionId, data.agent);
                   }
+                  break;
+                }
 
-                  case "part": {
-                    if (!data.part) break;
-                    const messageId = data.messageId ?? data.part?.messageID;
-                    handlePartUpdate(data.part, messageId);
-                    break;
-                  }
+                case "part": {
+                  if (!data.part) break;
+                  const messageId = data.messageId ?? data.part?.messageID;
+                  handlePartUpdate(data.part, data.delta, messageId);
+                  break;
+                }
 
-                  case "workspace-updated": {
-                    scheduleWorkspaceRefresh();
-                    break;
-                  }
+                case "workspace-updated": {
+                  scheduleWorkspaceRefresh();
+                  break;
+                }
 
                   case "done": {
+                    updateStatus("complete");
                     streamCompleted = true;
                     break;
                   }
 
-                  case "error": {
-                    terminalErrorDetail = typeof data.error === "string" ? data.error : terminalErrorDetail;
-                    updateStatus("error", undefined, data.error);
-                    streamCompleted = true;
-                    break;
-                  }
+                case "error": {
+                  terminalErrorDetail = typeof data.error === "string" ? data.error : terminalErrorDetail;
+                  updateStatus("error", undefined, data.error);
+                  streamCompleted = true;
+                  break;
                 }
-              } catch {
-                // Invalid JSON, skip
               }
-
-              eventType = "";
-              eventData = "";
+            } catch {
+              // Invalid JSON, skip
             }
+          }
+
+          // In Electron's Turbopack dev server, the HTTP response body doesn't
+          // signal EOF after controller.close(), so reader.read() hangs
+          // indefinitely. Break as soon as the server signals completion.
+          if (streamCompleted) {
+            reader.cancel().catch(() => {});
+            break;
           }
         }
       } catch (error) {
@@ -1325,7 +1422,7 @@ export function useWorkspace({
           clearInterval(resumePollInterval);
         }
 
-        const isLatest = activeStreamsRef.current.get(sessionId)?.token === token;
+        const isLatestStream = () => latestStreamTokensRef.current.get(sessionId) === token;
 
         if (mode === "resume") {
           if (streamCompleted || receivedAssistantPart) {
@@ -1353,9 +1450,16 @@ export function useWorkspace({
           }
         }
 
-        if (isLatest && isMountedRef.current) {
+        if (isLatestStream()) {
+          activeStreamsRef.current.delete(sessionId);
+          if (isMountedRef.current) {
+            setSessionStreamStatusTo(sessionId, "ready");
+          }
+        }
+
+        if (isLatestStream() && isMountedRef.current) {
           await new Promise((resolve) => setTimeout(resolve, 250));
-          if (!isMountedRef.current) {
+          if (!isMountedRef.current || !isLatestStream()) {
             return;
           }
 
@@ -1389,7 +1493,7 @@ export function useWorkspace({
           };
 
           const result = await loadLatestMessages();
-          if (!isMountedRef.current) {
+          if (!isMountedRef.current || !isLatestStream()) {
             return;
           }
 
@@ -1456,14 +1560,35 @@ export function useWorkspace({
               hydratedMessages.length === 0
             ) {
               const fallbackTerminalErrorDetail = terminalErrorDetail;
+              const idToUpdate = assistantMessageId ?? targetMessageId;
 
               updateSessionMessages(sessionId, (prev) =>
                 prev.map((message) => {
-                  if (message.id !== assistantMessageId) return message;
+                  if (message.id !== idToUpdate) return message;
                   return {
                     ...message,
                     pending: false,
                     statusInfo: { status: "error", detail: fallbackTerminalErrorDetail },
+                  };
+                })
+              );
+            } else if (
+              mode === "send" &&
+              terminalErrorDetail &&
+              !assistantMessageId
+            ) {
+              // Stream received initial events (e.g. "thinking" status) but
+              // the prompt failed before creating an assistant message on the
+              // server. Preserve temp messages and show error.
+              const fallbackDetail = terminalErrorDetail;
+
+              updateSessionMessages(sessionId, (prev) =>
+                prev.map((message) => {
+                  if (message.id !== targetMessageId) return message;
+                  return {
+                    ...message,
+                    pending: false,
+                    statusInfo: { status: "error", detail: fallbackDetail },
                   };
                 })
               );
@@ -1483,9 +1608,8 @@ export function useWorkspace({
           scheduleWorkspaceRefresh();
         }
 
-        if (isLatest && isMountedRef.current) {
-          activeStreamsRef.current.delete(sessionId);
-          setSessionStreamStatusTo(sessionId, "ready");
+        if (isLatestStream()) {
+          latestStreamTokensRef.current.delete(sessionId);
         }
       }
     },
@@ -1668,18 +1792,12 @@ export function useWorkspace({
       });
       if (response.ok) {
         const data = (await response.json()) as {
-          providers?: Array<{ providerId: ProviderId; status: string }>;
+          providers?: ProviderStatusEntry[];
         };
-        const enabledProviders = new Set(
-          (data.providers ?? [])
-            .filter((p) => p.status === "enabled")
-            .map((p) => p.providerId)
+        nextModels = filterModelsByProviderStatus(
+          nextModels,
+          data.providers ?? []
         );
-
-        nextModels = nextModels.filter((m) => {
-          if (!PROVIDERS.includes(m.providerId as ProviderId)) return true;
-          return enabledProviders.has(m.providerId as ProviderId);
-        });
       }
     } catch {
       // ignore — fall back to server action list
@@ -1891,17 +2009,29 @@ export function useWorkspace({
 
     const interval = setInterval(() => {
       loadSessions();
-      diffsHook.refreshDiffs();
 
       const currentSessions = sessionsRef.current;
       const currentActiveSessionId = activeSessionIdRef.current;
+      const hasBusySessions = currentSessions.some(
+        (session) => session.status === "busy",
+      );
+
+      if (hasBusySessions) {
+        diffsHook.refreshDiffs();
+      }
+
       const sessionIdsToRefresh = new Set<string>();
       currentSessions.forEach((session) => {
         if (session.status === "busy") {
           sessionIdsToRefresh.add(session.id);
         }
       });
-      if (currentActiveSessionId) {
+      if (
+        currentActiveSessionId &&
+        currentSessions.some(
+          (s) => s.id === currentActiveSessionId && s.status === "busy",
+        )
+      ) {
         sessionIdsToRefresh.add(currentActiveSessionId);
       }
 
@@ -1921,6 +2051,7 @@ export function useWorkspace({
 
   // Cleanup on unmount
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       if (workspaceRefreshTimeoutRef.current) {

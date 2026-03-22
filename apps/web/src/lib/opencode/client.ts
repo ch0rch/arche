@@ -6,28 +6,38 @@
  */
 
 import { createOpencodeClient, type OpencodeClient } from '@opencode-ai/sdk/v2/client'
-import { prisma } from '@/lib/prisma'
-import { decryptPassword } from '@/lib/spawner/crypto'
 
-const OPENCODE_PORT = 4096
+import { instanceService } from '@/lib/services'
+import { decryptPassword } from '@/lib/spawner/crypto'
+import { getRuntimeCapabilities } from '@/lib/runtime/capabilities'
+
+const DEFAULT_OPENCODE_PORT = 4096
+const DESKTOP_LOOPBACK_HOST = '127.0.0.1'
+const DESKTOP_OPENCODE_PORT_ENV = 'ARCHE_DESKTOP_OPENCODE_PORT'
+
+function getDesktopOpencodePort(): number {
+  const raw = process.env[DESKTOP_OPENCODE_PORT_ENV]
+  const parsed = raw ? Number(raw) : Number.NaN
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_OPENCODE_PORT
+}
 
 /**
  * Get the internal network URL for an OpenCode instance.
  * Container names follow the pattern: opencode-{slug}
+ * In desktop mode, use the IPv4 loopback address instead of container hostname.
  */
 export function getInstanceUrl(slug: string): string {
-  const containerName = `opencode-${slug}`
-  return `http://${containerName}:${OPENCODE_PORT}`
+  const caps = getRuntimeCapabilities()
+  const host = caps.containers ? `opencode-${slug}` : DESKTOP_LOOPBACK_HOST
+  const port = caps.containers ? DEFAULT_OPENCODE_PORT : getDesktopOpencodePort()
+  return `http://${host}:${port}`
 }
 
 /**
  * Get credentials for authenticating with an OpenCode instance.
  */
 async function getInstanceCredentials(slug: string): Promise<{ username: string; password: string } | null> {
-  const instance = await prisma.instance.findUnique({
-    where: { slug },
-    select: { serverPassword: true, status: true }
-  })
+  const instance = await instanceService.findCredentialsBySlug(slug)
   
   if (!instance || !instance.serverPassword || instance.status !== 'running') {
     return null

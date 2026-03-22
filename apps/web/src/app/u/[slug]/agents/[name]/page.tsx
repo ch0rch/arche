@@ -1,9 +1,8 @@
-import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import Link from 'next/link'
 
 import { AgentForm } from '@/components/agents/agent-form'
-import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
+import { getSession } from '@/lib/runtime/session'
 
 export default async function EditAgentPage({
   params
@@ -12,9 +11,7 @@ export default async function EditAgentPage({
 }) {
   const { slug, name } = await params
 
-  const cookieStore = await cookies()
-  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value
-  const session = token ? await getSessionFromToken(token) : null
+  const session = await getSession()
 
   if (session?.user.role !== 'ADMIN') {
     redirect(`/u/${slug}/agents`)
@@ -33,7 +30,7 @@ export default async function EditAgentPage({
             </Link>
           </div>
           <div className="space-y-2">
-            <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
+            <h1 className="type-display text-3xl font-semibold tracking-tight">
               Edit agent
             </h1>
             <p className="text-muted-foreground">

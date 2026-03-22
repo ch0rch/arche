@@ -1,0 +1,275 @@
+import { app, BrowserWindow, dialog, session, shell } from 'electron'
+import { execFileSync } from 'child_process'
+import { randomBytes } from 'crypto'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+import {
+  getMissingPackagedRuntimeBinaries,
+  getPackagedNodeBinaryPath,
+  getRuntimeBinaryEnv,
+} from './runtime-binaries'
+import { findAvailablePort } from './runtime-network'
+import { probeHttpServerReady, RuntimeSupervisor } from './runtime-supervisor'
+
+const DEFAULT_DESKTOP_WEB_PORT = 3000
+const LOOPBACK_HOST = '127.0.0.1'
+const DESKTOP_TOKEN_HEADER = 'x-arche-desktop-token'
+
+let mainWindow: BrowserWindow | null = null
+let nextSupervisor: RuntimeSupervisor | null = null
+let nextPort = DEFAULT_DESKTOP_WEB_PORT
+let runtimeShutdownRequested = false
+let desktopApiToken = ''
+
+function generateDesktopApiToken(): string {
+  return randomBytes(32).toString('base64url')
+}
+
+function getPort(): number {
+  return nextPort
+}
+
+function getNextUrl(): string {
+  return `http://${LOOPBACK_HOST}:${getPort()}`
+}
+
+function getWebAppDir(): string {
+  if (app.isPackaged) {
+    return join(process.resourcesPath, 'web')
+  }
+  return join(__dirname, '..', '..', 'web')
+}
+
+function getDataDir(): string {
+  return process.env.ARCHE_DATA_DIR || join(app.getPath('home'), '.arche')
+}
+
+function setDesktopEnv(): void {
+  process.env.ARCHE_RUNTIME_MODE = 'desktop'
+  process.env.ARCHE_DESKTOP_PLATFORM = process.platform
+  if (app.isPackaged) {
+    process.env.NODE_ENV = 'production'
+  }
+  process.env.ARCHE_DATA_DIR = getDataDir()
+  process.env.ARCHE_DESKTOP_WEB_HOST = LOOPBACK_HOST
+
+  desktopApiToken = generateDesktopApiToken()
+  process.env.ARCHE_DESKTOP_API_TOKEN = desktopApiToken
+}
+
+function ensureDataDirectories(): void {
+  const dataDir = getDataDir()
+  const dirs = [
+    dataDir,
+    join(dataDir, 'kb-config'),
+    join(dataDir, 'kb-content'),
+    join(dataDir, 'users'),
+  ]
+
+  for (const dir of dirs) {
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true })
+    }
+  }
+
+  ensureBareRepo(join(dataDir, 'kb-config'))
+  ensureBareRepo(join(dataDir, 'kb-content'))
+}
+
+function ensureBareRepo(dir: string): void {
+  if (existsSync(join(dir, 'HEAD'))) {
+    return
+  }
+
+  execFileSync('git', ['init', '--bare', dir])
+
+  // Create an initial empty commit so the repo has a valid HEAD
+  const tmpClone = join(mkdtempSync(join(tmpdir(), 'arche-init-')), 'repo')
+  try {
+    execFileSync('git', ['clone', dir, tmpClone])
+    execFileSync('git', ['commit', '--allow-empty', '-m', 'Initial commit'], { cwd: tmpClone })
+    execFileSync('git', ['push', 'origin', 'HEAD:refs/heads/main'], { cwd: tmpClone })
+    execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: dir })
+  } finally {
+    rmSync(join(tmpClone, '..'), { recursive: true, force: true })
+  }
+}
+
+function resetDesktopDevNextArtifacts(): void {
+  if (app.isPackaged) {
+    return
+  }
+
+  const desktopDistDir = join(getWebAppDir(), '.next-desktop')
+  if (existsSync(desktopDistDir)) {
+    rmSync(desktopDistDir, { recursive: true, force: true })
+  }
+}
+
+function getRuntimeBinaryOptions() {
+  return {
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    devBaseDir: __dirname,
+    env: process.env,
+    platform: process.platform,
+  }
+}
+
+function getDesktopRuntimeEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...getRuntimeBinaryEnv(getRuntimeBinaryOptions()),
+  }
+}
+
+function verifyPackagedRuntimeBinaries(): string[] {
+  if (!app.isPackaged) {
+    return []
+  }
+
+  return getMissingPackagedRuntimeBinaries(getRuntimeBinaryOptions())
+}
+
+async function startNextServer(): Promise<void> {
+  if (!nextSupervisor) {
+    nextSupervisor = createNextSupervisor()
+  }
+
+  await nextSupervisor.start()
+}
+
+function createNextSupervisor(): RuntimeSupervisor {
+  return new RuntimeSupervisor({
+    componentName: 'next',
+    command: app.isPackaged ? getPackagedNodeBinaryPath(getRuntimeBinaryOptions()) : 'pnpm',
+    args: app.isPackaged
+      ? ['server.js']
+      : ['exec', 'next', 'dev', '-H', LOOPBACK_HOST, '-p', String(getPort())],
+    cwd: getWebAppDir(),
+    env: {
+      ...getDesktopRuntimeEnv(),
+      ARCHE_RUNTIME_MODE: 'desktop',
+      ARCHE_DESKTOP_NEXT_DIST_DIR: '.next-desktop',
+      ARCHE_DESKTOP_WEB_PORT: String(getPort()),
+      PORT: String(getPort()),
+      HOSTNAME: LOOPBACK_HOST,
+    },
+    probeReadiness: () => probeHttpServerReady(getNextUrl()),
+    restartOnCrash: true,
+    maxRestarts: 3,
+    log: (event) => {
+      process.stdout.write(`[desktop-supervisor] ${JSON.stringify(event)}\n`)
+    },
+  })
+}
+
+async function initializeDesktopWebPort(): Promise<void> {
+  nextPort = await findAvailablePort(DEFAULT_DESKTOP_WEB_PORT, LOOPBACK_HOST)
+  process.env.ARCHE_DESKTOP_WEB_PORT = String(nextPort)
+}
+
+function installTokenHeaderInjection(): void {
+  const nextOrigin = getNextUrl()
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [`${nextOrigin}/*`] },
+    (details, callback) => {
+      details.requestHeaders[DESKTOP_TOKEN_HEADER] = desktopApiToken
+      callback({ requestHeaders: details.requestHeaders })
+    },
+  )
+}
+
+function createWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1280,
+    height: 800,
+    minWidth: 800,
+    minHeight: 600,
+    title: 'Arche',
+    backgroundColor: '#f7f4ef',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
+    trafficLightPosition: process.platform === 'darwin' ? { x: 20, y: 22 } : undefined,
+    webPreferences: {
+      preload: join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  })
+
+  mainWindow.loadURL(getNextUrl())
+
+  // Open external links in the default browser
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      shell.openExternal(url)
+    }
+    return { action: 'deny' }
+  })
+
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
+}
+
+async function shutdownDesktopRuntime(): Promise<void> {
+  if (!nextSupervisor) {
+    return
+  }
+
+  await nextSupervisor.stop()
+}
+
+app.whenReady().then(async () => {
+  setDesktopEnv()
+  ensureDataDirectories()
+  resetDesktopDevNextArtifacts()
+  await initializeDesktopWebPort()
+
+  const missingRuntimeBinaries = verifyPackagedRuntimeBinaries()
+  if (missingRuntimeBinaries.length > 0) {
+    dialog.showErrorBox(
+      'Arche',
+      `Missing packaged runtime binaries: ${missingRuntimeBinaries.join(', ')}.`,
+    )
+    app.quit()
+    return
+  }
+
+  try {
+    await startNextServer()
+  } catch (error) {
+    console.error('Failed to start Next.js server:', error)
+    dialog.showErrorBox('Arche', 'Failed to start the local desktop runtime.')
+    app.quit()
+    return
+  }
+
+  installTokenHeaderInjection()
+  createWindow()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow()
+    }
+  })
+})
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit()
+  }
+})
+
+app.on('before-quit', (event) => {
+  if (!runtimeShutdownRequested) {
+    runtimeShutdownRequested = true
+    event.preventDefault()
+    void shutdownDesktopRuntime().finally(() => {
+      app.quit()
+    })
+  }
+})

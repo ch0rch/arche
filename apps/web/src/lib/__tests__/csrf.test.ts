@@ -1,20 +1,42 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const originalPublicBaseUrl = process.env.ARCHE_PUBLIC_BASE_URL
+const originalRuntimeMode = process.env.ARCHE_RUNTIME_MODE
 
 describe('csrf validateSameOrigin', () => {
   beforeEach(() => {
     vi.resetModules()
     delete process.env.ARCHE_PUBLIC_BASE_URL
+    delete process.env.ARCHE_RUNTIME_MODE
   })
 
   afterEach(() => {
     if (originalPublicBaseUrl === undefined) {
       delete process.env.ARCHE_PUBLIC_BASE_URL
-      return
+    } else {
+      process.env.ARCHE_PUBLIC_BASE_URL = originalPublicBaseUrl
     }
 
-    process.env.ARCHE_PUBLIC_BASE_URL = originalPublicBaseUrl
+    if (originalRuntimeMode === undefined) {
+      delete process.env.ARCHE_RUNTIME_MODE
+    } else {
+      process.env.ARCHE_RUNTIME_MODE = originalRuntimeMode
+    }
+  })
+
+  it('returns ok=false when Origin is missing regardless of runtime mode', async () => {
+    process.env.ARCHE_RUNTIME_MODE = 'desktop'
+    const { validateSameOrigin } = await import('@/lib/csrf')
+
+    const request = new Request('http://127.0.0.1:3000/api/w/local/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: '127.0.0.1:3000',
+      },
+    })
+
+    // validateSameOrigin always validates; callers (withAuth) gate on caps.csrf
+    expect(validateSameOrigin(request)).toEqual({ ok: false })
   })
 
   it('returns ok=false when Origin is missing', async () => {

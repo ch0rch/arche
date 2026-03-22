@@ -28,10 +28,10 @@ Internal service exposing scoped workspace operations:
 
 ```bash
 # From this directory
-podman build -t arche-workspace .
+podman build --build-arg OPENCODE_VERSION="$(cat ../../versions/opencode.version)" -t arche-workspace .
 
 # With a specific OpenCode version
-podman build --build-arg OPENCODE_VERSION=1.1.45 -t arche-workspace:1.1.45 .
+podman build --build-arg OPENCODE_VERSION=1.2.24 -t arche-workspace:1.2.24 .
 ```
 
 ## Usage

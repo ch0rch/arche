@@ -11,10 +11,16 @@ vi.mock('@/lib/auth', () => ({
 }))
 
 const mockFindUnique = vi.fn()
+const mockInitDesktopPrisma = vi.fn()
+const mockUserUpsert = vi.fn()
 vi.mock('@/lib/prisma', () => ({
+  initDesktopPrisma: (...args: unknown[]) => mockInitDesktopPrisma(...args),
   prisma: {
     instance: {
       findUnique: (...args: unknown[]) => mockFindUnique(...args),
+    },
+    user: {
+      upsert: (...args: unknown[]) => mockUserUpsert(...args),
     },
   },
 }))
@@ -22,6 +28,15 @@ vi.mock('@/lib/prisma', () => ({
 const mockDecryptPassword = vi.fn()
 vi.mock('@/lib/spawner/crypto', () => ({
   decryptPassword: (...args: unknown[]) => mockDecryptPassword(...args),
+}))
+
+vi.mock('@/lib/runtime/desktop/token', () => ({
+  DESKTOP_TOKEN_HEADER: 'x-arche-desktop-token',
+  validateDesktopToken: () => true,
+}))
+
+vi.mock('@/lib/prisma-desktop-init', () => ({
+  initDesktopPrisma: () => Promise.resolve(),
 }))
 
 function session(slug: string, role: 'USER' | 'ADMIN' = 'USER') {
@@ -49,17 +64,26 @@ describe('chat stream attachments forwarding', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.resetModules()
+    delete process.env.ARCHE_RUNTIME_MODE
 
     mockGetAuthenticatedUser.mockResolvedValue(session('alice'))
     mockFindUnique.mockResolvedValue({
       serverPassword: 'encrypted-password',
       status: 'running',
     })
+    mockInitDesktopPrisma.mockResolvedValue(undefined)
+    mockUserUpsert.mockResolvedValue({
+      id: 'local',
+      email: 'local@arche.local',
+      slug: 'local',
+      role: 'ADMIN',
+    })
     mockDecryptPassword.mockReturnValue('secret-password')
     mockExtractPdfText.mockResolvedValue({ text: 'Extracted report body' })
   })
 
   afterEach(() => {
+    delete process.env.ARCHE_RUNTIME_MODE
     vi.unstubAllGlobals()
   })
 
@@ -439,6 +463,149 @@ describe('chat stream attachments forwarding', () => {
       type: 'text',
       text:
         'Attached workspace files:\n- /workspace/.arche/attachments/sales.xlsx\nIf direct file parsing is unavailable, inspect these paths with available tools.',
+    })
+  })
+
+  it('inlines image attachments as data URLs', async () => {
+    let promptBody: Record<string, unknown> | null = null
+    const fakeImageBytes = Buffer.from('fake-png-content')
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+
+      if (url.endsWith('/event')) {
+        return emptyEventStreamResponse()
+      }
+
+      if (url.includes(':4097/files/read')) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            content: fakeImageBytes.toString('base64'),
+            encoding: 'base64',
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (url.includes('/prompt_async')) {
+        promptBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response('prompt_failed', { status: 500 })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'What does this image show?',
+        attachments: [
+          {
+            path: '.arche/attachments/screenshot.png',
+            filename: 'screenshot.png',
+            mime: 'image/png',
+          },
+        ],
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    await res.text()
+
+    expect(promptBody).not.toBeNull()
+    const promptParts = (promptBody?.parts ?? []) as Array<Record<string, unknown>>
+    expect(promptParts).toHaveLength(3)
+    expect(promptParts[0]).toEqual({
+      type: 'text',
+      text: 'What does this image show?',
+    })
+    expect(promptParts[1]).toEqual({
+      type: 'file',
+      mime: 'image/png',
+      filename: 'screenshot.png',
+      url: `data:image/png;base64,${fakeImageBytes.toString('base64')}`,
+    })
+    expect(promptParts[2]).toEqual({
+      type: 'text',
+      text:
+        'Attached workspace files:\n- /workspace/.arche/attachments/screenshot.png\nIf direct file parsing is unavailable, inspect these paths with available tools.',
+    })
+  })
+
+  it('falls back to file URL when image read fails', async () => {
+    let promptBody: Record<string, unknown> | null = null
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+
+      if (url.endsWith('/event')) {
+        return emptyEventStreamResponse()
+      }
+
+      if (url.includes(':4097/files/read')) {
+        return new Response(
+          JSON.stringify({ ok: false, error: 'not_found' }),
+          { status: 404, headers: { 'Content-Type': 'application/json' } },
+        )
+      }
+
+      if (url.includes('/prompt_async')) {
+        promptBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return new Response('prompt_failed', { status: 500 })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'Describe this',
+        attachments: [
+          {
+            path: '.arche/attachments/photo.jpg',
+            filename: 'photo.jpg',
+            mime: 'image/jpeg',
+          },
+        ],
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    await res.text()
+
+    expect(promptBody).not.toBeNull()
+    const promptParts = (promptBody?.parts ?? []) as Array<Record<string, unknown>>
+    expect(promptParts[1]).toEqual({
+      type: 'file',
+      mime: 'image/jpeg',
+      filename: 'photo.jpg',
+      url: 'file:///workspace/.arche/attachments/photo.jpg',
     })
   })
 
@@ -862,6 +1029,81 @@ describe('chat stream attachments forwarding', () => {
     expect(sseOutput).toContain('event: done')
   })
 
+  it('forwards message.part.delta events as part updates', async () => {
+    const encoder = new TextEncoder()
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('/prompt_async')) {
+        return new Response(null, { status: 204 })
+      }
+
+      if (url.endsWith('/event')) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                [
+                  'event: message',
+                  'data: {"type":"message.updated","properties":{"info":{"id":"msg-1","role":"assistant","sessionID":"session-1"}}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"message.part.delta","properties":{"messageID":"msg-1","partID":"part-1","partType":"text","delta":"Hel"}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"message.part.delta","properties":{"messageID":"msg-1","partID":"part-1","partType":"text","delta":{"text":"lo"}}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"session.status","properties":{"status":{"type":"idle"},"sessionID":"session-1"}}',
+                  '',
+                  '',
+                ].join('\n'),
+              ),
+            )
+            controller.close()
+          },
+        })
+
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'hello',
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    const sseOutput = await res.text()
+
+    expect(sseOutput).toContain('event: part')
+    expect(sseOutput).toContain('"messageId":"msg-1"')
+    expect(sseOutput).toContain('"delta":"Hel"')
+    expect(sseOutput).toContain('"delta":{"text":"lo"}')
+    expect(sseOutput).toContain('event: done')
+  })
+
   it('keeps assistant part when part arrives before message metadata', async () => {
     const encoder = new TextEncoder()
 
@@ -930,5 +1172,148 @@ describe('chat stream attachments forwarding', () => {
     expect(sseOutput).toContain('event: part')
     expect(sseOutput).toContain('"messageId":"msg-o1"')
     expect(sseOutput).toContain('event: done')
+  })
+
+  it('completes when the upstream event stream ends after assistant parts without idle', async () => {
+    const encoder = new TextEncoder()
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('/prompt_async')) {
+        return new Response(null, { status: 204 })
+      }
+
+      if (url.endsWith('/event')) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                [
+                  'event: message',
+                  'data: {"type":"session.status","properties":{"status":{"type":"busy"},"sessionID":"session-1"}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"message.updated","properties":{"info":{"id":"msg-assistant","role":"assistant","sessionID":"session-1"}}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"message.part.updated","properties":{"part":{"id":"part-1","type":"text","text":"Hello","messageID":"msg-assistant","sessionID":"session-1"},"delta":"Hello"}}',
+                  '',
+                  '',
+                ].join('\n'),
+              ),
+            )
+            controller.close()
+          },
+        })
+
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'hello',
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    const sseOutput = await res.text()
+
+    expect(sseOutput).toContain('event: part')
+    expect(sseOutput).toContain('event: done')
+    expect(sseOutput).not.toContain('stream_incomplete')
+  })
+
+  it('does not ignore post-response fetch failed session errors in desktop mode', async () => {
+    process.env.ARCHE_RUNTIME_MODE = 'desktop'
+    process.env.ARCHE_DESKTOP_PLATFORM = 'darwin'
+    process.env.ARCHE_DESKTOP_WEB_HOST = '127.0.0.1'
+    const encoder = new TextEncoder()
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+
+      if (url.includes('/prompt_async')) {
+        return new Response(null, { status: 204 })
+      }
+
+      if (url.endsWith('/event')) {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                [
+                  'event: message',
+                  'data: {"type":"message.updated","properties":{"info":{"id":"msg-1","role":"assistant","sessionID":"session-1"}}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"message.part.updated","properties":{"part":{"id":"part-1","type":"text","text":"Hola","messageID":"msg-1","sessionID":"session-1"},"delta":"Hola"}}',
+                  '',
+                  'event: message',
+                  'data: {"type":"session.error","properties":{"error":{"name":"UnknownError","data":{"message":"fetch failed"}},"sessionID":"session-1"}}',
+                  '',
+                  '',
+                ].join('\n'),
+              ),
+            )
+            controller.close()
+          },
+        })
+
+        return new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'text/event-stream' },
+        })
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { POST } = await import('@/app/api/w/[slug]/chat/stream/route')
+    const req = new Request('http://localhost/api/w/alice/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        origin: 'http://localhost',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        sessionId: 'session-1',
+        text: 'hola',
+      }),
+    })
+
+    const res = await POST(req as never, {
+      params: Promise.resolve({ slug: 'alice' }),
+    })
+
+    expect(res.status).toBe(200)
+    const sseOutput = await res.text()
+
+    expect(sseOutput).toContain('event: part')
+    expect(sseOutput).toContain('event: error')
+    expect(sseOutput).toContain('fetch failed')
   })
 })

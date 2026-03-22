@@ -91,6 +91,32 @@ const defaultProps = {
   searchInputRef: createRef<HTMLInputElement>(),
 };
 
+const localStorageMock = (() => {
+  let store: Record<string, string> = {};
+
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+  };
+})();
+
+function clearCookies() {
+  document.cookie.split(';').forEach((cookie) => {
+    const [name] = cookie.trim().split('=');
+    if (!name) return;
+
+    document.cookie = `${name}=; Path=/; Max-Age=0`;
+  });
+}
+
 function renderLeftPanel(overrides?: Partial<typeof defaultProps>) {
   return render(
     <WorkspaceThemeProvider storageScope="alice">
@@ -100,7 +126,9 @@ function renderLeftPanel(overrides?: Partial<typeof defaultProps>) {
 }
 
 beforeEach(() => {
+  vi.stubGlobal("localStorage", localStorageMock);
   localStorage.clear();
+  clearCookies();
   // Mock fetch for connectors/providers
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
     ok: true,
@@ -111,6 +139,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("LeftPanel", () => {
@@ -161,6 +190,12 @@ describe("LeftPanel", () => {
     });
   });
 
+  it("hides create file controls when knowledge editing is disabled", () => {
+    renderLeftPanel({ canCreateKnowledgeFile: false });
+
+    expect(screen.queryByRole("button", { name: "Create file" })).toBeNull();
+  });
+
   it("hydrates subpanel collapsed state from storage", () => {
     localStorage.setItem(
       "arche.workspace.alice.left-panel",
@@ -180,6 +215,36 @@ describe("LeftPanel", () => {
     // topCollapsed = true means the section has flexBasis: HEADER_HEIGHT and grow: 0
     // We can check that the persisted value was loaded by verifying what gets persisted back
     expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"topCollapsed":true');
+  });
+
+  it("hydrates subpanel collapsed state from the cookie when localStorage is empty", () => {
+    document.cookie = `arche-workspace-left-panel-alice=${encodeURIComponent(JSON.stringify({
+      topCollapsed: true,
+      midCollapsed: false,
+      bottomCollapsed: true,
+      topRatio: 0.42,
+      midRatio: 0.33,
+    }))}; Path=/`;
+
+    renderLeftPanel();
+
+    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"topCollapsed":true');
+    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"bottomCollapsed":true');
+  });
+
+  it("hydrates subpanel collapsed state from the initial server state", () => {
+    renderLeftPanel({
+      initialPanelState: {
+        topRatio: 0.42,
+        midRatio: 0.33,
+        topCollapsed: true,
+        midCollapsed: false,
+        bottomCollapsed: true,
+      },
+    });
+
+    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"topCollapsed":true');
+    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"bottomCollapsed":true');
   });
 
   it("persists subpanel collapsed state to storage on toggle", () => {

@@ -1,8 +1,9 @@
 import { NextRequest } from 'next/server'
-import { getAuthenticatedUser } from '@/lib/auth'
+
 import { extractPdfText, isPdfMime } from '@/lib/attachments/pdf-text-extractor'
-import { validateSameOrigin } from '@/lib/csrf'
-import { prisma } from '@/lib/prisma'
+import { getInstanceUrl } from '@/lib/opencode/client'
+import { withAuth } from '@/lib/runtime/with-auth'
+import { instanceService } from '@/lib/services'
 import { INITIAL_SSE_PARSE_STATE, parseSseChunk } from '@/lib/sse-parser'
 import { decryptPassword } from '@/lib/spawner/crypto'
 import {
@@ -36,6 +37,7 @@ type WorkspaceAgentReadResponse = {
 }
 
 const MAX_PDF_BYTES_FOR_EXTRACTION = 8 * 1024 * 1024
+const MAX_IMAGE_BYTES_FOR_INLINE = 8 * 1024 * 1024
 const MAX_PDF_TEXT_CHARS = 24_000
 const MAX_CONTEXT_REFERENCES_PER_MESSAGE = 20
 const STREAM_RELEVANT_EVENT_TICK_MS = 1000
@@ -85,6 +87,32 @@ function normalizeMessageAttachments(
       mime: typeof item.mime === 'string' ? item.mime : undefined,
     }))
     .filter((item) => item.path.length > 0)
+}
+
+const IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+])
+
+function isImageMime(mime: string): boolean {
+  return IMAGE_MIME_TYPES.has(mime.toLowerCase())
+}
+
+async function readWorkspaceImageAttachment(
+  agent: { baseUrl: string; authHeader: string },
+  path: string,
+): Promise<Buffer | null> {
+  const response = await workspaceAgentFetch<WorkspaceAgentReadResponse>(agent, '/files/read', {
+    path,
+  })
+  if (!response.ok) return null
+
+  const decoded = decodeWorkspaceAgentFileContent(response.data)
+  if (!decoded || decoded.length === 0) return null
+  if (decoded.length > MAX_IMAGE_BYTES_FOR_INLINE) return null
+  return decoded
 }
 
 function toWorkspaceFileUrl(path: string): string {
@@ -177,42 +205,11 @@ async function readWorkspaceAttachment(
  * - done: { refresh: true } - Stream complete, client should refresh messages
  * - error: { error: string }
  */
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string }> }
-) {
-  const { slug } = await params
-
-  // Authenticate user
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return new Response(JSON.stringify({ error: 'unauthorized' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' }
-    })
-  }
-
-  const originValidation = validateSameOrigin(request)
-  if (!originValidation.ok) {
-    return new Response(JSON.stringify({ error: 'forbidden' }), {
-      status: 403,
-      headers: { 'Content-Type': 'application/json' }
-    })
-  }
-
-  // Check authorization
-  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
-    return new Response(JSON.stringify({ error: 'forbidden' }), {
-      status: 403,
-      headers: { 'Content-Type': 'application/json' }
-    })
-  }
-  
+export const POST = withAuth(
+  { csrf: true },
+  async (request: NextRequest, { slug }) => {
   // Get instance credentials
-  const instance = await prisma.instance.findUnique({
-    where: { slug },
-    select: { serverPassword: true, status: true }
-  })
+  const instance = await instanceService.findCredentialsBySlug(slug)
   
   if (!instance || !instance.serverPassword || instance.status !== 'running') {
     return new Response(JSON.stringify({ error: 'instance_unavailable' }), { 
@@ -252,7 +249,7 @@ export async function POST(
   
   const password = decryptPassword(instance.serverPassword)
   const authHeader = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
-  const baseUrl = `http://opencode-${slug}:4096`
+  const baseUrl = getInstanceUrl(slug)
   const workspaceAgentUrl = getWorkspaceAgentUrl(slug)
   
   // Create SSE stream
@@ -403,6 +400,33 @@ export async function POST(
                 continue
               }
 
+              if (isImageMime(mime)) {
+                const imageBytes = await readWorkspaceImageAttachment(
+                  { baseUrl: workspaceAgentUrl, authHeader },
+                  attachmentPath,
+                )
+
+                if (imageBytes) {
+                  const base64 = imageBytes.toString('base64')
+                  promptParts.push({
+                    type: 'file',
+                    mime,
+                    filename: fileName,
+                    url: `data:${mime};base64,${base64}`,
+                  })
+                } else {
+                  promptParts.push({
+                    type: 'file',
+                    mime,
+                    filename: fileName,
+                    url: toWorkspaceFileUrl(attachmentPath),
+                  })
+                }
+
+                attachmentPathsForHint.push(attachmentPath)
+                continue
+              }
+
               promptParts.push({
                 type: 'file',
                 mime,
@@ -486,6 +510,8 @@ export async function POST(
         }
 
         const finalizeFromIdle = () => {
+          if (aborted) return
+
           if (!resume && !assistantMessageSeen) {
             emitStatus('error', undefined, 'stream_no_assistant_message')
             sendEvent('error', { error: 'stream_no_assistant_message' })
@@ -539,6 +565,9 @@ export async function POST(
           const { done, value } = streamReadResult
           if (done || !value) {
             console.log('[stream] Event stream ended')
+            if (!resume && !aborted) {
+              finalizeFromIdle()
+            }
             break
           }
           
@@ -546,6 +575,10 @@ export async function POST(
           parseState = parsed.state
 
           for (const parsedEvent of parsed.events) {
+            if (aborted) {
+              break
+            }
+
             const eventData = parsedEvent.data
             if (!eventData) continue
 
@@ -622,9 +655,11 @@ export async function POST(
                   case 'session.error': {
                     markRelevantEvent()
                     const error = event.properties?.error
+                    const errorMessage = error?.data?.message || 'Unknown error'
+
                     console.log('[stream] Session error:', error)
-                    emitStatus('error', undefined, error?.data?.message || 'Unknown error')
-                    sendEvent('error', { error: error?.data?.message || 'Unknown error' })
+                    emitStatus('error', undefined, errorMessage)
+                    sendEvent('error', { error: errorMessage })
                     aborted = true
                     break
                   }
@@ -728,6 +763,76 @@ export async function POST(
                     break
                   }
 
+                  case 'message.part.delta': {
+                    markRelevantEvent()
+
+                    const properties =
+                      event.properties && typeof event.properties === 'object'
+                        ? event.properties as Record<string, unknown>
+                        : null
+                    const rawPart =
+                      properties?.part && typeof properties.part === 'object'
+                        ? properties.part as Record<string, unknown>
+                        : null
+                    const delta = properties?.delta ?? rawPart?.delta ?? properties?.text ?? properties?.value
+                    const partMessageId =
+                      typeof rawPart?.messageID === 'string'
+                        ? rawPart.messageID
+                        : typeof properties?.messageID === 'string'
+                          ? properties.messageID
+                          : typeof assistantMessageId === 'string'
+                            ? assistantMessageId
+                            : null
+
+                    if (!partMessageId) break
+                    seenPartMessageIds.add(partMessageId)
+
+                    const knownRole = messageRoles.get(partMessageId)
+                    if (!assistantMessageId && knownRole === 'assistant') {
+                      assistantMessageId = partMessageId
+                      assistantMessageSeen = true
+                    }
+
+                    const isAssistantPart = assistantMessageId
+                      ? partMessageId === assistantMessageId
+                      : knownRole === 'assistant'
+
+                    const part: Record<string, unknown> = rawPart ? { ...rawPart } : {}
+                    if (typeof part.id !== 'string') {
+                      if (typeof properties?.partID === 'string') {
+                        part.id = properties.partID
+                      } else if (typeof properties?.id === 'string') {
+                        part.id = properties.id
+                      }
+                    }
+                    if (typeof part.type !== 'string') {
+                      part.type = typeof properties?.partType === 'string' ? properties.partType : 'text'
+                    }
+                    if (typeof part.messageID !== 'string') {
+                      part.messageID = partMessageId
+                    }
+                    if (typeof part.sessionID !== 'string' && typeof eventSessionId === 'string') {
+                      part.sessionID = eventSessionId
+                    }
+
+                    sendEvent('part', { messageId: partMessageId, part, delta })
+
+                    if (!isAssistantPart) break
+
+                    promptAcknowledged = true
+                    assistantPartSeen = true
+
+                    const partType = typeof part.type === 'string' ? part.type : 'text'
+                    if (partType === 'reasoning') {
+                      emitStatus('reasoning')
+                    } else if (partType === 'text') {
+                      emitStatus('writing')
+                    } else {
+                      emitStatus('thinking')
+                    }
+                    break
+                  }
+
                   case 'file.edited':
                   case 'file.created':
                   case 'file.deleted':
@@ -786,4 +891,5 @@ export async function POST(
       'X-Accel-Buffering': 'no'
     }
   })
-}
+  },
+)

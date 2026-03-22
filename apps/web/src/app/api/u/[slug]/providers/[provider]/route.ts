@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-import { auditEvent, getAuthenticatedUser } from '@/lib/auth'
-import { validateSameOrigin } from '@/lib/csrf'
+import { auditEvent } from '@/lib/auth'
 import { getInstanceUrl } from '@/lib/opencode/client'
 import { syncProviderAccessForInstance } from '@/lib/opencode/providers'
-import { prisma } from '@/lib/prisma'
 import { createApiCredential } from '@/lib/providers/store'
 import { PROVIDERS, type ProviderId } from '@/lib/providers/types'
+import { withAuth } from '@/lib/runtime/with-auth'
+import { instanceService, providerService, userService } from '@/lib/services'
 
 export interface CreateProviderCredentialRequest {
   apiKey: string
@@ -31,10 +31,7 @@ function isProviderId(value: string): value is ProviderId {
 
 async function syncProviderAccessBestEffort(slug: string, userId: string): Promise<void> {
   try {
-    const instance = await prisma.instance.findUnique({
-      where: { slug },
-      select: { serverPassword: true },
-    })
+    const instance = await instanceService.findServerPasswordBySlug(slug)
 
     if (!instance) {
       return
@@ -57,36 +54,20 @@ async function syncProviderAccessBestEffort(slug: string, userId: string): Promi
 }
 
 async function getProviderMutationContext(
-  request: NextRequest,
-  params: Promise<{ slug: string; provider: string }>
+  user: { id: string; role: string },
+  params: { slug: string; provider: string }
 ): Promise<
   | { ok: true; sessionUserId: string; provider: ProviderId; targetUserId: string; targetSlug: string }
   | { ok: false; response: NextResponse<{ error: string }> }
 > {
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return {
-      ok: false,
-      response: NextResponse.json({ error: 'unauthorized' }, { status: 401 }),
-    }
-  }
-
-  const originValidation = validateSameOrigin(request)
-  if (!originValidation.ok) {
+  if (user.role !== 'ADMIN') {
     return {
       ok: false,
       response: NextResponse.json({ error: 'forbidden' }, { status: 403 }),
     }
   }
 
-  if (session.user.role !== 'ADMIN') {
-    return {
-      ok: false,
-      response: NextResponse.json({ error: 'forbidden' }, { status: 403 }),
-    }
-  }
-
-  const { slug, provider } = await params
+  const { slug, provider } = params
 
   if (!isProviderId(provider)) {
     return {
@@ -95,12 +76,9 @@ async function getProviderMutationContext(
     }
   }
 
-  const user = await prisma.user.findUnique({
-    where: { slug },
-    select: { id: true },
-  })
+  const targetUser = await userService.findIdBySlug(slug)
 
-  if (!user) {
+  if (!targetUser) {
     return {
       ok: false,
       response: NextResponse.json({ error: 'user_not_found' }, { status: 404 }),
@@ -109,18 +87,18 @@ async function getProviderMutationContext(
 
   return {
     ok: true,
-    sessionUserId: session.user.id,
+    sessionUserId: user.id,
     provider,
-    targetUserId: user.id,
+    targetUserId: targetUser.id,
     targetSlug: slug,
   }
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string; provider: string }> }
-): Promise<NextResponse<ProviderCredentialResponse | { error: string; message?: string }>> {
-  const context = await getProviderMutationContext(request, params)
+export const POST = withAuth<
+  ProviderCredentialResponse | { error: string; message?: string },
+  { slug: string; provider: string }
+>({ csrf: true }, async (request: NextRequest, { user, params }) => {
+  const context = await getProviderMutationContext(user, params)
   if (!context.ok) {
     return context.response
   }
@@ -153,20 +131,12 @@ export async function POST(
     )
   }
 
-  const latest = await prisma.providerCredential.findMany({
-    where: { userId: context.targetUserId, providerId: context.provider },
-    select: { version: true },
-    orderBy: { version: 'desc' },
-    take: 1,
-  })
+  const latest = await providerService.findLatestVersion(context.targetUserId, context.provider)
 
   const lastVersion = latest[0]?.version ?? 0
   const nextVersion = lastVersion + 1
 
-  await prisma.providerCredential.updateMany({
-    where: { userId: context.targetUserId, providerId: context.provider },
-    data: { status: 'disabled' },
-  })
+  await providerService.disableAllForProvider(context.targetUserId, context.provider)
 
   const credential = await createApiCredential({
     userId: context.targetUserId,
@@ -193,27 +163,18 @@ export async function POST(
     },
     { status: 201 }
   )
-}
+})
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string; provider: string }> }
-): Promise<NextResponse<DisableProviderCredentialResponse | { error: string }>> {
-  const context = await getProviderMutationContext(request, params)
+export const DELETE = withAuth<
+  DisableProviderCredentialResponse | { error: string },
+  { slug: string; provider: string }
+>({ csrf: true }, async (_request: NextRequest, { user, params }) => {
+  const context = await getProviderMutationContext(user, params)
   if (!context.ok) {
     return context.response
   }
 
-  const result = await prisma.providerCredential.updateMany({
-    where: {
-      userId: context.targetUserId,
-      providerId: context.provider,
-      status: 'enabled',
-    },
-    data: {
-      status: 'disabled',
-    },
-  })
+  const result = await providerService.disableEnabledForProvider(context.targetUserId, context.provider)
 
   await syncProviderAccessBestEffort(context.targetSlug, context.targetUserId)
 
@@ -231,4 +192,4 @@ export async function DELETE(
     ok: true,
     status: result.count > 0 ? 'disabled' : 'missing',
   })
-}
+})

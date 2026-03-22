@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
-import { getAuthenticatedUser, auditEvent } from '@/lib/auth'
-import { validateSameOrigin } from '@/lib/csrf'
+
+import { auditEvent } from '@/lib/auth'
 import { decryptConfig, encryptConfig } from '@/lib/connectors/crypto'
 import { getConnectorAuthType, getConnectorOAuthConfig } from '@/lib/connectors/oauth-config'
 import {
@@ -9,6 +8,9 @@ import {
   validateConnectorConfig,
   validateConnectorName,
 } from '@/lib/connectors/validators'
+import { requireCapability } from '@/lib/runtime/require-capability'
+import { withAuth } from '@/lib/runtime/with-auth'
+import { connectorService, userService } from '@/lib/services'
 
 export interface ConnectorListItem {
   id: string
@@ -35,76 +37,51 @@ export interface ConnectorListItem {
  * - 403: Not authorized (different user)
  * - 404: User not found
  */
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string }> }
-): Promise<NextResponse<{ connectors: ConnectorListItem[] } | { error: string }>> {
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
+export const GET = withAuth<{ connectors: ConnectorListItem[] } | { error: string }>(
+  { csrf: false },
+  async (_request: NextRequest, { slug }) => {
+    const denied = requireCapability('connectors')
+    if (denied) return denied
 
-  const { slug } = await params
+    const user = await userService.findIdBySlug(slug)
 
-  // Verify authorization: owner OR ADMIN
-  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
+    if (!user) {
+      return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
+    }
 
-  // Get user by slug
-  const user = await prisma.user.findUnique({
-    where: { slug },
-    select: { id: true },
-  })
+    const connectors = await connectorService.findManyByUserId(user.id)
 
-  if (!user) {
-    return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
-  }
+    return NextResponse.json({
+      connectors: connectors.filter((c) => validateConnectorType(c.type)).map((c) => {
+        let authType: 'manual' | 'oauth' = 'manual'
+        let oauthConnected = false
+        let oauthExpiresAt: string | undefined
 
-  // List connectors (without config)
-  const connectors = await prisma.connector.findMany({
-    where: { userId: user.id },
-    select: {
-      id: true,
-      type: true,
-      name: true,
-      enabled: true,
-      config: true,
-      createdAt: true,
-    },
-    orderBy: { createdAt: 'desc' },
-  })
+        try {
+          const config = decryptConfig(c.config)
+          authType = getConnectorAuthType(config)
+          const oauth = validateConnectorType(c.type) ? getConnectorOAuthConfig(c.type, config) : null
+          oauthConnected = Boolean(oauth?.accessToken)
+          oauthExpiresAt = oauth?.expiresAt
+        } catch {
+          authType = 'manual'
+        }
 
-  return NextResponse.json({
-    connectors: connectors.filter((c) => validateConnectorType(c.type)).map((c) => {
-      let authType: 'manual' | 'oauth' = 'manual'
-      let oauthConnected = false
-      let oauthExpiresAt: string | undefined
-
-      try {
-        const config = decryptConfig(c.config)
-        authType = getConnectorAuthType(config)
-        const oauth = validateConnectorType(c.type) ? getConnectorOAuthConfig(c.type, config) : null
-        oauthConnected = Boolean(oauth?.accessToken)
-        oauthExpiresAt = oauth?.expiresAt
-      } catch {
-        authType = 'manual'
-      }
-
-      return {
-        id: c.id,
-        type: c.type,
-        name: c.name,
-        enabled: c.enabled,
-        status: !c.enabled ? 'disabled' : authType === 'oauth' && !oauthConnected ? 'pending' : 'ready',
-        authType,
-        oauthConnected,
-        oauthExpiresAt,
-        createdAt: c.createdAt.toISOString(),
-      }
-    }),
-  })
-}
+        return {
+          id: c.id,
+          type: c.type,
+          name: c.name,
+          enabled: c.enabled,
+          status: !c.enabled ? 'disabled' : authType === 'oauth' && !oauthConnected ? 'pending' : 'ready',
+          authType,
+          oauthConnected,
+          oauthExpiresAt,
+          createdAt: c.createdAt.toISOString(),
+        }
+      }),
+    })
+  },
+)
 
 export interface CreateConnectorRequest {
   type: string
@@ -135,168 +112,125 @@ export interface ConnectorResponse {
  * - 403: Not authorized
  * - 404: User not found
  */
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string }> }
-): Promise<NextResponse<ConnectorResponse | { error: string; message?: string }>> {
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
+export const POST = withAuth<ConnectorResponse | { error: string; message?: string }>(
+  { csrf: true },
+  async (request: NextRequest, { user, slug }) => {
+    const denied = requireCapability('connectors')
+    if (denied) return denied
 
-  const originValidation = validateSameOrigin(request)
-  if (!originValidation.ok) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
+    const targetUser = await userService.findIdBySlug(slug)
 
-  const { slug } = await params
-
-  // Verify authorization
-  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
-
-  // Get user
-  const user = await prisma.user.findUnique({
-    where: { slug },
-    select: { id: true },
-  })
-
-  if (!user) {
-    return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
-  }
-
-  // Parse request body
-  let body: CreateConnectorRequest
-  try {
-    body = await request.json()
-  } catch (err) {
-    if (err instanceof SyntaxError) {
-      return NextResponse.json({ error: 'invalid_json' }, { status: 400 })
+    if (!targetUser) {
+      return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
     }
-    throw err
-  }
 
-  // Validate body is an object
-  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-    return NextResponse.json(
-      { error: 'invalid_body', message: 'Request body must be a JSON object' },
-      { status: 400 }
-    )
-  }
+    let body: CreateConnectorRequest
+    try {
+      body = await request.json()
+    } catch (err) {
+      if (err instanceof SyntaxError) {
+        return NextResponse.json({ error: 'invalid_json' }, { status: 400 })
+      }
+      throw err
+    }
 
-  const { type, name, config } = body
-
-  // Validate required fields
-  if (!type || !name || !config) {
-    return NextResponse.json(
-      { error: 'missing_fields', message: 'type, name, and config are required' },
-      { status: 400 }
-    )
-  }
-
-  // Validate config is a non-null object
-  if (typeof config !== 'object' || Array.isArray(config)) {
-    return NextResponse.json(
-      { error: 'invalid_config', message: 'config must be a non-null object' },
-      { status: 400 }
-    )
-  }
-
-  // Validate name
-  const nameValidation = validateConnectorName(name)
-  if (!nameValidation.valid) {
-    return NextResponse.json(
-      { error: 'invalid_name', message: nameValidation.error },
-      { status: 400 }
-    )
-  }
-
-  // Validate connector type
-  if (!validateConnectorType(type)) {
-    return NextResponse.json(
-      { error: 'invalid_type', message: `Invalid connector type: ${type}` },
-      { status: 400 }
-    )
-  }
-
-  // Validate config by connector type
-  const configValidation = validateConnectorConfig(type, config)
-  if (!configValidation.valid) {
-    return NextResponse.json(
-      {
-        error: 'invalid_config',
-        message: `Missing required fields: ${configValidation.missing?.join(', ')}`,
-      },
-      { status: 400 }
-    )
-  }
-
-  if (type === 'linear' || type === 'notion') {
-    const existing = await prisma.connector.findFirst({
-      where: {
-        userId: user.id,
-        type,
-      },
-      select: { id: true },
-    })
-
-    if (existing) {
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
       return NextResponse.json(
-        {
-          error: 'connector_already_exists',
-          message: `${type} connector already exists for this workspace`,
-        },
-        { status: 409 }
+        { error: 'invalid_body', message: 'Request body must be a JSON object' },
+        { status: 400 }
       )
     }
-  }
 
-  // Encrypt config
-  let encryptedConfig: string
-  try {
-    encryptedConfig = encryptConfig(config)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Failed to encrypt config'
-    return NextResponse.json(
-      { error: 'invalid_config', message },
-      { status: 400 }
-    )
-  }
+    const { type, name, config } = body
 
-  // Create connector
-  const connector = await prisma.connector.create({
-    data: {
-      userId: user.id,
+    if (!type || !name || !config) {
+      return NextResponse.json(
+        { error: 'missing_fields', message: 'type, name, and config are required' },
+        { status: 400 }
+      )
+    }
+
+    if (typeof config !== 'object' || Array.isArray(config)) {
+      return NextResponse.json(
+        { error: 'invalid_config', message: 'config must be a non-null object' },
+        { status: 400 }
+      )
+    }
+
+    const nameValidation = validateConnectorName(name)
+    if (!nameValidation.valid) {
+      return NextResponse.json(
+        { error: 'invalid_name', message: nameValidation.error },
+        { status: 400 }
+      )
+    }
+
+    if (!validateConnectorType(type)) {
+      return NextResponse.json(
+        { error: 'invalid_type', message: `Invalid connector type: ${type}` },
+        { status: 400 }
+      )
+    }
+
+    const configValidation = validateConnectorConfig(type, config)
+    if (!configValidation.valid) {
+      return NextResponse.json(
+        {
+          error: 'invalid_config',
+          message: `Missing required fields: ${configValidation.missing?.join(', ')}`,
+        },
+        { status: 400 }
+      )
+    }
+
+    if (type === 'linear' || type === 'notion') {
+      const existing = await connectorService.findFirstByUserIdAndType(targetUser.id, type)
+
+      if (existing) {
+        return NextResponse.json(
+          {
+            error: 'connector_already_exists',
+            message: `${type} connector already exists for this workspace`,
+          },
+          { status: 409 }
+        )
+      }
+    }
+
+    let encryptedConfig: string
+    try {
+      encryptedConfig = encryptConfig(config)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to encrypt config'
+      return NextResponse.json(
+        { error: 'invalid_config', message },
+        { status: 400 }
+      )
+    }
+
+    const connector = await connectorService.create({
+      userId: targetUser.id,
       type,
       name: name.trim(),
       config: encryptedConfig,
       enabled: true,
-    },
-    select: {
-      id: true,
-      type: true,
-      name: true,
-      enabled: true,
-      createdAt: true,
-    },
-  })
+    })
 
-  // Audit log
-  await auditEvent({
-    actorUserId: session.user.id,
-    action: 'connector.created',
-    metadata: { connectorId: connector.id, type: connector.type },
-  })
+    await auditEvent({
+      actorUserId: user.id,
+      action: 'connector.created',
+      metadata: { connectorId: connector.id, type: connector.type },
+    })
 
-  return NextResponse.json(
-    {
-      id: connector.id,
-      type: connector.type,
-      name: connector.name,
-      enabled: connector.enabled,
-      createdAt: connector.createdAt.toISOString(),
-    },
-    { status: 201 }
-  )
-}
+    return NextResponse.json(
+      {
+        id: connector.id,
+        type: connector.type,
+        name: connector.name,
+        enabled: connector.enabled,
+        createdAt: connector.createdAt.toISOString(),
+      },
+      { status: 201 }
+    )
+  },
+)

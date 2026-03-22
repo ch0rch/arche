@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation'
 
 import { KickstartWizard } from '@/components/kickstart/kickstart-wizard'
-import { getAuthenticatedUser } from '@/lib/auth'
+import { getSession } from '@/lib/runtime/session'
 import { getKickstartStatus } from '@/kickstart/status'
 
 export default async function KickstartPage({
@@ -9,7 +9,7 @@ export default async function KickstartPage({
 }: {
   params: Promise<{ slug: string }>
 }) {
-  const session = await getAuthenticatedUser()
+  const session = await getSession()
   if (!session) {
     redirect('/login')
   }
@@ -32,7 +32,7 @@ export default async function KickstartPage({
     <main className="relative mx-auto w-full max-w-6xl px-6 py-8">
       <section className="mb-6 rounded-3xl border border-border/60 bg-gradient-to-br from-card via-card to-primary/5 p-8">
         <p className="mb-2 text-xs uppercase tracking-[0.16em] text-primary/80">Kickstart</p>
-        <h1 className="font-[family-name:var(--font-display)] text-3xl sm:text-4xl">
+        <h1 className="type-display text-3xl sm:text-4xl">
           Initial workspace setup
         </h1>
         <p className="mt-3 max-w-3xl text-sm text-muted-foreground sm:text-base">

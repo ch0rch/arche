@@ -31,8 +31,26 @@ const workspaceAgentMocks = vi.hoisted(() => ({
 vi.mock("@/actions/opencode", () => opencodeMocks);
 vi.mock("@/actions/workspace-agent", () => workspaceAgentMocks);
 
+function createStorageMock() {
+  let store: Record<string, string> = {};
+
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+  };
+}
+
 function createPendingStreamBody() {
   let resolveRead: ((value: ReadableStreamReadResult<Uint8Array>) => void) | null = null;
+  let closed = false;
 
   return {
     body: {
@@ -40,12 +58,17 @@ function createPendingStreamBody() {
         return {
           read: () =>
             new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => {
+              if (closed) {
+                resolve({ done: true, value: undefined });
+                return;
+              }
               resolveRead = resolve;
             }),
         };
       },
     },
     close() {
+      closed = true;
       resolveRead?.({ done: true, value: undefined });
     },
   };
@@ -53,7 +76,10 @@ function createPendingStreamBody() {
 
 describe("useWorkspace", () => {
   beforeEach(() => {
+    vi.stubGlobal("localStorage", createStorageMock());
+    vi.stubGlobal("sessionStorage", createStorageMock());
     localStorage.clear();
+    sessionStorage.clear();
     opencodeMocks.checkConnectionAction.mockResolvedValue({ status: "connected" });
     opencodeMocks.listSessionsAction.mockResolvedValue({
       ok: true,
@@ -136,6 +162,15 @@ describe("useWorkspace", () => {
           };
         }
 
+        if (String(input) === "/api/u/alice/providers") {
+          return {
+            ok: true,
+            json: async () => ({
+              providers: [{ providerId: "openai", status: "enabled" }],
+            }),
+          };
+        }
+
         throw new Error(`Unexpected fetch: ${String(input)}`);
       })
     );
@@ -193,6 +228,63 @@ describe("useWorkspace", () => {
     expect(result.current.selectedModel?.modelId).toBe("gpt-5.2");
     expect(result.current.hasManualModelSelection).toBe(true);
     expect(result.current.agentDefaultModel?.modelId).toBe("gpt-5.4");
+  });
+
+  it("keeps opencode models available when provider credentials are missing", async () => {
+    opencodeMocks.listModelsAction.mockResolvedValue({
+      ok: true,
+      models: [
+        {
+          providerId: "opencode",
+          providerName: "OpenCode",
+          modelId: "free-model",
+          modelName: "Free model",
+          isDefault: true,
+        },
+      ],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  model: "opencode/free-model",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/u/alice/providers") {
+          return {
+            ok: true,
+            json: async () => ({
+              providers: [{ providerId: "opencode", status: "missing" }],
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.models).toHaveLength(1);
+      expect(result.current.models[0]?.providerId).toBe("opencode");
+      expect(result.current.agentDefaultModel?.providerId).toBe("opencode");
+    });
   });
 
   it("keeps the requested manual title when the OpenCode update response is stale", async () => {
@@ -596,6 +688,14 @@ describe("useWorkspace", () => {
     });
 
     await waitFor(() => {
+      expect(result.current.isSending).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.refreshMessages();
+    });
+
+    await waitFor(() => {
       expect(result.current.messages.map((message) => message.content)).toEqual([
         "Investigate this",
         "Done now",
@@ -841,6 +941,124 @@ describe("useWorkspace", () => {
 
     act(() => {
       stream.close();
+    });
+  });
+
+  describe("idle polling optimization", () => {
+    it("does not poll diffs when all sessions are idle", async () => {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [
+          { id: "s1", title: "First", status: "idle", updatedAt: "now" },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 200 })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.activeSessionId).toBe("s1");
+      });
+
+      opencodeMocks.getWorkspaceDiffsAction.mockClear();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+
+      expect(opencodeMocks.getWorkspaceDiffsAction).not.toHaveBeenCalled();
+    });
+
+    it("does not poll messages for the active session when it is idle", async () => {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [
+          { id: "s1", title: "First", status: "idle", updatedAt: "now" },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 200 })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.activeSessionId).toBe("s1");
+      });
+
+      opencodeMocks.listMessagesAction.mockClear();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+
+      expect(opencodeMocks.listMessagesAction).not.toHaveBeenCalled();
+    });
+
+    it("polls diffs and messages when a session is busy", async () => {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [
+          { id: "s1", title: "First", status: "busy", updatedAt: "now" },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 200 })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.activeSessionId).toBe("s1");
+      });
+
+      opencodeMocks.getWorkspaceDiffsAction.mockClear();
+      opencodeMocks.listMessagesAction.mockClear();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+
+      expect(opencodeMocks.getWorkspaceDiffsAction).toHaveBeenCalled();
+      expect(opencodeMocks.listMessagesAction).toHaveBeenCalledWith("alice", "s1");
+    });
+
+    it("polls messages only for busy sessions, not the idle active session", async () => {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [
+          { id: "s1", title: "First", status: "idle", updatedAt: "now" },
+          { id: "s2", title: "Second", status: "busy", updatedAt: "now" },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 200 })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.activeSessionId).toBe("s1");
+      });
+
+      opencodeMocks.getWorkspaceDiffsAction.mockClear();
+      opencodeMocks.listMessagesAction.mockClear();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+
+      // Diffs should be polled because s2 is busy
+      expect(opencodeMocks.getWorkspaceDiffsAction).toHaveBeenCalled();
+      // Messages for s2 (busy) should be polled
+      expect(opencodeMocks.listMessagesAction).toHaveBeenCalledWith("alice", "s2");
+      // Messages for s1 (idle active) should NOT be polled
+      const s1Calls = opencodeMocks.listMessagesAction.mock.calls.filter(
+        ([, sessionId]: [string, string]) => sessionId === "s1"
+      );
+      expect(s1Calls).toHaveLength(0);
     });
   });
 

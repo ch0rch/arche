@@ -1,48 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-import { auditEvent, getAuthenticatedUser } from '@/lib/auth'
+import { auditEvent } from '@/lib/auth'
 import { isOAuthConnectorType, prepareConnectorOAuthAuthorization } from '@/lib/connectors/oauth'
 import { validateConnectorType } from '@/lib/connectors/validators'
-import { validateSameOrigin } from '@/lib/csrf'
 import { getPublicBaseUrl } from '@/lib/http'
-import { prisma } from '@/lib/prisma'
+import { requireCapability } from '@/lib/runtime/require-capability'
+import { withAuth } from '@/lib/runtime/with-auth'
+import { connectorService, userService } from '@/lib/services'
 
 type StartOAuthResponse = {
   authorizeUrl: string
 }
 
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string; id: string }> }
-): Promise<NextResponse<StartOAuthResponse | { error: string; message?: string }>> {
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
+export const POST = withAuth<
+  StartOAuthResponse | { error: string; message?: string },
+  { slug: string; id: string }
+>({ csrf: true }, async (request: NextRequest, { user: actorUser, slug, params: { id } }) => {
+  const denied = requireCapability('connectors')
+  if (denied) return denied
 
-  const originValidation = validateSameOrigin(request)
-  if (!originValidation.ok) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
+  const targetUser = await userService.findIdBySlug(slug)
 
-  const { slug, id } = await params
-  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
-
-  const user = await prisma.user.findUnique({
-    where: { slug },
-    select: { id: true },
-  })
-
-  if (!user) {
+  if (!targetUser) {
     return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
   }
 
-  const connector = await prisma.connector.findFirst({
-    where: { id, userId: user.id },
-    select: { id: true, type: true },
-  })
+  const connector = await connectorService.findByIdAndUserIdSelect(id, targetUser.id, { id: true, type: true })
   if (!connector) {
     return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
   }
@@ -58,7 +41,7 @@ export async function POST(
     const prepared = await prepareConnectorOAuthAuthorization({
       connectorId: connector.id,
       slug,
-      userId: user.id,
+      userId: targetUser.id,
       connectorType: connector.type,
       redirectUri,
     })
@@ -89,10 +72,10 @@ export async function POST(
   }
 
   await auditEvent({
-    actorUserId: session.user.id,
+    actorUserId: actorUser.id,
     action: 'connector.oauth_started',
     metadata: { connectorId: connector.id, connectorType: connector.type },
   })
 
   return NextResponse.json({ authorizeUrl })
-}
+})

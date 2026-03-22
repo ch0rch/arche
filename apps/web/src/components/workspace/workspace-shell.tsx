@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Circle } from "@phosphor-icons/react";
 
 import { ensureInstanceRunningAction } from "@/actions/spawner";
 import type { SyncKbResult } from "@/app/api/instances/[slug]/sync-kb/route";
@@ -13,10 +14,17 @@ import {
   normalizeWorkspacePath,
 } from "@/lib/workspace-paths";
 import { downloadWorkspaceFile } from "@/lib/workspace-file-download";
+import {
+  getWorkspaceLayoutCookieName,
+  getWorkspaceLayoutStorageKey,
+  type NormalizedLeftPanelState,
+  persistWorkspacePanelState,
+  parseWorkspaceLayoutState,
+  readWorkspacePanelState,
+  type StoredLayoutState,
+} from "@/lib/workspace-panel-state";
 import { takeWorkspaceStartPrompt } from "@/lib/workspace-start-prompt";
 import { cn } from "@/lib/utils";
-
-import { Circle } from "@phosphor-icons/react";
 
 import { ChatPanel } from "./chat-panel";
 import { CosmicLoader } from "./cosmic-loader";
@@ -26,14 +34,11 @@ import { InspectorPanel } from "./inspector-panel";
 type WorkspaceShellProps = {
   slug: string;
   initialFilePath?: string | null;
-};
-
-type StoredLayoutState = {
-  leftWidth?: number;
-  rightWidth?: number;
-  leftCollapsed?: boolean;
-  rightCollapsed?: boolean;
-  rightTab?: "preview" | "review";
+  initialLayoutState?: StoredLayoutState | null;
+  initialLeftPanelState?: NormalizedLeftPanelState | null;
+  macDesktopWindowInset?: boolean;
+  workspaceAgentEnabled?: boolean;
+  reaperEnabled?: boolean;
 };
 
 const MIN_LEFT_PX = 200;
@@ -85,24 +90,11 @@ const getContainerWidth = (container: HTMLDivElement | null) => {
   return MIN_LEFT_PX + MIN_RIGHT_PX + MIN_CENTER_PX;
 };
 
-const loadStoredLayout = (key: string): StoredLayoutState | null => {
-  if (typeof window === "undefined") return null;
-  const raw = window.localStorage.getItem(key);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as StoredLayoutState;
-  } catch {
-    return null;
-  }
-};
+const loadStoredLayout = (storageKey: string, cookieName: string): StoredLayoutState | null =>
+  readWorkspacePanelState(storageKey, cookieName, parseWorkspaceLayoutState);
 
-const persistLayout = (key: string, state: StoredLayoutState) => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, JSON.stringify(state));
-  } catch {
-    // ignore storage errors
-  }
+const persistLayout = (storageKey: string, cookieName: string, state: StoredLayoutState) => {
+  persistWorkspacePanelState(storageKey, cookieName, state);
 };
 
 function resolveRootSessionId(
@@ -170,16 +162,27 @@ const statusConfig = {
 const PANEL_ANIM = "200ms ease-out";
 const PANEL_TRANSITION = `width ${PANEL_ANIM}, min-width ${PANEL_ANIM}, opacity ${PANEL_ANIM}, margin ${PANEL_ANIM}, border-width ${PANEL_ANIM}`;
 
-export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
+export function WorkspaceShell({
+  slug,
+  initialFilePath,
+  initialLayoutState = null,
+  initialLeftPanelState = null,
+  macDesktopWindowInset = false,
+  workspaceAgentEnabled = true,
+  reaperEnabled = true,
+}: WorkspaceShellProps) {
   const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const layoutStorageKey = `arche.workspace.${slug}.layout`;
+  const layoutCookieName = getWorkspaceLayoutCookieName(slug);
+  const layoutStorageKey = getWorkspaceLayoutStorageKey(slug);
   
   // Instance startup state
   const [instanceStatus, setInstanceStatus] = useState<'starting' | 'running' | 'error' | null>(null);
   const [instanceError, setInstanceError] = useState<string | null>(null);
+  const [rightTab, setRightTab] = useState<"preview" | "review">("preview");
+  const effectiveRightTab = workspaceAgentEnabled ? rightTab : "preview";
 
   // Auto-start instance on mount
   useEffect(() => {
@@ -230,7 +233,13 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   }, [router, slug]);
 
   // Use workspace hook only when instance is running
-  const workspace = useWorkspace({ slug, pollInterval: 5000, enabled: instanceStatus === 'running' });
+  const workspace = useWorkspace({
+    slug,
+    pollInterval: 5000,
+    enabled: instanceStatus === 'running',
+    workspaceAgentEnabled,
+    reaperEnabled,
+  });
 
   const sessionsById = useMemo(() => {
     const map = new Map<string, WorkspaceSession>();
@@ -331,12 +340,11 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   }, [workspace, workspace.isConnected, slug]);
 
   // Layout state
-  const [leftWidth, setLeftWidth] = useState(MIN_LEFT_PX);
-  const [rightWidth, setRightWidth] = useState(MIN_RIGHT_PX);
+  const [leftWidth, setLeftWidth] = useState(initialLayoutState?.leftWidth ?? MIN_LEFT_PX);
+  const [rightWidth, setRightWidth] = useState(initialLayoutState?.rightWidth ?? MIN_RIGHT_PX);
   const [minCenterWidth, setMinCenterWidth] = useState(MIN_CENTER_PX);
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
-  const [rightTab, setRightTab] = useState<"preview" | "review">("preview");
+  const [leftCollapsed, setLeftCollapsed] = useState(initialLayoutState?.leftCollapsed ?? false);
+  const [rightCollapsed, setRightCollapsed] = useState(initialLayoutState?.rightCollapsed ?? false);
   const [hydratedLayoutKey, setHydratedLayoutKey] = useState<string | null>(null);
 
   const focusSearchInput = useCallback(() => {
@@ -645,7 +653,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
   // Load layout from localStorage
   useEffect(() => {
-    const stored = loadStoredLayout(layoutStorageKey);
+    const stored = loadStoredLayout(layoutStorageKey, layoutCookieName) ?? initialLayoutState;
     const containerWidth = getContainerWidth(containerRef.current);
     let leftCandidate = containerWidth * DEFAULT_LEFT_RATIO;
     let rightCandidate = containerWidth * DEFAULT_RIGHT_RATIO;
@@ -660,22 +668,27 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
     if (typeof stored?.leftCollapsed === "boolean") setLeftCollapsed(stored.leftCollapsed);
     if (typeof stored?.rightCollapsed === "boolean") setRightCollapsed(stored.rightCollapsed);
-    if (stored?.rightTab === "preview" || stored?.rightTab === "review") setRightTab(stored.rightTab);
+    if (
+      stored?.rightTab === "preview" ||
+      (workspaceAgentEnabled && stored?.rightTab === "review")
+    ) {
+      setRightTab(stored.rightTab);
+    }
 
     setHydratedLayoutKey(layoutStorageKey);
-  }, [layoutStorageKey]);
+  }, [initialLayoutState, layoutCookieName, layoutStorageKey, workspaceAgentEnabled]);
 
   // Persist layout
   useEffect(() => {
     if (hydratedLayoutKey !== layoutStorageKey) return;
-    persistLayout(layoutStorageKey, {
+    persistLayout(layoutStorageKey, layoutCookieName, {
       leftWidth,
       rightWidth,
       leftCollapsed,
       rightCollapsed,
-      rightTab,
+      rightTab: effectiveRightTab,
     });
-  }, [layoutStorageKey, leftWidth, rightWidth, leftCollapsed, rightCollapsed, rightTab, hydratedLayoutKey]);
+  }, [effectiveRightTab, hydratedLayoutKey, layoutCookieName, layoutStorageKey, leftCollapsed, leftWidth, rightCollapsed, rightWidth]);
 
   // Map workspace sessions to UI format
   const uiSessions = useMemo(() => {
@@ -738,6 +751,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
   const handleCreateKnowledgeFile = useCallback(
     async (path: string) => {
+      if (!workspaceAgentEnabled) {
+        return { ok: false as const, error: "unsupported_in_desktop" };
+      }
+
       const normalizedPath = normalizePath(path).replace(/^\/+/, "");
       if (!normalizedPath) {
         return { ok: false as const, error: "invalid_path" };
@@ -783,7 +800,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
       return { ok: true as const };
     },
-    [filePathSet, normalizePath, openFilePaths, workspace]
+    [filePathSet, normalizePath, openFilePaths, workspace, workspaceAgentEnabled]
   );
 
   // File handlers
@@ -898,9 +915,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   }, []);
 
   const handleOpenReview = useCallback(() => {
+    if (!workspaceAgentEnabled) return;
     setRightCollapsed(false);
     setRightTab("review");
-  }, []);
+  }, [workspaceAgentEnabled]);
 
   // Resize handlers - now work via the gap area between panels
   const handleResizeLeft = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -986,13 +1004,14 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       <div
         className={cn(
           'flex h-screen flex-col overflow-hidden bg-background text-foreground',
+          macDesktopWindowInset && 'pt-10',
           darkModeClasses,
           themeClassName,
         )}
       >
         <div className="flex h-full flex-col p-3">
           <div className="flex items-center gap-2 p-4">
-            <span className="font-[family-name:var(--font-display)] text-base font-semibold tracking-tight">Archē</span>
+            <span className="type-display text-base font-semibold tracking-tight">Archē</span>
             <span className="text-sm text-muted-foreground">/</span>
             <span className="text-sm text-muted-foreground">{slug}</span>
             <Circle size={8} weight="fill" className={cn(loadingStyle.color, loadingStyle.pulse && "animate-pulse")} />
@@ -1006,7 +1025,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                     <div className="h-16 w-16 animate-spin rounded-full border-4 border-muted border-t-primary" />
                   </div>
                   <div className="space-y-2">
-                    <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
+                    <h2 className="type-display text-xl font-semibold">
                       Starting workspace
                     </h2>
                     <p className="text-sm text-muted-foreground">
@@ -1021,7 +1040,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                     <span className="text-2xl">!</span>
                   </div>
                   <div className="space-y-2">
-                    <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold text-destructive">
+                    <h2 className="type-display text-xl font-semibold text-destructive">
                       Failed to start
                     </h2>
                     <p className="text-sm text-muted-foreground">
@@ -1034,7 +1053,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                 <>
                   <CosmicLoader />
                   <div className="space-y-2">
-                    <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
+                    <h2 className="type-display text-xl font-semibold">
                       Connecting...
                     </h2>
                   </div>
@@ -1054,13 +1073,14 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       <div
         className={cn(
           'flex h-screen flex-col overflow-hidden bg-background text-foreground',
+          macDesktopWindowInset && 'pt-10',
           darkModeClasses,
           themeClassName,
         )}
       >
         <div className="flex h-full flex-col p-3">
           <div className="flex items-center gap-2 p-4">
-            <span className="font-[family-name:var(--font-display)] text-base font-semibold tracking-tight">Archē</span>
+            <span className="type-display text-base font-semibold tracking-tight">Archē</span>
             <span className="text-sm text-muted-foreground">/</span>
             <span className="text-sm text-muted-foreground">{slug}</span>
             <Circle size={8} weight="fill" className={cn(connectingStyle.color, connectingStyle.pulse && "animate-pulse")} />
@@ -1070,7 +1090,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             <div className="flex flex-col items-center gap-6 text-center">
               <CosmicLoader />
               <div className="space-y-2">
-                <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
+                <h2 className="type-display text-xl font-semibold">
                   Connecting to OpenCode
                 </h2>
                 <p className="text-sm text-muted-foreground">
@@ -1090,10 +1110,16 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     <div
       className={cn(
         'flex h-screen flex-col overflow-hidden bg-background text-foreground',
+        macDesktopWindowInset && 'pt-10',
+        macDesktopWindowInset && 'desktop-no-select',
         darkModeClasses,
         themeClassName,
       )}
     >
+      {/* Drag region for macOS frameless window */}
+      {macDesktopWindowInset && (
+        <div className="desktop-titlebar-drag absolute inset-x-0 top-0 z-50 h-10" />
+      )}
       {/* Outer padding container — no header/footer, panels fill 100% height */}
         <div className="flex h-full flex-col pl-3">
         {/* Main panels area */}
@@ -1130,6 +1156,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               onSelectFile={handleOpenFile}
               onDownloadFile={handleDownloadFile}
               onCreateKnowledgeFile={handleCreateKnowledgeFile}
+              canCreateKnowledgeFile={workspaceAgentEnabled}
+              initialPanelState={initialLeftPanelState}
               searchInputRef={searchInputRef}
             />
           </div>
@@ -1155,6 +1183,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
             <ChatPanel
               key={workspace.activeSessionId ?? "no-session"}
               slug={slug}
+              attachmentsEnabled={workspaceAgentEnabled}
               sessions={uiSessions}
               messages={uiMessages}
               activeSessionId={workspace.activeSessionId}
@@ -1218,7 +1247,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
           >
             <InspectorPanel
               slug={slug}
-              activeTab={rightTab}
+              activeTab={effectiveRightTab}
+              workspaceAgentEnabled={workspaceAgentEnabled}
               onTabChange={setRightTab}
               rightCollapsed={rightCollapsed}
               onToggleRight={handleToggleRight}
@@ -1234,10 +1264,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
               onOpenFile={handleOpenFile}
               onDownloadFile={handleDownloadFile}
               onReloadFile={handleReloadFile}
-              onSaveFile={handleSaveFile}
-              onDiscardFileChanges={handleDiscardFileChanges}
-              onPublish={handlePublishComplete}
-              onResolveConflict={handleResolveConflict}
+              onSaveFile={workspaceAgentEnabled ? handleSaveFile : undefined}
+              onDiscardFileChanges={workspaceAgentEnabled ? handleDiscardFileChanges : undefined}
+              onPublish={workspaceAgentEnabled ? handlePublishComplete : undefined}
+              onResolveConflict={workspaceAgentEnabled ? handleResolveConflict : undefined}
             />
           </div>
         </div>

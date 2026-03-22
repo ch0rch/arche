@@ -4,7 +4,7 @@ import { ConnectorsWidget } from '@/components/dashboard/connectors-widget'
 import { DashboardHero } from '@/components/dashboard/dashboard-hero'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { getAuthenticatedUser } from '@/lib/auth'
+import { getSession } from '@/lib/runtime/session'
 import {
   listRecentKbFileUpdates,
   readCommonWorkspaceConfig,
@@ -73,7 +73,7 @@ export default async function WorkspacePage({
 
   const [kickstartStatus, session] = await Promise.all([
     getKickstartStatus(),
-    getAuthenticatedUser(),
+    getSession(),
   ])
 
   const isAdmin = session?.user.role === 'ADMIN'
@@ -87,7 +87,7 @@ export default async function WorkspacePage({
 
           <div className="relative z-10 max-w-3xl space-y-5">
             <p className="text-xs uppercase tracking-[0.18em] text-primary/80">Kickstart Required</p>
-            <h1 className="font-[family-name:var(--font-display)] text-3xl leading-tight sm:text-4xl">
+            <h1 className="type-display text-3xl leading-tight sm:text-4xl">
               Configure your workspace before opening it
             </h1>
             <p className="text-sm text-muted-foreground sm:text-base">
