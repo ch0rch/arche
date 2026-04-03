@@ -7,6 +7,11 @@ import {
   getKbContentHostPath,
   getWorkspaceAgentPort,
 } from "./config";
+import {
+  getDefaultWebRuntimeConfigContent,
+  parseRuntimeConfigContent,
+  serializeRuntimeConfig,
+} from "./runtime-config";
 
 type DockerConstructor = typeof import("dockerode");
 type DockerClient = InstanceType<DockerConstructor>;
@@ -56,11 +61,6 @@ export async function createContainer(
   const volumeName = `arche-workspace-${slug}`;
   const opencodeShareVolumeName = `arche-opencode-share-${slug}`;
   const opencodeStateVolumeName = `arche-opencode-state-${slug}`;
-  const {
-    getDefaultWebRuntimeConfigContent,
-    parseRuntimeConfigContent,
-    serializeRuntimeConfig,
-  } = await importRuntimeModule<typeof import("./runtime-artifacts")>("./runtime-artifacts");
 
   const runtimeConfigContent = (() => {
     if (!opencodeConfigContent) {
