@@ -16,6 +16,7 @@ ASSET_DIR=""
 SKIP_VALIDATION=0
 TAG_CREATED=0
 TAG_PUSHED=0
+EXPECTED_NODE_MAJOR='24'
 
 usage() {
   cat <<'EOF'
@@ -41,6 +42,16 @@ fail() {
 
 require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "Missing required command: $1"
+}
+
+ensure_supported_node_runtime() {
+  local current_version current_major
+
+  current_version="$(node -p 'process.versions.node')"
+  current_major="${current_version%%.*}"
+
+  [[ "$current_major" == "$EXPECTED_NODE_MAJOR" ]] || \
+    fail "Node.js ${EXPECTED_NODE_MAJOR}.x is required for local desktop releases (current: v$current_version)."
 }
 
 validate_version() {
@@ -172,13 +183,147 @@ validate_app_bundle() {
   spctl -a -vv "$app_path" >/dev/null
 }
 
+clear_previous_release_output() {
+  local release_assets=()
+
+  printf '==> Clearing previous release output\n'
+
+  rm -rf "$RELEASE_DIR/mac" "$RELEASE_DIR/mac-arm64"
+  rm -f "$RELEASE_DIR/builder-debug.yml" "$RELEASE_DIR/builder-effective-config.yaml"
+
+  shopt -s nullglob
+  release_assets=(
+    "$RELEASE_DIR"/Arche-*.dmg
+    "$RELEASE_DIR"/Arche-*.dmg.blockmap
+    "$RELEASE_DIR"/Arche-*.zip
+    "$RELEASE_DIR"/Arche-*.zip.blockmap
+  )
+  shopt -u nullglob
+
+  if [[ ${#release_assets[@]} -gt 0 ]]; then
+    rm -f "${release_assets[@]}"
+  fi
+}
+
+clear_web_native_artifacts() {
+  local argon2_bindings=()
+  local better_sqlite3_builds=()
+
+  shopt -s nullglob
+  argon2_bindings=(
+    "$WEB_DIR"/node_modules/.pnpm/argon2@*/node_modules/argon2/lib/binding
+  )
+  better_sqlite3_builds=(
+    "$WEB_DIR"/node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3/build
+  )
+  shopt -u nullglob
+
+  if [[ ${#argon2_bindings[@]} -gt 0 ]]; then
+    rm -rf "${argon2_bindings[@]}"
+  fi
+
+  if [[ ${#better_sqlite3_builds[@]} -gt 0 ]]; then
+    rm -rf "${better_sqlite3_builds[@]}"
+  fi
+}
+
+clear_arch_build_artifacts() {
+  local arch="$1"
+
+  printf '==> Clearing cached build artifacts for %s\n' "$arch"
+
+  rm -rf "$WEB_DIR/.next"
+  clear_web_native_artifacts
+  rm -f "$DESKTOP_DIR/bin/node" "$DESKTOP_DIR/bin/opencode" "$DESKTOP_DIR/bin/workspace-agent"
+
+  case "$arch" in
+    arm64)
+      rm -rf "$RELEASE_DIR/mac-arm64"
+      rm -f \
+        "$RELEASE_DIR/Arche-$RELEASE_VERSION-arm64.dmg" \
+        "$RELEASE_DIR/Arche-$RELEASE_VERSION-arm64.dmg.blockmap" \
+        "$RELEASE_DIR/Arche-$RELEASE_VERSION-arm64-mac.zip" \
+        "$RELEASE_DIR/Arche-$RELEASE_VERSION-arm64-mac.zip.blockmap"
+      ;;
+    x64)
+      rm -rf "$RELEASE_DIR/mac"
+      rm -f \
+        "$RELEASE_DIR/Arche-$RELEASE_VERSION.dmg" \
+        "$RELEASE_DIR/Arche-$RELEASE_VERSION.dmg.blockmap" \
+        "$RELEASE_DIR/Arche-$RELEASE_VERSION-mac.zip" \
+        "$RELEASE_DIR/Arche-$RELEASE_VERSION-mac.zip.blockmap"
+      ;;
+    *)
+      fail "Unsupported architecture: $arch"
+      ;;
+  esac
+}
+
+verify_target_node_runtime() {
+  local arch="$1"
+  local actual_arch
+
+  actual_arch="$(PATH="$DESKTOP_DIR/bin:$PATH" node -p 'process.arch')" || \
+    fail 'Failed to start the bundled Node.js runtime.'
+
+  [[ "$actual_arch" == "$arch" ]] || \
+    fail "Bundled Node.js runtime resolved to $actual_arch, expected $arch. On Apple Silicon, ensure Rosetta is installed before building x64 artifacts."
+}
+
+prepare_runtime_binaries_for_arch() {
+  local arch="$1"
+  local runtime_platform="$2"
+  local goarch="$3"
+
+  printf '==> Preparing runtime binaries for %s\n' "$arch"
+
+  NODE_RUNTIME_PLATFORM="$runtime_platform" \
+    OPENCODE_PLATFORM="$runtime_platform" \
+    WORKSPACE_AGENT_GOOS='darwin' \
+    WORKSPACE_AGENT_GOARCH="$goarch" \
+    FORCE_DOWNLOAD='1' \
+    bash "$SCRIPT_DIR/prepare-desktop-runtime.sh"
+
+  verify_target_node_runtime "$arch"
+}
+
+sync_web_dependencies_for_arch() {
+  local arch="$1"
+
+  printf '==> Refreshing web native dependencies for %s\n' "$arch"
+  (
+    cd "$WEB_DIR"
+    PATH="$DESKTOP_DIR/bin:$PATH" \
+      npm_config_arch="$arch" \
+      npm_config_target_arch="$arch" \
+      pnpm rebuild argon2 better-sqlite3
+  )
+}
+
+build_web_for_arch() {
+  local arch="$1"
+
+  printf '==> Building Next.js web app for %s\n' "$arch"
+  (
+    cd "$WEB_DIR"
+    PATH="$DESKTOP_DIR/bin:$PATH" \
+      ARCHE_RUNTIME_MODE='desktop' \
+      ARCHE_DESKTOP_PLATFORM='darwin' \
+      ARCHE_DESKTOP_WEB_HOST='127.0.0.1' \
+      pnpm build
+  )
+}
+
 sync_desktop_dependencies_for_arch() {
   local arch="$1"
 
   printf '==> Refreshing desktop dependencies for %s\n' "$arch"
   (
     cd "$DESKTOP_DIR"
-    npm_config_arch="$arch" pnpm rebuild electron dugite
+    PATH="$DESKTOP_DIR/bin:$PATH" \
+      npm_config_arch="$arch" \
+      npm_config_target_arch="$arch" \
+      pnpm rebuild electron dugite
   )
 }
 
@@ -201,15 +346,11 @@ build_arch() {
       ;;
   esac
 
+  clear_arch_build_artifacts "$arch"
+  prepare_runtime_binaries_for_arch "$arch" "$runtime_platform" "$goarch"
+  sync_web_dependencies_for_arch "$arch"
+  build_web_for_arch "$arch"
   sync_desktop_dependencies_for_arch "$arch"
-
-  printf '==> Preparing runtime binaries for %s\n' "$arch"
-  NODE_RUNTIME_PLATFORM="$runtime_platform" \
-    OPENCODE_PLATFORM="$runtime_platform" \
-    WORKSPACE_AGENT_GOOS='darwin' \
-    WORKSPACE_AGENT_GOARCH="$goarch" \
-    FORCE_DOWNLOAD='1' \
-    bash "$SCRIPT_DIR/prepare-desktop-runtime.sh"
 
   sign_runtime_binaries
 
@@ -316,6 +457,8 @@ main() {
   require_command codesign
   require_command security
 
+  ensure_supported_node_runtime
+
   [[ "$(uname -s)" == 'Darwin' ]] || fail 'Local desktop releases are only supported on macOS.'
 
   gh auth status >/dev/null 2>&1 || fail 'GitHub CLI is not authenticated.'
@@ -348,6 +491,8 @@ main() {
     fail "Git tag already exists on origin: $RELEASE_TAG"
   gh release view "$RELEASE_TAG" >/dev/null 2>&1 && fail "GitHub release already exists: $RELEASE_TAG"
 
+  clear_previous_release_output
+
   if command -v corepack >/dev/null 2>&1; then
     corepack enable >/dev/null
   fi
@@ -367,15 +512,6 @@ main() {
     cd "$WEB_DIR"
     pnpm prisma:generate
     pnpm prisma:generate:desktop
-  )
-
-  printf '==> Building Next.js web app\n'
-  (
-    cd "$WEB_DIR"
-    ARCHE_RUNTIME_MODE='desktop' \
-      ARCHE_DESKTOP_PLATFORM='darwin' \
-      ARCHE_DESKTOP_WEB_HOST='127.0.0.1' \
-      pnpm build
   )
 
   printf '==> Compiling Electron TypeScript\n'
