@@ -6,13 +6,8 @@ const hasApiKeyNotarization = Boolean(
   process.env.APPLE_API_KEY && process.env.APPLE_API_KEY_ID && process.env.APPLE_API_ISSUER,
 )
 
-const macNotarize = hasKeychainNotarization
-  ? { keychainProfile: process.env.APPLE_KEYCHAIN_PROFILE }
-  : hasAppleIdNotarization
-    ? { teamId: process.env.APPLE_TEAM_ID }
-    : hasApiKeyNotarization
-      ? true
-      : false
+const macNotarize =
+  hasKeychainNotarization || hasAppleIdNotarization || hasApiKeyNotarization
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
