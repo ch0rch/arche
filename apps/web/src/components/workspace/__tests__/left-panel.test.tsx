@@ -26,6 +26,20 @@ const sessions: WorkspaceSession[] = [
     updatedAt: "now",
     updatedAtRaw: 2,
   },
+  {
+    id: "task-1-session",
+    title: "Autopilot | Daily brief | Apr 12",
+    status: "idle",
+    updatedAt: "now",
+    updatedAtRaw: 3,
+    autopilot: {
+      runId: "run-1",
+      taskId: "task-1",
+      taskName: "Daily brief",
+      trigger: "schedule",
+      hasUnseenResult: true,
+    },
+  },
 ];
 
 const fileNodes: WorkspaceFileNode[] = [
@@ -92,6 +106,7 @@ const defaultProps = {
   activeSessionId: "s1" as string | null,
   unseenCompletedSessions: new Set<string>() as ReadonlySet<string>,
   onSelectSession: vi.fn(),
+  onMarkAutopilotRunSeen: vi.fn(),
   onCreateSession: vi.fn(),
   agents,
   onSelectAgent: vi.fn(),
@@ -161,7 +176,7 @@ describe("LeftPanel", () => {
   it("filters sections using internal search state", () => {
     renderLeftPanel();
 
-    const searchInput = screen.getByLabelText("Search chats, knowledge, experts, and skills");
+    const searchInput = screen.getByLabelText("Search chats, tasks, knowledge, experts, and skills");
     if (!(searchInput instanceof HTMLInputElement)) {
       throw new Error("Expected search input element");
     }
@@ -185,6 +200,47 @@ describe("LeftPanel", () => {
     expect(screen.queryByText("Alpha Agent")).toBeNull();
     expect(screen.getByText("Beta Agent")).toBeTruthy();
     expect(screen.getByText('pdf-processing')).toBeTruthy();
+  });
+
+  it("switches between chats and tasks and marks unseen task runs as seen on open", () => {
+    const onSelectSession = vi.fn();
+    const onMarkAutopilotRunSeen = vi.fn();
+
+    renderLeftPanel({ onSelectSession, onMarkAutopilotRunSeen });
+
+    expect(screen.getByRole("button", { name: /tasks/i }).textContent).toContain("1");
+    expect(screen.queryByText("Daily brief")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /tasks/i }));
+    fireEvent.click(screen.getByRole("button", { name: /daily brief/i }));
+
+    expect(onSelectSession).toHaveBeenCalledWith("task-1-session");
+    expect(onMarkAutopilotRunSeen).toHaveBeenCalledWith("run-1");
+  });
+
+  it("shows the tasks list automatically when the active session is an autopilot run", async () => {
+    renderLeftPanel({ activeSessionId: "task-1-session" });
+
+    await waitFor(() => {
+      expect(screen.getByText("Daily brief")).toBeTruthy();
+    });
+
+    expect(screen.queryByText("Alpha chat")).toBeNull();
+  });
+
+  it("shows a static chats header without the tasks switch in desktop mode", () => {
+    renderLeftPanel({
+      currentVault: {
+        id: "vault-1",
+        name: "my-vault",
+        path: "/tmp/my-vault",
+      },
+    });
+
+    expect(screen.getByText("Chats")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /tasks/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "New chat" })).toBeTruthy();
+    expect(screen.getByLabelText("Search chats, knowledge, experts, and skills")).toBeTruthy();
   });
 
   it("creates a markdown file in the selected directory", async () => {
@@ -234,7 +290,7 @@ describe("LeftPanel", () => {
     expect(chatHeaders.length).toBeGreaterThan(0);
     // topCollapsed = true means the section has flexBasis: HEADER_HEIGHT and grow: 0
     // We can check that the persisted value was loaded by verifying what gets persisted back
-    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"chats":true');
+    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"chats":false');
   });
 
   it("hydrates subpanel collapsed state from the cookie when localStorage is empty", () => {
@@ -245,7 +301,7 @@ describe("LeftPanel", () => {
 
     renderLeftPanel();
 
-    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"chats":true');
+    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"chats":false');
     expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"skills":true');
   });
 
@@ -267,7 +323,7 @@ describe("LeftPanel", () => {
       },
     });
 
-    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"chats":true');
+    expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"chats":false');
     expect(localStorage.getItem("arche.workspace.alice.left-panel")).toContain('"skills":true');
   });
 
@@ -275,22 +331,22 @@ describe("LeftPanel", () => {
     renderLeftPanel();
 
     // The persist effect runs on mount with default state
-    // Toggle the Chats section to collapsed
-    const chatToggleBtn = screen.getAllByRole("button").find(
-      (btn) => btn.querySelector("span")?.textContent?.includes("Chats") ||
-               btn.textContent?.trim().startsWith("Chats")
+    const knowledgeToggleBtn = screen.getAllByRole("button").find(
+      (btn) => btn.querySelector("span")?.textContent?.includes("Knowledge") ||
+               btn.textContent?.trim().startsWith("Knowledge")
     );
 
-    if (!chatToggleBtn) {
-      throw new Error("Could not find Chats toggle button");
+    if (!knowledgeToggleBtn) {
+      throw new Error("Could not find Knowledge toggle button");
     }
 
-    fireEvent.click(chatToggleBtn);
+    fireEvent.click(knowledgeToggleBtn);
 
     const stored = localStorage.getItem("arche.workspace.alice.left-panel");
     expect(stored).not.toBeNull();
     const parsed = JSON.parse(stored!);
-    expect(parsed.collapsed.chats).toBe(true);
+    expect(parsed.collapsed.chats).toBe(false);
+    expect(parsed.collapsed.knowledge).toBe(true);
   });
 
   it("shows a new chat button when the left panel is collapsed", () => {

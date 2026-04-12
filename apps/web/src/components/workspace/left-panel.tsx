@@ -160,7 +160,9 @@ type LeftPanelProps = {
   activeSessionId: string | null;
   unseenCompletedSessions: ReadonlySet<string>;
   onSelectSession: (id: string) => void;
+  onMarkAutopilotRunSeen?: (runId: string) => Promise<void> | void;
   onCreateSession: () => void;
+  onOpenAutopilotSettings?: () => void;
 
   // Agents
   agents: AgentCatalogItem[];
@@ -552,7 +554,9 @@ export function LeftPanel({
   activeSessionId,
   unseenCompletedSessions,
   onSelectSession,
+  onMarkAutopilotRunSeen,
   onCreateSession,
+  onOpenAutopilotSettings,
   agents,
   onSelectAgent,
   onOpenExpertsSettings,
@@ -621,7 +625,9 @@ export function LeftPanel({
         activeSessionId={activeSessionId}
         unseenCompletedSessions={unseenCompletedSessions}
         onSelectSession={onSelectSession}
+        onMarkAutopilotRunSeen={onMarkAutopilotRunSeen}
         onCreateSession={onCreateSession}
+        onOpenAutopilotSettings={onOpenAutopilotSettings}
         agents={agents}
         onSelectAgent={onSelectAgent}
         onOpenExpertsSettings={onOpenExpertsSettings}
@@ -662,7 +668,9 @@ function ExpandedLeftPanel({
   activeSessionId,
   unseenCompletedSessions,
   onSelectSession,
+  onMarkAutopilotRunSeen,
   onCreateSession,
+  onOpenAutopilotSettings,
   agents,
   onSelectAgent,
   onOpenExpertsSettings,
@@ -684,6 +692,8 @@ function ExpandedLeftPanel({
   const newFileNameRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [sessionListMode, setSessionListMode] = useState<"chats" | "tasks">("chats");
+  const autoSwitchedToTasksRef = useRef(false);
   const [isCreateFileDialogOpen, setIsCreateFileDialogOpen] = useState(false);
   const [newFileName, setNewFileName] = useState("");
   const [selectedDirectoryPath, setSelectedDirectoryPath] = useState("");
@@ -697,17 +707,52 @@ function ExpandedLeftPanel({
     () => getInitialLeftPanelState(leftPanelStorageKey, leftPanelCookieName, initialPanelState),
     [initialPanelState, leftPanelCookieName, leftPanelStorageKey]
   );
+  const supportsAutopilotTasks = !currentVault;
   const showRestartNotice = Boolean(currentVault && (configChangePending || configRestartError) && onRestartConfig);
 
   const sectionOrder = LEFT_PANEL_SECTION_IDS;
   const [ratios, setRatios] = useState(resolvedInitialPanelState.ratios);
-  const [collapsedSections, setCollapsedSections] = useState(resolvedInitialPanelState.collapsed);
+  const [collapsedSections, setCollapsedSections] = useState<Record<LeftPanelSectionId, boolean>>({
+    ...resolvedInitialPanelState.collapsed,
+    chats: false,
+  });
+  const manualSessions = useMemo(
+    () => sessions.filter((session) => !session.autopilot),
+    [sessions]
+  );
+  const taskSessions = useMemo(
+    () => sessions.filter((session) => Boolean(session.autopilot)),
+    [sessions]
+  );
+  const unseenTaskSessionsCount = useMemo(
+    () => taskSessions.filter((session) => session.autopilot?.hasUnseenResult).length,
+    [taskSessions]
+  );
+  const visibleSessions = supportsAutopilotTasks && sessionListMode === "tasks" ? taskSessions : manualSessions;
+
+  useEffect(() => {
+    if (!supportsAutopilotTasks || autoSwitchedToTasksRef.current || sessionListMode === "tasks" || !activeSessionId) {
+      return;
+    }
+
+    const activeSession = sessions.find((session) => session.id === activeSessionId);
+    if (!activeSession?.autopilot) {
+      return;
+    }
+
+    autoSwitchedToTasksRef.current = true;
+    setSessionListMode("tasks");
+  }, [activeSessionId, sessionListMode, sessions, supportsAutopilotTasks]);
 
   // Expand the requested section when coming from a minified panel click
   useEffect(() => {
     const section = pendingSectionRef?.current;
     if (!section) return;
     pendingSectionRef.current = null;
+    if (section === "chats") {
+      setSessionListMode("chats");
+      return;
+    }
     setCollapsedSections((current) => ({ ...current, [section]: false }));
   }, [pendingSectionRef]);
 
@@ -810,7 +855,10 @@ function ExpandedLeftPanel({
   useEffect(() => {
     persistLeftPanelState(leftPanelStorageKey, leftPanelCookieName, {
       ratios,
-      collapsed: collapsedSections,
+      collapsed: {
+        ...collapsedSections,
+        chats: false,
+      },
     });
   }, [collapsedSections, leftPanelCookieName, leftPanelStorageKey, ratios]);
 
@@ -887,19 +935,39 @@ function ExpandedLeftPanel({
     [isCreatingFile, newFileName, onCreateKnowledgeFile, resetCreateFileDialog, selectedDirectoryPath]
   );
 
+  const resizableSectionOrder = useMemo(
+    () => sectionOrder,
+    [sectionOrder]
+  );
+
   const expandedRatioTotal = useMemo(
-    () => sectionOrder.reduce((sum, sectionId) => sum + (collapsedSections[sectionId] ? 0 : ratios[sectionId]), 0),
-    [collapsedSections, ratios, sectionOrder]
+    () => resizableSectionOrder.reduce((sum, sectionId) => sum + (collapsedSections[sectionId] ? 0 : ratios[sectionId]), 0),
+    [collapsedSections, ratios, resizableSectionOrder]
   );
 
   const effectiveRatios = useMemo(
     () => Object.fromEntries(
-      sectionOrder.map((sectionId) => [
+      resizableSectionOrder.map((sectionId) => [
         sectionId,
-        expandedRatioTotal > 0 ? ratios[sectionId] / expandedRatioTotal : 1 / sectionOrder.length,
+        expandedRatioTotal > 0 ? ratios[sectionId] / expandedRatioTotal : 1 / resizableSectionOrder.length,
       ])
     ) as Record<LeftPanelSectionId, number>,
-    [expandedRatioTotal, ratios, sectionOrder]
+    [expandedRatioTotal, ratios, resizableSectionOrder]
+  );
+
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      onSelectSession(sessionId);
+
+      const selectedSession = sessions.find((session) => session.id === sessionId);
+      const autopilot = selectedSession?.autopilot;
+      if (!autopilot?.hasUnseenResult) {
+        return;
+      }
+
+      void onMarkAutopilotRunSeen?.(autopilot.runId);
+    },
+    [onMarkAutopilotRunSeen, onSelectSession, sessions]
   );
 
   const handleResize = useCallback(
@@ -980,7 +1048,9 @@ function ExpandedLeftPanel({
   const sectionItems: Array<{
     actionIcon?: typeof Plus
     actionLabel?: string
+    collapsible?: boolean
     content: React.ReactNode
+    customHeader?: React.ReactNode
     icon: typeof ChatCircle
     id: LeftPanelSectionId
     label: string
@@ -990,15 +1060,80 @@ function ExpandedLeftPanel({
       id: "chats",
       icon: ChatCircle,
       label: "Chats",
-      onAction: onCreateSession,
-      actionIcon: Plus,
-      actionLabel: "New chat",
+      collapsible: false,
+      customHeader: (
+        <div className="flex shrink-0 items-center justify-between gap-2 px-3 pt-2.5 pb-1">
+          {supportsAutopilotTasks ? (
+            <div className="inline-flex h-8 items-center rounded-lg bg-foreground/[0.06] p-0.5">
+              <button
+                type="button"
+                onClick={() => setSessionListMode("chats")}
+                className={cn(
+                  "flex h-7 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-all",
+                  sessionListMode === "chats"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                aria-pressed={sessionListMode === "chats"}
+              >
+                Chats
+              </button>
+              <button
+                type="button"
+                onClick={() => setSessionListMode("tasks")}
+                className={cn(
+                  "flex h-7 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-all",
+                  sessionListMode === "tasks"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                aria-pressed={sessionListMode === "tasks"}
+              >
+                Tasks
+                {unseenTaskSessionsCount > 0 ? (
+                  <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                    {unseenTaskSessionsCount > 99 ? "99+" : unseenTaskSessionsCount}
+                  </span>
+                ) : null}
+              </button>
+            </div>
+          ) : (
+            <div className="flex min-w-0 items-center gap-1.5 px-0.5">
+              <ChatCircle size={14} weight="bold" className="text-muted-foreground" />
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                Chats
+              </span>
+            </div>
+          )}
+
+          {supportsAutopilotTasks && sessionListMode === "tasks" && onOpenAutopilotSettings ? (
+            <button
+              type="button"
+              onClick={onOpenAutopilotSettings}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              aria-label="Manage tasks"
+            >
+              <SlidersHorizontal size={14} weight="bold" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={onCreateSession}
+              className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+              aria-label="New chat"
+            >
+              <Plus size={14} weight="bold" />
+            </button>
+          )}
+        </div>
+      ),
       content: (
         <SessionsPanel
-          sessions={sessions}
+          kind={sessionListMode}
+          sessions={visibleSessions}
           activeSessionId={activeSessionId}
           unseenCompletedSessions={unseenCompletedSessions}
-          onSelectSession={onSelectSession}
+          onSelectSession={handleSelectSession}
           onCreateSession={onCreateSession}
           query={searchQuery}
         />
@@ -1090,7 +1225,11 @@ function ExpandedLeftPanel({
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             placeholder="Search..."
-            aria-label="Search chats, knowledge, experts, and skills"
+            aria-label={
+              supportsAutopilotTasks
+                ? "Search chats, tasks, knowledge, experts, and skills"
+                : "Search chats, knowledge, experts, and skills"
+            }
             className="w-full bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground/40"
           />
           {searchQuery.trim().length > 0 ? (
@@ -1115,7 +1254,7 @@ function ExpandedLeftPanel({
 
       {sectionItems.map((section, index) => {
         const nextSection = sectionItems[index + 1]
-        const isCollapsed = collapsedSections[section.id]
+        const isCollapsed = section.collapsible === false ? false : collapsedSections[section.id]
 
         return (
           <div key={section.id} className="contents">
@@ -1123,14 +1262,16 @@ function ExpandedLeftPanel({
               style={sectionStyle(isCollapsed, effectiveRatios[section.id])}
               className="flex min-h-0 flex-col overflow-hidden rounded-xl bg-foreground/[0.03]"
             >
-              <SectionHeader
-                icon={section.icon}
-                label={section.label}
-                onToggle={() => setCollapsedSections((current) => ({ ...current, [section.id]: !current[section.id] }))}
-                onAction={section.onAction}
-                actionIcon={section.actionIcon}
-                actionLabel={section.actionLabel}
-              />
+              {section.customHeader ?? (
+                <SectionHeader
+                  icon={section.icon}
+                  label={section.label}
+                  onToggle={() => setCollapsedSections((current) => ({ ...current, [section.id]: !current[section.id] }))}
+                  onAction={section.onAction}
+                  actionIcon={section.actionIcon}
+                  actionLabel={section.actionLabel}
+                />
+              )}
               <div className="min-h-0 flex-1" style={contentStyle(isCollapsed)}>
                 <div className="flex flex-col overflow-hidden" style={{ minHeight: 0 }}>
                   {section.content}
@@ -1138,7 +1279,7 @@ function ExpandedLeftPanel({
               </div>
             </div>
 
-            {nextSection && !collapsedSections[section.id] && !collapsedSections[nextSection.id] ? (
+            {nextSection && !isCollapsed && !(nextSection.collapsible === false ? false : collapsedSections[nextSection.id]) ? (
               <div
                 className="group relative h-0 w-full shrink-0 cursor-row-resize"
                 onPointerDown={(event) => handleResize(section.id, nextSection.id, event)}

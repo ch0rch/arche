@@ -4,6 +4,7 @@
   "private": true,
   "packageManager": "pnpm@10.14.0",
   "scripts": {
+    "postinstall": "pnpm prisma:generate && pnpm prisma:generate:desktop",
     "predev": "pnpm prisma:generate && pnpm prisma:generate:desktop",
     "dev": "next dev -H 0.0.0.0 -p 3000",
     "prebuild": "pnpm prisma:generate && pnpm prisma:generate:desktop",
@@ -46,6 +47,7 @@
     "better-sqlite3": "^12.6.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cron-parser": "^5.5.0",
     "dockerode": "^4.0.9",
     "fflate": "^0.8.2",
     "lucide-react": "^0.563.0",

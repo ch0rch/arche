@@ -5,6 +5,7 @@ import {
   listSessionsAction,
   createSessionAction,
   deleteSessionAction,
+  markAutopilotRunSeenAction,
   updateSessionAction,
   listMessagesAction,
   abortSessionAction,
@@ -312,6 +313,7 @@ function createDefaultSessionSelectionState(
 export type UseWorkspaceOptions = {
   slug: string;
   storageScope?: string;
+  initialSessionId?: string | null;
   /** Poll interval in ms for session status updates */
   pollInterval?: number;
   /** Skip connection attempts when false */
@@ -349,6 +351,7 @@ export type UseWorkspaceReturn = {
   isLoadingSessions: boolean;
   unseenCompletedSessions: ReadonlySet<string>;
   selectSession: (id: string) => void;
+  markAutopilotRunSeen: (runId: string) => Promise<void>;
   createSession: (title?: string) => Promise<WorkspaceSession | null>;
   deleteSession: (id: string) => Promise<boolean>;
   renameSession: (id: string, title: string) => Promise<boolean>;
@@ -391,12 +394,14 @@ export type UseWorkspaceReturn = {
 export function useWorkspace({
   slug,
   storageScope,
+  initialSessionId = null,
   pollInterval = 5000,
   enabled = true,
   workspaceAgentEnabled = true,
   reaperEnabled = true,
 }: UseWorkspaceOptions): UseWorkspaceReturn {
   const activeSessionStorageKey = getActiveSessionStorageKey(storageScope ?? slug);
+  const initialSessionIdRef = useRef(initialSessionId);
 
   // --- Sub-hooks ---
   // onConnectedRef holds the real init callback. We declare it as a ref so
@@ -457,6 +462,7 @@ export function useWorkspace({
   const sessionExecutorsRef = useRef(new Map<string, SerialJobExecutor>());
   const latestStreamTokensRef = useRef(new Map<string, number>());
   const isMountedRef = useRef(true);
+  const autoMarkedAutopilotRunIdRef = useRef<string | null>(null);
 
   // Workspace refresh scheduling (diffs + files after stream completion)
   const workspaceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -800,6 +806,11 @@ export function useWorkspace({
           const next: Record<string, SessionSelectionState> = {};
 
           for (const [sessionId, state] of Object.entries(prev)) {
+            if (sessionId === PRE_SESSION_SELECTION_KEY) {
+              next[sessionId] = state;
+              continue;
+            }
+
             if (!sessionIds.has(sessionId)) {
               changed = true;
               continue;
@@ -810,7 +821,13 @@ export function useWorkspace({
           return changed ? next : prev;
         });
         const currentSessionId = activeSessionIdRef.current;
+        const requestedSessionId = initialSessionIdRef.current;
         const storedSessionId = loadStoredActiveSessionId(activeSessionStorageKey);
+        const firstManualRootSession = sessions.find(
+          (session) =>
+            (!session.parentId || !sessionIds.has(session.parentId)) &&
+            !session.autopilot
+        );
         const firstRootSession = sessions.find(
           (session) => !session.parentId || !sessionIds.has(session.parentId)
         );
@@ -818,12 +835,18 @@ export function useWorkspace({
           (currentSessionId && sessionIds.has(currentSessionId)
             ? currentSessionId
             : null) ??
+          (requestedSessionId && sessionIds.has(requestedSessionId)
+            ? requestedSessionId
+            : null) ??
           (storedSessionId && sessionIds.has(storedSessionId)
             ? storedSessionId
             : null) ??
+          firstManualRootSession?.id ??
           firstRootSession?.id ??
           sessions[0]?.id ??
           null;
+
+        initialSessionIdRef.current = null;
 
         if (nextActiveSessionId !== currentSessionId) {
           console.log(
@@ -885,6 +908,47 @@ export function useWorkspace({
     },
     []
   );
+
+  const markAutopilotRunSeen = useCallback(
+    async (runId: string) => {
+      let touched = false;
+
+      setSessions((prev) =>
+        prev.map((session) => {
+          if (session.autopilot?.runId !== runId || !session.autopilot.hasUnseenResult) {
+            return session;
+          }
+
+          touched = true;
+          return {
+            ...session,
+            autopilot: {
+              ...session.autopilot,
+              hasUnseenResult: false,
+            },
+          };
+        })
+      );
+
+      const result = await markAutopilotRunSeenAction(slug, runId);
+      if (!result.ok && touched) {
+        void loadSessions();
+      }
+    },
+    [loadSessions, slug]
+  );
+
+  useEffect(() => {
+    const runId = activeSession?.autopilot?.hasUnseenResult
+      ? activeSession.autopilot.runId
+      : null;
+    if (!runId || autoMarkedAutopilotRunIdRef.current === runId) {
+      return;
+    }
+
+    autoMarkedAutopilotRunIdRef.current = runId;
+    void markAutopilotRunSeen(runId);
+  }, [activeSession, markAutopilotRunSeen]);
 
   const createSession = useCallback(
     async (title?: string) => {
@@ -2145,6 +2209,7 @@ export function useWorkspace({
     isLoadingSessions,
     unseenCompletedSessions,
     selectSession,
+    markAutopilotRunSeen,
     createSession,
     deleteSession,
     renameSession,
