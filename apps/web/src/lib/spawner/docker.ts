@@ -50,24 +50,6 @@ async function getContainerClient(): Promise<DockerClient> {
   });
 }
 
-async function ensureImageExists(image: string): Promise<void> {
-  const docker = getContainerClient();
-  try {
-    await docker.getImage(image).inspect();
-  } catch {
-    // Image not present locally — pull it
-    await new Promise<void>((resolve, reject) => {
-      docker.pull(image, (err: Error | null, stream: NodeJS.ReadableStream) => {
-        if (err) return reject(err);
-        docker.modem.followProgress(stream, (progressErr: Error | null) => {
-          if (progressErr) reject(progressErr);
-          else resolve();
-        });
-      });
-    });
-  }
-}
-
 export async function createContainer(
   slug: string,
   password: string,
