@@ -86,6 +86,14 @@ curl -i \
 
 This repo uses `pnpm` by default.
 
+## Connector OAuth security notes
+
+- Custom connector OAuth state includes encrypted metadata needed for callback completion.
+- When a custom connector uses static client credentials, the encrypted state can include `clientSecret`.
+- The OAuth `state` travels in the authorization URL query string, so avoid logging full callback or authorization URLs in reverse proxies and access logs.
+- Custom connector endpoints are SSRF-validated (HTTPS only, DNS/IP checks), but a DNS rebinding window still exists between validation and outbound fetch.
+- Keep outbound egress controls in place (network policy, firewall, allowlists) for defense in depth.
+
 ## UI
 
 The UI uses Tailwind + shadcn/ui. Components live in `src/components/ui`.
@@ -162,7 +170,7 @@ The spawner can connect to the container runtime in two ways:
 `arche-workspace:latest` extends OpenCode with git and initialization scripts:
 
 ```bash
-podman build -t arche-workspace:latest infra/workspace-image
+podman build --build-arg OPENCODE_VERSION="$(cat versions/opencode.version)" -t arche-workspace:latest infra/workspace-image
 ```
 
 ### Troubleshooting

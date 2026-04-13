@@ -15,6 +15,11 @@ vi.mock('@/lib/providers/crypto', () => ({
   decryptProviderSecret: (...args: unknown[]) => mockDecryptProviderSecret(...args),
 }))
 
+const mockGetRuntimeCapabilities = vi.fn()
+vi.mock('@/lib/runtime/capabilities', () => ({
+  getRuntimeCapabilities: (...args: unknown[]) => mockGetRuntimeCapabilities(...args),
+}))
+
 type ProxyCallInput = {
   provider?: string
   path?: string[]
@@ -67,6 +72,16 @@ describe('providers gateway', () => {
     vi.clearAllMocks()
     vi.resetModules()
     vi.stubGlobal('fetch', vi.fn())
+    mockGetRuntimeCapabilities.mockReturnValue({
+      multiUser: true,
+      auth: true,
+      containers: true,
+      csrf: true,
+      twoFactor: true,
+      teamManagement: true,
+      connectors: true,
+      kickstart: true,
+    })
 
     mockVerifyGatewayToken.mockReturnValue({
       userId: 'user-1',
@@ -411,6 +426,151 @@ describe('providers gateway', () => {
     expect(headers.get('x-api-key')).toBe(null)
   })
 
+  it('proxies to Fireworks with real api key', async () => {
+    mockVerifyGatewayToken.mockReturnValue({
+      userId: 'user-1',
+      workspaceSlug: 'ws',
+      providerId: 'fireworks',
+      version: 1,
+      exp: Math.floor(Date.now() / 1000) + 1000,
+    })
+    mockGetActiveCredentialForUser.mockResolvedValue({
+      id: 'cred-fw',
+      type: 'api',
+      secret: 'encrypted',
+      version: 1,
+    })
+    mockDecryptProviderSecret.mockReturnValue({ apiKey: 'fw-key' })
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('ok', { status: 200 })
+    )
+
+    await callProxy({
+      provider: 'fireworks',
+      headers: {
+        Authorization: 'Bearer internal-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ input: 'hello' }),
+    })
+
+    const [url, options] = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(url).toBe('https://api.fireworks.ai/inference/v1/chat/completions?foo=bar')
+    const headers = options.headers as Headers
+    expect(headers.get('authorization')).toBe('Bearer fw-key')
+    expect(headers.get('x-api-key')).toBe(null)
+  })
+
+  it('accepts runtime provider aliases and resolves them to the canonical Fireworks provider', async () => {
+    mockVerifyGatewayToken.mockReturnValue({
+      userId: 'user-1',
+      workspaceSlug: 'ws',
+      providerId: 'fireworks',
+      version: 1,
+      exp: Math.floor(Date.now() / 1000) + 1000,
+    })
+    mockGetActiveCredentialForUser.mockResolvedValue({
+      id: 'cred-fw',
+      type: 'api',
+      secret: 'encrypted',
+      version: 1,
+    })
+    mockDecryptProviderSecret.mockReturnValue({ apiKey: 'fw-key' })
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('ok', { status: 200 })
+    )
+
+    await callProxy({
+      provider: 'fireworks-ai',
+      headers: {
+        Authorization: 'Bearer internal-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ input: 'hello' }),
+    })
+
+    expect(mockGetActiveCredentialForUser).toHaveBeenCalledWith({
+      userId: 'user-1',
+      providerId: 'fireworks',
+    })
+
+    const [url, options] = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(url).toBe('https://api.fireworks.ai/inference/v1/chat/completions?foo=bar')
+    const headers = options.headers as Headers
+    expect(headers.get('authorization')).toBe('Bearer fw-key')
+  })
+
+  it('strips unsupported Fireworks display_name metadata from JSON payloads', async () => {
+    mockVerifyGatewayToken.mockReturnValue({
+      userId: 'user-1',
+      workspaceSlug: 'ws',
+      providerId: 'fireworks',
+      version: 1,
+      exp: Math.floor(Date.now() / 1000) + 1000,
+    })
+    mockGetActiveCredentialForUser.mockResolvedValue({
+      id: 'cred-fw',
+      type: 'api',
+      secret: 'encrypted',
+      version: 1,
+    })
+    mockDecryptProviderSecret.mockReturnValue({ apiKey: 'fw-key' })
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('ok', { status: 200 })
+    )
+
+    await callProxy({
+      provider: 'fireworks',
+      headers: {
+        Authorization: 'Bearer internal-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'accounts/fireworks/routers/kimi-k2p5-turbo',
+        messages: [
+          {
+            role: 'assistant',
+            display_name: 'Assistant',
+            content: 'hello',
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                display_name: 'Assistant',
+                text: 'hi',
+              },
+            ],
+          },
+        ],
+        metadata: {
+          display_name: 'Assistant',
+        },
+      }),
+    })
+
+    const [, options] = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    const upstreamBody = JSON.parse(options.body as string) as {
+      messages: Array<{
+        display_name?: string
+        content?: string | Array<{ display_name?: string; text?: string }>
+      }>
+      metadata?: { display_name?: string }
+    }
+
+    expect(upstreamBody.messages[0]?.display_name).toBeUndefined()
+    expect(
+      Array.isArray(upstreamBody.messages[1]?.content)
+        ? upstreamBody.messages[1].content[0]?.display_name
+        : undefined
+    ).toBeUndefined()
+    expect(upstreamBody.metadata?.display_name).toBeUndefined()
+  })
+
   it('proxies to OpenCode Zen with real api key', async () => {
     mockVerifyGatewayToken.mockReturnValue({
       userId: 'user-1',
@@ -447,6 +607,92 @@ describe('providers gateway', () => {
     expect(headers.get('x-api-key')).toBe(null)
   })
 
+  it('allows gateway-authenticated OpenCode Zen requests without stored credentials', async () => {
+    mockVerifyGatewayToken.mockReturnValue({
+      userId: 'user-1',
+      workspaceSlug: 'ws',
+      providerId: 'opencode',
+      version: 0,
+      exp: Math.floor(Date.now() / 1000) + 1000,
+    })
+    mockGetActiveCredentialForUser.mockResolvedValue(null)
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('ok', { status: 200 })
+    )
+
+    await callProxy({
+      provider: 'opencode',
+      path: ['models'],
+      method: 'GET',
+      headers: {
+        Authorization: 'Bearer internal-token',
+      },
+    })
+
+    const [url, options] = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(url).toBe('https://opencode.ai/zen/v1/models?foo=bar')
+    const headers = options.headers as Headers
+    expect(headers.get('authorization')).toBe(null)
+  })
+
+  it('accepts OpenCode Zen gateway tokens from x-api-key headers', async () => {
+    mockVerifyGatewayToken.mockReturnValue({
+      userId: 'user-1',
+      workspaceSlug: 'ws',
+      providerId: 'opencode',
+      version: 0,
+      exp: Math.floor(Date.now() / 1000) + 1000,
+    })
+    mockGetActiveCredentialForUser.mockResolvedValue(null)
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('ok', { status: 200 })
+    )
+
+    await callProxy({
+      provider: 'opencode',
+      path: ['messages'],
+      method: 'POST',
+      headers: {
+        'x-api-key': 'internal-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ input: 'hello' }),
+    })
+
+    const [url, options] = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(url).toBe('https://opencode.ai/zen/v1/messages?foo=bar')
+    const headers = options.headers as Headers
+    expect(headers.get('authorization')).toBe(null)
+    expect(mockVerifyGatewayToken).toHaveBeenCalledWith('internal-token')
+  })
+
+  it('falls back to anonymous OpenCode Zen when a gateway token has expired', async () => {
+    mockVerifyGatewayToken.mockImplementation(() => {
+      throw new Error('token_expired')
+    })
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('ok', { status: 200 })
+    )
+
+    await callProxy({
+      provider: 'opencode',
+      path: ['models'],
+      method: 'GET',
+      headers: {
+        Authorization: 'Bearer expired-gateway-token',
+      },
+    })
+
+    const [url, options] = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(url).toBe('https://opencode.ai/zen/v1/models?foo=bar')
+    const headers = options.headers as Headers
+    expect(headers.get('authorization')).toBe(null)
+    expect(mockGetActiveCredentialForUser).not.toHaveBeenCalled()
+  })
+
   it('passes through OpenCode Zen workspace tokens when not gateway-managed', async () => {
     mockVerifyGatewayToken.mockImplementation(() => {
       throw new Error('invalid_token')
@@ -470,5 +716,37 @@ describe('providers gateway', () => {
     const headers = options.headers as Headers
     expect(headers.get('authorization')).toBe('Bearer zen-user-token')
     expect(mockGetActiveCredentialForUser).not.toHaveBeenCalled()
+  })
+
+  it('allows anonymous OpenCode Zen requests in desktop mode', async () => {
+    mockGetRuntimeCapabilities.mockReturnValue({
+      multiUser: false,
+      auth: false,
+      containers: false,
+      csrf: false,
+      twoFactor: false,
+      teamManagement: false,
+      connectors: false,
+      kickstart: false,
+    })
+
+    ;(global.fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response('ok', { status: 200 })
+    )
+
+    await callProxy({
+      provider: 'opencode',
+      path: ['messages'],
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ input: 'hello' }),
+    })
+
+    const [url, options] = (global.fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0]
+    expect(url).toBe('https://opencode.ai/zen/v1/messages?foo=bar')
+    const headers = options.headers as Headers
+    expect(headers.get('authorization')).toBe(null)
   })
 })

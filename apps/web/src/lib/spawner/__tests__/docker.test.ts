@@ -14,13 +14,26 @@ const mockDockerInstance = {
   createVolume: vi.fn().mockResolvedValue({}),
 }
 
+const mockDockerConstructor = vi.fn(() => mockDockerInstance)
+
 vi.mock('dockerode', () => ({
-  default: vi.fn(() => mockDockerInstance),
+  default: mockDockerConstructor,
 }))
 
 const mockWriteFile = vi.fn().mockResolvedValue(undefined)
 const mockChmod = vi.fn().mockResolvedValue(undefined)
+const mockMkdir = vi.fn().mockResolvedValue(undefined)
+const mockRm = vi.fn().mockResolvedValue(undefined)
 vi.mock('fs/promises', () => ({
+  mkdir: (...args: unknown[]) => mockMkdir(...args),
+  rm: (...args: unknown[]) => mockRm(...args),
+  writeFile: (...args: unknown[]) => mockWriteFile(...args),
+  chmod: (...args: unknown[]) => mockChmod(...args),
+}))
+
+vi.mock('node:fs/promises', () => ({
+  mkdir: (...args: unknown[]) => mockMkdir(...args),
+  rm: (...args: unknown[]) => mockRm(...args),
   writeFile: (...args: unknown[]) => mockWriteFile(...args),
   chmod: (...args: unknown[]) => mockChmod(...args),
 }))
@@ -30,7 +43,6 @@ vi.mock('@/lib/user-data', () => ({
   ensureUserDirectory: vi.fn().mockResolvedValue('/opt/arche/users/user-slug'),
 }))
 
-import Docker from 'dockerode'
 import {
   createContainer,
   startContainer,
@@ -59,10 +71,8 @@ describe('docker', () => {
   })
 
   describe('createContainer', () => {
-    it('creates container with correct configuration', async () => {
-      const configContent = '{"$schema":"https://opencode.ai/config.json","mcp":{}}'
-
-      await createContainer('user-slug', 'secret-password', configContent)
+    it('creates container with default runtime configuration', async () => {
+      await createContainer('user-slug', 'secret-password')
 
       const configCall = mockWriteFile.mock.calls.find(
         (call: unknown[]) =>
@@ -73,6 +83,10 @@ describe('docker', () => {
         permission?: {
           edit?: Record<string, string>
           bash?: Record<string, string>
+        }
+        provider?: {
+          fireworks?: { options?: { baseURL?: string } }
+          'fireworks-ai'?: { options?: { baseURL?: string } }
         }
       }
       expect(writtenConfig.permission?.edit).toMatchObject({
@@ -91,8 +105,14 @@ describe('docker', () => {
         'yarn create*': 'deny',
         'bun init*': 'deny',
       })
+      expect(writtenConfig.provider?.fireworks?.options?.baseURL).toBe(
+        'http://web:3000/api/internal/providers/fireworks'
+      )
+      expect(writtenConfig.provider?.['fireworks-ai']?.options?.baseURL).toBe(
+        'http://web:3000/api/internal/providers/fireworks'
+      )
 
-      expect(Docker).toHaveBeenCalledWith({
+      expect(mockDockerConstructor).toHaveBeenCalledWith({
         host: 'test-proxy',
         port: 2375,
       })
@@ -119,6 +139,7 @@ describe('docker', () => {
           'OPENCODE_CONFIG_DIR=/opt/arche/opencode-config',
           'HOME=/home/workspace',
           'XDG_DATA_HOME=/home/workspace/.local/share',
+          'XDG_CONFIG_HOME=/home/workspace/.config',
           'XDG_STATE_HOME=/home/workspace/.local/state',
           'WORKSPACE_AGENT_PORT=4097',
           'WORKSPACE_GIT_AUTHOR_NAME=user-slug',
@@ -132,7 +153,7 @@ describe('docker', () => {
             'arche-opencode-share-user-slug:/home/workspace/.local/share/opencode',
             'arche-opencode-state-user-slug:/home/workspace/.local/state/opencode',
             '/opt/arche/kb-content:/kb-content',
-            '/opt/arche/users/user-slug/opencode-config.json:/tmp/arche-user-data/opencode-config.json:ro',
+            '/opt/arche/users/user-slug:/tmp/arche-user-data:ro',
           ],
         },
         Labels: {
@@ -142,8 +163,9 @@ describe('docker', () => {
       })
     })
 
-    it('merges existing permission rules with workspace protection', async () => {
+    it('writes the provided runtime config content without mutating it', async () => {
       const configContent = JSON.stringify({
+        $schema: 'https://opencode.ai/config.json',
         permission: {
           bash: {
             '*': 'ask',
@@ -173,13 +195,10 @@ describe('docker', () => {
       expect(writtenConfig.permission?.bash).toMatchObject({
         '*': 'ask',
         'git *': 'allow',
-        'npm install*': 'deny',
       })
       expect(writtenConfig.permission?.edit).toMatchObject({
         '*': 'allow',
         'Company/*': 'allow',
-        '.gitignore': 'deny',
-        '.gitkeep': 'deny',
       })
     })
 
@@ -198,8 +217,7 @@ describe('docker', () => {
         expect.objectContaining({
           HostConfig: expect.objectContaining({
             Binds: expect.arrayContaining([
-              '/opt/arche/users/user-slug/opencode-config.json:/tmp/arche-user-data/opencode-config.json:ro',
-              '/opt/arche/users/user-slug/AGENTS.md:/tmp/arche-user-data/AGENTS.md:ro',
+              '/opt/arche/users/user-slug:/tmp/arche-user-data:ro',
             ]),
           }),
         })
@@ -215,13 +233,39 @@ describe('docker', () => {
       expect(agentsCalls).toHaveLength(0)
     })
 
+    it('writes runtime skills to the user-data directory when provided', async () => {
+      await createContainer('user-slug', 'secret-password', undefined, undefined, [
+        {
+          skill: {
+            frontmatter: {
+              name: 'pdf-processing',
+              description: 'Handle PDFs',
+            },
+            body: 'Use this for PDFs.',
+            raw: '',
+          },
+          files: [
+            {
+              path: 'SKILL.md',
+              content: new TextEncoder().encode('---\nname: pdf-processing\ndescription: Handle PDFs\n---\nUse this for PDFs.'),
+            },
+          ],
+        },
+      ])
+
+      expect(mockWriteFile).toHaveBeenCalledWith(
+        '/opt/arche/users/user-slug/skills/pdf-processing/SKILL.md',
+        expect.any(Buffer)
+      )
+    })
+
     it('returns the created container', async () => {
       const container = await createContainer('slug', 'pass')
       expect(container.id).toBe('container-123')
     })
 
     it('uses provided git author identity when passed', async () => {
-      await createContainer('user-slug', 'secret-password', undefined, undefined, {
+      await createContainer('user-slug', 'secret-password', undefined, undefined, undefined, {
         name: 'alice',
         email: 'alice@example.com',
       })

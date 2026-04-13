@@ -1,10 +1,11 @@
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
 
 import { ConnectorsWidget } from '@/components/dashboard/connectors-widget'
 import { DashboardHero } from '@/components/dashboard/dashboard-hero'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { getAuthenticatedUser } from '@/lib/auth'
+import { getSession } from '@/lib/runtime/session'
 import {
   listRecentKbFileUpdates,
   readCommonWorkspaceConfig,
@@ -12,6 +13,9 @@ import {
 import { getKickstartStatus } from '@/kickstart/status'
 import type { KickstartStatus } from '@/kickstart/types'
 import { getAgentSummaries, parseCommonWorkspaceConfig } from '@/lib/workspace-config'
+import { getCurrentDesktopVault } from '@/lib/runtime/desktop/current-vault'
+import { getRuntimeCapabilities } from '@/lib/runtime/capabilities'
+import { isDesktop } from '@/lib/runtime/mode'
 
 function formatCommitTime(value: string): string {
   const parsed = new Date(value)
@@ -69,11 +73,21 @@ export default async function WorkspacePage({
 }) {
   const { slug } = await params
   const search = await searchParams
+
+  if (isDesktop()) {
+    const vault = getCurrentDesktopVault()
+    if (!vault) {
+      redirect('/')
+    }
+
+    redirect('/w/local')
+  }
+
   const setupNotice = getSetupNotice(search?.setup)
 
   const [kickstartStatus, session] = await Promise.all([
     getKickstartStatus(),
-    getAuthenticatedUser(),
+    getSession(),
   ])
 
   const isAdmin = session?.user.role === 'ADMIN'
@@ -87,7 +101,7 @@ export default async function WorkspacePage({
 
           <div className="relative z-10 max-w-3xl space-y-5">
             <p className="text-xs uppercase tracking-[0.18em] text-primary/80">Kickstart Required</p>
-            <h1 className="font-[family-name:var(--font-display)] text-3xl leading-tight sm:text-4xl">
+            <h1 className="type-display text-3xl leading-tight sm:text-4xl">
               Configure your workspace before opening it
             </h1>
             <p className="text-sm text-muted-foreground sm:text-base">
@@ -144,9 +158,10 @@ export default async function WorkspacePage({
 
   const recentUpdatesResult = await listRecentKbFileUpdates(10)
   const recentUpdates = recentUpdatesResult.ok ? recentUpdatesResult.updates : []
+  const caps = getRuntimeCapabilities()
 
   return (
-    <main className="relative mx-auto max-w-6xl px-6 py-6">
+    <main className="relative mx-auto max-w-6xl overflow-hidden px-6 py-6">
       {setupNotice && (
         <section
           className={
@@ -219,10 +234,10 @@ export default async function WorkspacePage({
                 agents.map((agent) => (
                   <div
                     key={agent.id}
-                    className="glass-panel flex items-center justify-between rounded-lg px-4 py-3"
+                    className="glass-panel flex min-w-0 items-center justify-between gap-3 rounded-lg px-4 py-3"
                   >
-                    <span className="text-sm text-foreground">{agent.displayName}</span>
-                    <Badge variant={agent.isPrimary ? "default" : "secondary"}>
+                    <span className="min-w-0 truncate text-sm text-foreground">{agent.displayName}</span>
+                    <Badge className="shrink-0" variant={agent.isPrimary ? "default" : "secondary"}>
                       {agent.isPrimary ? 'Primary' : 'Secondary'}
                     </Badge>
                   </div>
@@ -243,6 +258,23 @@ export default async function WorkspacePage({
             </div>
             <ConnectorsWidget slug={slug} />
           </section>
+
+          {caps.autopilot ? (
+            <section>
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-sm font-medium text-muted-foreground">Autopilot</h2>
+                <Link
+                  href={`/u/${slug}/autopilot`}
+                  className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  Open
+                </Link>
+              </div>
+              <div className="glass-panel rounded-lg px-4 py-4 text-sm text-muted-foreground">
+                Schedule recurring prompts that run in the background with cron and timezone-aware execution.
+              </div>
+            </section>
+          ) : null}
         </div>
       </div>
     </main>

@@ -17,12 +17,22 @@ vi.mock('@/lib/opencode/client', () => ({
   getInstanceUrl: (...args: unknown[]) => mockGetInstanceUrl(...args),
 }))
 
+const mockDecryptPassword = vi.fn((value: string) => value.replace(/^enc:/, ''))
+const mockEncryptPassword = vi.fn((value: string) => `enc:${value}`)
+vi.mock('@/lib/spawner/crypto', () => ({
+  decryptPassword: (...args: unknown[]) => mockDecryptPassword(...args),
+  encryptPassword: (...args: unknown[]) => mockEncryptPassword(...args),
+}))
+
 const mockFindUnique = vi.fn()
+const mockFindFirst = vi.fn()
 const mockFindMany = vi.fn()
 const mockUpdateMany = vi.fn()
 const mockCreate = vi.fn()
+const mockTransaction = vi.fn()
 vi.mock('@/lib/prisma', () => ({
   prisma: {
+    $transaction: (...args: unknown[]) => mockTransaction(...args),
     user: {
       findUnique: (...args: unknown[]) => mockFindUnique(...args),
     },
@@ -30,12 +40,23 @@ vi.mock('@/lib/prisma', () => ({
       findUnique: (...args: unknown[]) => mockFindUnique(...args),
     },
     providerCredential: {
+      findFirst: (...args: unknown[]) => mockFindFirst(...args),
       findMany: (...args: unknown[]) => mockFindMany(...args),
       updateMany: (...args: unknown[]) => mockUpdateMany(...args),
       create: (...args: unknown[]) => mockCreate(...args),
     },
   },
 }))
+
+function createProviderTransactionClient() {
+  return {
+    providerCredential: {
+      findFirst: (...args: unknown[]) => mockFindFirst(...args),
+      updateMany: (...args: unknown[]) => mockUpdateMany(...args),
+      create: (...args: unknown[]) => mockCreate(...args),
+    },
+  }
+}
 
 function session(slug: string, role = 'USER') {
   return { user: { id: 'user-1', email: 'a@b.com', slug, role }, sessionId: 's1' }
@@ -87,6 +108,11 @@ describe('GET /api/u/[slug]/providers', () => {
     vi.clearAllMocks()
     vi.resetModules()
     mockSyncProviderAccessForInstance.mockResolvedValue({ ok: true })
+    mockDecryptPassword.mockImplementation((value: string) => value.replace(/^enc:/, ''))
+    mockEncryptPassword.mockImplementation((value: string) => `enc:${value}`)
+    mockTransaction.mockImplementation(async (callback: (tx: ReturnType<typeof createProviderTransactionClient>) => unknown) =>
+      callback(createProviderTransactionClient())
+    )
   })
 
   it('returns 401 when unauthenticated', async () => {
@@ -124,6 +150,7 @@ describe('GET /api/u/[slug]/providers', () => {
     expect(body.providers).toEqual([
       { providerId: 'openai', status: 'enabled', type: 'api', version: 2 },
       { providerId: 'anthropic', status: 'missing' },
+      { providerId: 'fireworks', status: 'missing' },
       { providerId: 'openrouter', status: 'missing' },
       { providerId: 'opencode', status: 'missing' },
     ])
@@ -135,6 +162,11 @@ describe('POST /api/u/[slug]/providers/[provider]', () => {
     vi.clearAllMocks()
     vi.resetModules()
     mockSyncProviderAccessForInstance.mockResolvedValue({ ok: true })
+    mockDecryptPassword.mockImplementation((value: string) => value.replace(/^enc:/, ''))
+    mockEncryptPassword.mockImplementation((value: string) => `enc:${value}`)
+    mockTransaction.mockImplementation(async (callback: (tx: ReturnType<typeof createProviderTransactionClient>) => unknown) =>
+      callback(createProviderTransactionClient())
+    )
   })
 
   it('returns 401 when unauthenticated', async () => {
@@ -191,8 +223,8 @@ describe('POST /api/u/[slug]/providers/[provider]', () => {
   it('creates new credential and audits creation', async () => {
     mockGetAuthenticatedUser.mockResolvedValue(session('admin', 'ADMIN'))
     mockFindUnique.mockResolvedValueOnce({ id: 'user-1' })
-    mockFindUnique.mockResolvedValueOnce({ serverPassword: 'secret' })
-    mockFindMany.mockResolvedValue([{ version: 2 }])
+    mockFindUnique.mockResolvedValueOnce({ serverPassword: 'enc:secret', status: 'running' })
+    mockFindFirst.mockResolvedValue({ version: 2 })
     mockUpdateMany.mockResolvedValue({ count: 1 })
     mockCreate.mockResolvedValue({
       id: 'cred-1',
@@ -205,12 +237,16 @@ describe('POST /api/u/[slug]/providers/[provider]', () => {
     const { status, body } = await callPostProvider('alice', 'openai', { apiKey: 'sk-123' })
     expect(status).toBe(201)
     expect(body).toEqual({
-      id: 'cred-1',
-      providerId: 'openai',
-      type: 'api',
-      status: 'enabled',
-      version: 3,
+      credential: {
+        id: 'cred-1',
+        providerId: 'openai',
+        type: 'api',
+        status: 'enabled',
+        version: 3,
+      },
+      restartRequired: false,
     })
+    expect(mockTransaction).toHaveBeenCalledTimes(1)
     expect(mockUpdateMany).toHaveBeenCalledWith({
       where: { userId: 'user-1', providerId: 'openai' },
       data: { status: 'disabled' },
@@ -227,6 +263,31 @@ describe('POST /api/u/[slug]/providers/[provider]', () => {
       userId: 'user-1',
     })
   })
+
+  it('returns restartRequired when live provider sync fails', async () => {
+    mockGetAuthenticatedUser.mockResolvedValue(session('admin', 'ADMIN'))
+    mockFindUnique.mockResolvedValueOnce({ id: 'user-1' })
+    mockFindUnique.mockResolvedValueOnce({ serverPassword: 'enc:secret', status: 'running' })
+    mockFindFirst.mockResolvedValue({ version: 0 })
+    mockUpdateMany.mockResolvedValue({ count: 1 })
+    mockCreate.mockResolvedValue({
+      id: 'cred-1',
+      providerId: 'openai',
+      type: 'api',
+      status: 'enabled',
+      version: 1,
+    })
+    mockSyncProviderAccessForInstance.mockResolvedValueOnce({ ok: false, error: 'sync_failed' })
+
+    const { status, body } = await callPostProvider('alice', 'openai', { apiKey: 'sk-123' })
+
+    expect(status).toBe(201)
+    expect(body.restartRequired).toBe(true)
+    expect(mockUpdateMany).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+      data: { lastError: 'workspace_restart_required' },
+    })
+  })
 })
 
 describe('DELETE /api/u/[slug]/providers/[provider]', () => {
@@ -234,6 +295,9 @@ describe('DELETE /api/u/[slug]/providers/[provider]', () => {
     vi.clearAllMocks()
     vi.resetModules()
     mockSyncProviderAccessForInstance.mockResolvedValue({ ok: true })
+    mockTransaction.mockImplementation(async (callback: (tx: ReturnType<typeof createProviderTransactionClient>) => unknown) =>
+      callback(createProviderTransactionClient())
+    )
   })
 
   it('returns 403 for non-admin user', async () => {
@@ -246,12 +310,12 @@ describe('DELETE /api/u/[slug]/providers/[provider]', () => {
   it('disables provider credential and syncs running instance', async () => {
     mockGetAuthenticatedUser.mockResolvedValue(session('admin', 'ADMIN'))
     mockFindUnique.mockResolvedValueOnce({ id: 'user-1' })
-    mockFindUnique.mockResolvedValueOnce({ serverPassword: 'secret' })
+    mockFindUnique.mockResolvedValueOnce({ serverPassword: 'enc:secret', status: 'running' })
     mockUpdateMany.mockResolvedValue({ count: 1 })
 
     const { status, body } = await callDeleteProvider('alice', 'openai')
     expect(status).toBe(200)
-    expect(body).toEqual({ ok: true, status: 'disabled' })
+    expect(body).toEqual({ ok: true, status: 'disabled', restartRequired: false })
     expect(mockUpdateMany).toHaveBeenCalledWith({
       where: { userId: 'user-1', providerId: 'openai', status: 'enabled' },
       data: { status: 'disabled' },

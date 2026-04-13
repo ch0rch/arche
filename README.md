@@ -1,224 +1,162 @@
 # Arche
 
-Specialized AI agent platform with isolated workspaces, a shared knowledge base, and container orchestration.
+Arche is an AI agent platform that lets teams deploy specialized assistants — for support, copywriting, SEO, marketing, and more — each with access to a shared knowledge base and its own isolated workspace.
 
-Arche lets teams deploy AI agents that understand company identity, tone, products, and internal processes. Each user gets a dedicated containerized workspace (OpenCode), access to a shared Knowledge Base (Obsidian vault), and a configurable agent catalog (support, copywriting, SEO, marketing, requirements, and more).
+Define your company's identity, tone, products, and processes once. Arche's agents use that knowledge to help your team work faster and more consistently.
 
-## High-Level Architecture
+## Desktop App
 
+The easiest way to try Arche is the desktop app. It runs locally on your machine — no server or Docker setup required.
+
+Desktop vault behavior:
+
+- Arche Desktop opens directly into the workspace for the last valid vault.
+- If no vault is selected yet, it opens a launcher where you can create or open a vault.
+- Each vault is a visible folder that contains its own database, KB repos, runtime state, and secrets.
+- Opening another vault launches a separate Electron process and window, similar to Obsidian.
+
+Breaking change:
+
+- Desktop no longer reads or migrates legacy hidden data from `~/.arche` or `~/.arche-opencode`.
+- You must create or open a visible Arche vault folder.
+
+### Download
+
+Head to the [latest release](https://github.com/peaberry-studio/arche/releases/latest) and download the installer for your platform:
+
+| Platform | File |
+|----------|------|
+| macOS (Apple Silicon) | `Arche-*-arm64.dmg` |
+| macOS (Intel) | `Arche-*-x64.dmg` |
+| Linux | `Arche-*-amd64.AppImage` or `.deb` |
+| Windows | `Arche-*-Setup.exe` |
+
+### Build from Source
+
+If you prefer to build the desktop app yourself:
+
+```bash
+# Prerequisites: Node.js 24+, pnpm 10+, Go 1.22+
+
+# 1. Install dependencies
+cd apps/web && pnpm install
+cd ../desktop && pnpm install
+
+# 2. Build the distributable
+cd ../..
+bash scripts/build-desktop.sh
 ```
-arche/
-├── apps/web/          # Next.js 16 (React 19) - UI + BFF + Spawner
-│   └── kickstart/     # Agent catalog + KB/config template definitions
-├── infra/
-│   ├── compose/       # Local stack (Podman Compose)
-│   ├── deploy/        # VPS deployer (Ansible + Bash)
-│   └── workspace-image/  # Workspace Docker image (OpenCode + git)
-└── scripts/           # Bare repo initialization scripts (kb-content/kb-config)
+
+The installer will be in `apps/desktop/release/`.
+
+For more details, see [`apps/desktop/README.md`](apps/desktop/README.md).
+
+## Self-Hosting
+
+Arche can be deployed to your own server so your entire team can use it.
+
+### One-Click DigitalOcean Install
+
+For the narrow-path setup, there is now a one-click installer that creates a fresh DigitalOcean Droplet, configures Docker, deploys the latest Arche images, auto-generates secrets, and exposes the app on a `nip.io` hostname.
+
+```bash
+curl -fsSL https://arche.peaberry.studio/install | bash
 ```
 
-### Data Flow
+You can also pass inputs up front:
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                     Podman Compose                        │
-├──────────────────────────────────────────────────────────┤
-│  Traefik :80/:443                                        │
-│     │                                                    │
-│     ▼                                                    │
-│  Web (Next.js) ──▶ docker-socket-proxy ──▶ Podman API   │
-│     │                                                    │
-│     ▼                                                    │
-│  PostgreSQL 16                                           │
-│                                                          │
-│  ┌─────────────── arche-internal ──────────────────┐     │
-│  │  opencode-alice :4096   opencode-bob :4096  ... │     │
-│  │       ▲                       ▲                 │     │
-│  │       └── kb-content (rw) ────┘                 │     │
-│  │       └── kb-config  (ro) ────┘                 │     │
-│  └─────────────────────────────────────────────────┘     │
-└──────────────────────────────────────────────────────────┘
+```bash
+curl -fsSL https://arche.peaberry.studio/install | bash -s -- --token "$DIGITALOCEAN_TOKEN" --email admin@example.com --version v1.2.3
 ```
 
-## Tech Stack
+The installer prompts for:
 
-| Layer | Technology |
-|------|-----------|
-| Framework | Next.js 16.1 + React 19 + TypeScript 5 |
-| Styling | Tailwind CSS 4 + shadcn/ui (Radix) |
-| Database | PostgreSQL 16 + Prisma 7 |
-| Auth | HTTP-only sessions + Argon2 + TOTP 2FA |
-| Encryption | AES-256-GCM (connectors, instance passwords) |
-| Containers | Podman + Traefik v3 + docker-socket-proxy |
-| Workspaces | OpenCode AI SDK (`@opencode-ai/sdk`) |
-| Package manager | pnpm 10 |
-| Tests | Vitest 3 |
-| Lint | ESLint 9 |
-| CI/CD | GitHub Actions (build + push to GHCR) |
-| Deploy | Ansible + Bash (VPS) / Podman Compose (local) |
+- DigitalOcean API token
+- Email address for the initial admin account and Let's Encrypt
 
-## Data Model (Prisma)
+You do not provide server, database, or admin passwords. The Go deployer generates a local SSH keypair for the deployment, the Droplet generates the runtime secrets during bootstrap, and `archectl` fetches the recovery details back over pinned SSH into `~/.arche/deployments/`.
 
-| Model | Description |
-|--------|-------------|
-| `User` | Accounts (email, slug, role, Argon2 hash, TOTP fields) |
-| `Session` | Sessions with token hash, expiration, IP, and user agent |
-| `Instance` | Containerized workspace (status, containerId, encrypted password, configSha) |
-| `Connector` | External integrations (Linear, Notion, Slack, GitHub) with encrypted config |
-| `AuditEvent` | Action log (actor, action, metadata) |
-| `TwoFactorRecovery` | One-time 2FA recovery codes |
+The shim installs `archectl` into `/usr/local/bin` when that directory is writable, otherwise into `~/.local/bin`. After installation, use the same binary for lifecycle commands:
 
-## Agents
+```bash
+archectl install --token "$DIGITALOCEAN_TOKEN" --email admin@example.com --version v1.2.3
+archectl update --token "$DIGITALOCEAN_TOKEN" --version v1.2.4
+archectl destroy --token "$DIGITALOCEAN_TOKEN"
+```
 
-The system includes a catalog of specialized AI agents defined in `apps/web/kickstart/agents/`.
-Each workspace applies a subset during kickstart and generates
-`CommonWorkspaceConfig.json` in the config bare repo:
+By default, `archectl` keeps output minimal and shows only lifecycle steps plus in-place progress. Add `-vv` or `--verbose` to show SSH/bootstrap logs.
 
-| Agent | Mode | Function |
-|--------|------|---------|
-| **assistant** | primary | General orchestrator, delegates to specialists |
-| **support** | subagent | Incident diagnosis and product support |
-| **requirements** | subagent | PRD and product spec writing |
-| **knowledge-curator** | subagent | KB maintenance and normalization |
-| **copywriter** | subagent | Brand voice and tone copy |
-| **ads-scripts** | subagent | Ad scripts (UGC/performance) |
-| **performance-marketing** | subagent | Meta Ads / ASA analysis |
-| **seo** | subagent | SEO strategy and content |
+If the local state file is missing, recovery flags are available:
 
-## Knowledge Base
+```bash
+archectl update --token "$DIGITALOCEAN_TOKEN" --version v1.2.4 --ip 203.0.113.10 --ssh-key ~/.arche/deployments/arche-20260410-120000-ssh.pem
+archectl destroy --token "$DIGITALOCEAN_TOKEN" --droplet-id 123456789 --firewall-id firewall-id --yes
+```
 
-KB starter content is defined in `apps/web/kickstart/templates/definitions/*.json`.
-Kickstart generates the initial tree and writes it to the `kb-content` bare repo.
+Legacy password-based recovery remains available for older deployments with `--ssh-password`.
 
-Runtime behavior:
+Assumptions:
 
-- `kb-content` (bare repo): workspace knowledge base files
-- `kb-config` (bare repo): runtime `CommonWorkspaceConfig.json` + generated `AGENTS.md`
-- both repos start empty and are populated by kickstart on first setup
+- DigitalOcean only
+- The shell entrypoint downloads `https://github.com/peaberry-studio/arche/releases/latest/download/archectl_<os>_<arch>` for macOS/Linux on amd64/arm64
+- Versioned images only: `ghcr.io/peaberry-studio/arche/web:<version>` and `ghcr.io/peaberry-studio/arche/workspace:<version>`
+- Public URL is derived automatically as `https://arche-<droplet-ip>.nip.io`
+- Local deployment state is stored at `~/.arche/deployments/current.json`
+
+Operational caveats:
+
+- The default public URL depends on the third-party `nip.io` DNS service. If `nip.io` is unavailable, point your own DNS name at the Droplet before relying on the deployment.
+- `archectl destroy` permanently removes the Droplet and attached data volumes. Create a Droplet snapshot or other backup before destroying a deployment you may need to recover.
+
+To test installer changes locally before publishing a GitHub release, build the matching binary into `/tmp`, point the shim at that directory, and run template validation:
+
+```bash
+cd infra/one-click
+GOOS="$(go env GOOS)" GOARCH="$(go env GOARCH)" go build -o "/tmp/archectl_$(go env GOOS)_$(go env GOARCH)" .
+cd ../..
+ARCHECTL_RELEASE_BASE_URL=file:///tmp bash install.sh --validate-only
+```
+
+### Deploy to a VPS (Ansible)
+
+One-command deployment with automatic TLS, database provisioning, and secrets management.
+
+See the full guide: [`infra/deploy/README.md`](infra/deploy/README.md)
+
+### Deploy with Coolify
+
+If you use [Coolify](https://coolify.io) to manage your infrastructure, Arche has first-class support with zero-downtime rolling updates.
+
+See the full guide: [`infra/coolify/README.md`](infra/coolify/README.md)
 
 ## Local Development
 
-### Prerequisites
-
-- Podman (or Docker) with Compose
-- pnpm 10+
-- Node.js 24+
-
-### Steps
+Set up the full development stack locally with hot reload:
 
 ```bash
-# 1. Clone and configure environment variables
-cp apps/web/.env.example apps/web/.env
+# Prerequisites: Node.js 24+, pnpm 10+, Podman (or Docker) with Compose
 
-# 2. Build the workspace image
-podman build -t arche-workspace:latest infra/workspace-image
-
-# 3. Create network and bare KB/config repos (empty)
-podman network create arche-internal
-./scripts/deploy-kb.sh ~/.arche/kb-content
-./scripts/deploy-config.sh ~/.arche/kb-config
-
-# 4. Start the full stack
-podman compose -f infra/compose/compose.yaml up -d --build
-
-# 5. Migrations and seed
-podman compose -f infra/compose/compose.yaml exec web pnpm prisma migrate dev --name init
-podman compose -f infra/compose/compose.yaml exec web pnpm db:seed
-
-# 6. Open the app
-# http://arche.lvh.me:8080
-# Login: admin@example.com / change-me
-# Then run kickstart from /u/<slug>
-```
-
-### Development with Hot Reload
-
-```bash
 cd infra/deploy
 cp .env.example .env
 ./deploy.sh --local-dev
 ```
 
-### Available Scripts (`apps/web`)
+Open http://arche.lvh.me:8080 and log in with `admin@example.com` / `change-me`.
 
-| Script | Command |
-|--------|---------|
-| Dev server | `pnpm dev` |
-| Build | `pnpm build` |
-| Lint | `pnpm lint` |
-| Tests | `pnpm test` |
-| Tests (watch) | `pnpm test:watch` |
-| Generate Prisma client | `pnpm prisma:generate` |
-| Migrations | `pnpm db:migrate` |
-| Seed | `pnpm db:seed` |
+For step-by-step instructions, see [`infra/compose/README.md`](infra/compose/README.md).
 
-## Deployment
+## Documentation
 
-Two modes are available through `infra/deploy/deploy.sh`:
-
-| Mode | Command | TLS | Usage |
-|------|---------|-----|-----|
-| Local dev | `./deploy.sh --local-dev` | No | Hot-reload development |
-| Remote (VPS) | `./deploy.sh --ip <IP> --domain <DOMAIN> --ssh-key <KEY> --acme-email <EMAIL> [--skip-ensure-dns-record]` | Yes (ACME) | Production |
-
-Remote deployment uses Ansible to provision Podman, ACME HTTP challenge for TLS, and managed secrets.
-
-## Key Environment Variables
-
-| Variable | Description |
+| Document | Description |
 |----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string |
-| `ARCHE_DOMAIN` | Main domain (e.g. `arche.lvh.me`) |
-| `ARCHE_SESSION_PEPPER` | Pepper for session hashing |
-| `ARCHE_CONNECTOR_OAUTH_STATE_SECRET` | Secret used to protect connector OAuth state (required in production for OAuth flows) |
-| `ARCHE_ENCRYPTION_KEY` | AES-256-GCM key (base64, 32 bytes) |
-| `CONTAINER_PROXY_HOST` | docker-socket-proxy host |
-| `OPENCODE_IMAGE` | Workspace image |
-| `OPENCODE_NETWORK` | Internal container network |
-| `KB_CONTENT_HOST_PATH` | Path to KB content bare repo |
-| `KB_CONFIG_HOST_PATH` | Path to config bare repo |
-
-See `apps/web/.env.example` for the complete reference.
-
-## Source Code Structure (`apps/web/`)
-
-```
-src/
-├── app/                    # App Router (pages + API routes)
-│   ├── api/
-│   │   ├── u/[slug]/       # User APIs (agents, connectors)
-│   │   ├── w/[slug]/       # Workspace APIs (chat streaming)
-│   │   └── instances/[slug]/ # Instance control
-│   ├── auth/               # Auth flows (login, logout, 2FA)
-│   ├── u/[slug]/           # User dashboard
-│   └── w/[slug]/           # Workspace UI
-├── components/
-│   ├── ui/                 # shadcn/ui primitives
-│   ├── workspace/          # Workspace components
-│   └── agents/             # Agent components
-├── lib/
-│   ├── spawner/            # Container lifecycle
-│   ├── workspace-agent/    # Workspace agent HTTP client
-│   ├── connectors/         # Connector types and encryption
-│   └── auth.ts             # Auth utilities
-├── actions/                # Server Actions (Next.js)
-├── hooks/                  # Custom hooks (useWorkspace, etc.)
-├── types/                  # Shared type definitions
-└── contexts/               # React Contexts
-
-kickstart/
-├── agents/                 # Shared agent catalog
-├── templates/              # startup-tech, marketing-studio, research-group, blank
-└── *.ts                    # Contracts, state, apply and rendering
-```
-
-## Additional Documentation
-
-- [`apps/web/README.md`](apps/web/README.md) - Detailed local setup, auth, spawner
-- [`infra/README.md`](infra/README.md) - Infrastructure and KB architecture
-- [`infra/compose/README.md`](infra/compose/README.md) - Podman Compose stack
-- [`infra/deploy/README.md`](infra/deploy/README.md) - VPS deployment guide
-- [`infra/workspace-image/README.md`](infra/workspace-image/README.md) - Workspace image
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Technical architecture, tech stack, data model, and source code structure |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contribution guidelines |
+| [`apps/web/README.md`](apps/web/README.md) | Web application setup and internals |
+| [`apps/desktop/README.md`](apps/desktop/README.md) | Desktop app development and packaging |
+| [`infra/deploy/README.md`](infra/deploy/README.md) | VPS deployment guide (Ansible) |
+| [`infra/coolify/README.md`](infra/coolify/README.md) | Coolify deployment guide |
+| [`infra/compose/README.md`](infra/compose/README.md) | Local Podman Compose stack |
+| [`infra/workspace-image/README.md`](infra/workspace-image/README.md) | Workspace container image |
 
 ## License
 

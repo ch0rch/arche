@@ -38,6 +38,7 @@ export async function refreshConnectorOAuthConfigIfNeeded(
       clientId: oauth.clientId,
       clientSecret: oauth.clientSecret,
       tokenEndpoint: oauth.tokenEndpoint,
+      mcpServerUrl: oauth.mcpServerUrl,
     })
 
     const nextConfig = buildConfigWithOAuth({
@@ -60,11 +61,8 @@ export async function refreshConnectorOAuthConfigIfNeeded(
     })
 
     const encrypted = encryptConfig(nextConfig)
-    const { prisma } = await import('@/lib/prisma')
-    await prisma.connector.update({
-      where: { id: connector.id },
-      data: { config: encrypted },
-    })
+    const { connectorService } = await import('@/lib/services')
+    await connectorService.updateByIdUnsafe(connector.id, { config: encrypted })
 
     return encrypted
   } catch {

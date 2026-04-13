@@ -1,33 +1,55 @@
 "use server";
 
-import { cookies } from "next/headers";
-import { getSessionFromToken, SESSION_COOKIE_NAME } from "@/lib/auth";
-import { createInstanceClient } from "@/lib/opencode/client";
-import { prisma } from "@/lib/prisma";
+import { createInstanceClient, getInstanceUrl } from "@/lib/opencode/client";
+import { extractTextContent, transformParts } from "@/lib/opencode/transform";
+import type {
+  AvailableModel,
+  WorkspaceConnectionState,
+  WorkspaceFileContent,
+  WorkspaceFileNode,
+  WorkspaceMessage,
+  WorkspaceSession,
+} from "@/lib/opencode/types";
+import {
+  getCanonicalProviderId,
+  getProviderLabel,
+  normalizeProviderId,
+  resolveRuntimeProviderId,
+} from "@/lib/providers/catalog";
 import { getActiveCredentialForUser } from "@/lib/providers/store";
 import { PROVIDERS, type ProviderId } from "@/lib/providers/types";
+import { getSession } from "@/lib/runtime/session";
+import { autopilotService, instanceService, userService } from "@/lib/services";
 import { decryptPassword } from "@/lib/spawner/crypto";
+import { createWorkspaceAgentClient } from "@/lib/workspace-agent/client";
 import { deriveWorkspaceMessageRuntimeState } from "@/lib/workspace-message-state";
 import {
   isHiddenWorkspacePath,
   isProtectedWorkspacePath,
 } from "@/lib/workspace-paths";
-import { createWorkspaceAgentClient } from "@/lib/workspace-agent/client";
-import type {
-  WorkspaceFileNode,
-  WorkspaceFileContent,
-  WorkspaceSession,
-  WorkspaceMessage,
-  AvailableModel,
-  WorkspaceConnectionState,
-} from "@/lib/opencode/types";
-import { extractTextContent, transformParts } from "@/lib/opencode/transform";
 
 const CREDENTIAL_REQUIRED_PROVIDER_IDS = new Set<ProviderId>([
   "openai",
   "anthropic",
+  "fireworks",
   "openrouter",
 ]);
+
+function isFreeOpencodeModel(model: unknown): boolean {
+  if (!model || typeof model !== "object" || Array.isArray(model)) {
+    return false;
+  }
+
+  const cost = (model as { cost?: unknown }).cost;
+  if (!cost || typeof cost !== "object" || Array.isArray(cost)) {
+    return false;
+  }
+
+  const input = (cost as { input?: unknown }).input;
+  const output = (cost as { output?: unknown }).output;
+
+  return input === 0 && output === 0;
+}
 
 function normalizeMessageRole(
   role: unknown
@@ -44,19 +66,8 @@ function extractUserTextContent(parts: ReturnType<typeof transformParts>): strin
   return firstText ? firstText.text : "";
 }
 
-// ============================================================================
-// Authentication helper
-// ============================================================================
-
-async function getAuthenticatedUser() {
-  const cookieStore = await cookies();
-  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value;
-  if (!token) return null;
-  return getSessionFromToken(token);
-}
-
-async function getAuthorizedClient(slug: string) {
-  const session = await getAuthenticatedUser();
+async function getAuthorizedClientContext(slug: string) {
+  const session = await getSession();
   if (!session) return { error: "unauthorized" as const, client: null };
 
   if (session.user.slug !== slug && session.user.role !== "ADMIN") {
@@ -68,7 +79,37 @@ async function getAuthorizedClient(slug: string) {
     return { error: "instance_unavailable" as const, client: null };
   }
 
-  return { error: null, client };
+  return { error: null, client, session };
+}
+
+async function getAuthorizedClient(slug: string) {
+  const { error, client } = await getAuthorizedClientContext(slug);
+  return { error, client };
+}
+
+async function getAuthorizedWorkspaceUserId(slug: string): Promise<
+  | { ok: true; userId: string }
+  | { ok: false; error: "unauthorized" | "forbidden" | "user_not_found" }
+> {
+  const session = await getSession();
+  if (!session) {
+    return { ok: false, error: "unauthorized" };
+  }
+
+  if (session.user.slug !== slug && session.user.role !== "ADMIN") {
+    return { ok: false, error: "forbidden" };
+  }
+
+  if (session.user.slug === slug) {
+    return { ok: true, userId: session.user.id };
+  }
+
+  const targetUser = await userService.findIdBySlug(slug);
+  if (!targetUser) {
+    return { ok: false, error: "user_not_found" };
+  }
+
+  return { ok: true, userId: targetUser.id };
 }
 
 // ============================================================================
@@ -301,7 +342,7 @@ export async function listSessionsAction(slug: string): Promise<{
   sessions?: WorkspaceSession[];
   error?: string;
 }> {
-  const { error, client } = await getAuthorizedClient(slug);
+  const { error, client } = await getAuthorizedClientContext(slug);
   if (error) return { ok: false, error };
 
   try {
@@ -311,9 +352,21 @@ export async function listSessionsAction(slug: string): Promise<{
     // Get status for all sessions
     const statusResult = await client!.session.status();
     const statuses = statusResult.data ?? {};
+    const workspaceUser = await getAuthorizedWorkspaceUserId(slug);
+    const targetUserId = workspaceUser.ok ? workspaceUser.userId : null;
+    const autopilotMetadata = targetUserId
+      ? await autopilotService.findSessionMetadataByUserId(
+          targetUserId,
+          sessions.map((entry) => entry.id)
+        )
+      : [];
+    const autopilotBySessionId = new Map(
+      autopilotMetadata.map((entry) => [entry.openCodeSessionId, entry])
+    );
 
     const transformed: WorkspaceSession[] = sessions.map((s) => {
       const sessionStatus = statuses[s.id];
+      const autopilot = autopilotBySessionId.get(s.id);
       let status: "active" | "idle" | "busy" | "error" = "idle";
       if (sessionStatus?.type === "busy") status = "busy";
       else if (sessionStatus?.type === "retry") status = "busy";
@@ -325,6 +378,15 @@ export async function listSessionsAction(slug: string): Promise<{
         updatedAt: formatTimestamp(s.time?.updated),
         updatedAtRaw: typeof s.time?.updated === "number" ? s.time.updated : undefined,
         parentId: s.parentID,
+        autopilot: autopilot
+            ? {
+                runId: autopilot.runId,
+                taskId: autopilot.taskId,
+                taskName: autopilot.taskName,
+                trigger: autopilot.trigger,
+                hasUnseenResult: autopilot.hasUnseenResult,
+              }
+            : undefined,
         share: s.share ? { url: s.share.url, version: 1 } : undefined,
       };
     });
@@ -385,6 +447,29 @@ export async function deleteSessionAction(
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : "unknown" };
   }
+}
+
+export async function markAutopilotRunSeenAction(
+  slug: string,
+  runId: string,
+): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
+  const workspaceUser = await getAuthorizedWorkspaceUserId(slug);
+  if (!workspaceUser.ok) {
+    return { ok: false, error: workspaceUser.error };
+  }
+
+  const marked = await autopilotService.markRunResultSeenByIdAndUserId(
+    runId,
+    workspaceUser.userId,
+    new Date(),
+  );
+
+  return marked
+    ? { ok: true }
+    : { ok: false, error: "not_found" };
 }
 
 export async function updateSessionAction(
@@ -478,12 +563,15 @@ export async function listMessagesAction(
       });
       const info = m.info as Record<string, unknown>;
       const infoModel = info.model as Record<string, unknown> | undefined;
-      const providerId =
+      const rawProviderId =
         typeof info.providerID === "string"
           ? info.providerID
           : typeof infoModel?.providerID === "string"
-          ? infoModel.providerID
-          : undefined;
+            ? infoModel.providerID
+            : undefined;
+      const providerId = rawProviderId
+        ? normalizeProviderId(rawProviderId)
+        : undefined;
       const modelId =
         typeof info.modelID === "string"
           ? info.modelID
@@ -533,7 +621,7 @@ export async function sendMessageAction(
   });
 
   // Verify user is authorized
-  const session = await getAuthenticatedUser();
+  const session = await getSession();
   if (!session) {
     return { ok: false, error: "unauthorized" };
   }
@@ -543,10 +631,7 @@ export async function sendMessageAction(
 
   try {
     // Get credentials for direct fetch (bypassing SDK due to streaming issues)
-    const instance = await prisma.instance.findUnique({
-      where: { slug },
-      select: { serverPassword: true, status: true },
-    });
+    const instance = await instanceService.findCredentialsBySlug(slug);
 
     if (
       !instance ||
@@ -565,7 +650,7 @@ export async function sendMessageAction(
     const authHeader = `Basic ${Buffer.from(`opencode:${password}`).toString(
       "base64"
     )}`;
-    const baseUrl = `http://opencode-${slug}:4096`;
+    const baseUrl = getInstanceUrl(slug);
 
     console.log(
       "[sendMessageAction] Sending to:",
@@ -575,7 +660,10 @@ export async function sendMessageAction(
     const body = {
       parts: [{ type: "text", text }],
       model: model
-        ? { providerID: model.providerId, modelID: model.modelId }
+        ? {
+            providerID: resolveRuntimeProviderId(model.providerId),
+            modelID: model.modelId,
+          }
         : undefined,
     };
 
@@ -705,7 +793,7 @@ export async function getWorkspaceDiffsAction(slug: string): Promise<{
   diffs?: GitDiffEntry[];
   error?: string;
 }> {
-  const session = await getAuthenticatedUser();
+  const session = await getSession();
   if (!session) return { ok: false, error: "unauthorized" };
 
   if (session.user.slug !== slug && session.user.role !== "ADMIN") {
@@ -838,7 +926,7 @@ export async function listModelsAction(slug: string): Promise<{
   models?: AvailableModel[];
   error?: string;
 }> {
-  const session = await getAuthenticatedUser();
+  const session = await getSession();
   if (!session) return { ok: false, error: "unauthorized" };
 
   if (session.user.slug !== slug && session.user.role !== "ADMIN") {
@@ -848,12 +936,7 @@ export async function listModelsAction(slug: string): Promise<{
   const ownerUserId =
     session.user.slug === slug
       ? session.user.id
-      : (
-          await prisma.user.findUnique({
-            where: { slug },
-            select: { id: true },
-          })
-        )?.id;
+      : (await userService.findIdBySlug(slug))?.id;
 
   if (!ownerUserId) {
     return { ok: false, error: "user_not_found" };
@@ -879,14 +962,19 @@ export async function listModelsAction(slug: string): Promise<{
     const { providers, default: defaults } = data;
     const models: AvailableModel[] = [];
 
+    const hasOpencodeCredential = enabledProviderIds.has("opencode");
+
     for (const provider of providers ?? []) {
-      const providerId = provider.id as ProviderId;
+      const runtimeProviderId = String(provider.id);
+      const canonicalProviderId = getCanonicalProviderId(runtimeProviderId);
+      const providerId = canonicalProviderId ?? runtimeProviderId;
 
       // OpenCode Zen can be available via native workspace auth even without
       // an Arche-managed API credential.
       if (
-        CREDENTIAL_REQUIRED_PROVIDER_IDS.has(providerId) &&
-        !enabledProviderIds.has(providerId)
+        canonicalProviderId &&
+        CREDENTIAL_REQUIRED_PROVIDER_IDS.has(canonicalProviderId) &&
+        !enabledProviderIds.has(canonicalProviderId)
       ) {
         continue;
       }
@@ -894,10 +982,19 @@ export async function listModelsAction(slug: string): Promise<{
       // Models is an object with modelId as key
       const providerModels = provider.models ?? {};
       for (const [modelId, model] of Object.entries(providerModels)) {
-        const isDefault = defaults?.[provider.id] === modelId;
+        if (
+          canonicalProviderId === "opencode" &&
+          !hasOpencodeCredential &&
+          !isFreeOpencodeModel(model)
+        ) {
+          continue;
+        }
+
+        const isDefault =
+          defaults?.[runtimeProviderId] === modelId || defaults?.[providerId] === modelId;
         models.push({
-          providerId: provider.id,
-          providerName: provider.name,
+          providerId,
+          providerName: provider.name ?? getProviderLabel(providerId),
           modelId,
           modelName: model.name ?? modelId,
           isDefault,

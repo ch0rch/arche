@@ -1,15 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { prisma } from '@/lib/prisma'
-import { getAuthenticatedUser, auditEvent } from '@/lib/auth'
-import { validateSameOrigin } from '@/lib/csrf'
+
+import { auditEvent } from '@/lib/auth'
 import { encryptConfig, decryptConfig } from '@/lib/connectors/crypto'
 import { getConnectorAuthType, getConnectorOAuthConfig } from '@/lib/connectors/oauth-config'
+import type { ConnectorType } from '@/lib/connectors/types'
 import {
   validateConnectorConfig,
   validateConnectorName,
   validateConnectorType,
 } from '@/lib/connectors/validators'
-import type { ConnectorType } from '@/lib/connectors/types'
+import { requireCapability } from '@/lib/runtime/require-capability'
+import { withAuth } from '@/lib/runtime/with-auth'
+import { connectorService, userService } from '@/lib/services'
 
 export interface ConnectorDetail {
   id: string
@@ -24,10 +26,28 @@ export interface ConnectorDetail {
   updatedAt: string
 }
 
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
 function sanitizeConfigForResponse(type: ConnectorType, config: Record<string, unknown>): Record<string, unknown> {
   if (getConnectorAuthType(config) !== 'oauth') return config
+
+  const sanitizedConfig = { ...config }
+  if (type === 'custom') {
+    delete sanitizedConfig.oauthClientSecret
+  }
+
+  if (isObjectRecord(sanitizedConfig.oauth)) {
+    const oauthSanitized = { ...sanitizedConfig.oauth }
+    delete oauthSanitized.accessToken
+    delete oauthSanitized.refreshToken
+    delete oauthSanitized.clientSecret
+    sanitizedConfig.oauth = oauthSanitized
+  }
+
   const oauth = getConnectorOAuthConfig(type, config)
-  if (!oauth) return config
+  if (!oauth) return sanitizedConfig
 
   const oauthResponse = {
     provider: oauth.provider,
@@ -38,7 +58,7 @@ function sanitizeConfigForResponse(type: ConnectorType, config: Record<string, u
   }
 
   return {
-    ...config,
+    ...sanitizedConfig,
     oauth: oauthResponse,
   }
 }
@@ -56,69 +76,52 @@ function sanitizeConfigForResponse(type: ConnectorType, config: Record<string, u
  * - 403: Not authorized
  * - 404: User or connector not found
  */
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string; id: string }> }
-): Promise<NextResponse<ConnectorDetail | { error: string }>> {
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
+export const GET = withAuth<ConnectorDetail | { error: string }, { slug: string; id: string }>(
+  { csrf: false },
+  async (_request: NextRequest, { slug, params: { id } }) => {
+    const denied = requireCapability('connectors')
+    if (denied) return denied
 
-  const { slug, id } = await params
+    const user = await userService.findIdBySlug(slug)
 
-  // Verify authorization
-  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
+    if (!user) {
+      return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
+    }
 
-  // Get user
-  const user = await prisma.user.findUnique({
-    where: { slug },
-    select: { id: true },
-  })
+    const connector = await connectorService.findByIdAndUserId(id, user.id)
 
-  if (!user) {
-    return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
-  }
+    if (!connector) {
+      return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
+    }
 
-  // Get connector and verify ownership in a single query
-  const connector = await prisma.connector.findFirst({
-    where: { id, userId: user.id },
-  })
+    let config: Record<string, unknown>
+    try {
+      config = decryptConfig(connector.config)
+    } catch {
+      return NextResponse.json(
+        { error: 'config_corrupted', message: 'Failed to decrypt connector configuration' },
+        { status: 500 }
+      )
+    }
 
-  if (!connector) {
-    return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
-  }
-
-  // Decrypt config
-  let config: Record<string, unknown>
-  try {
-    config = decryptConfig(connector.config)
-  } catch {
-    return NextResponse.json(
-      { error: 'config_corrupted', message: 'Failed to decrypt connector configuration' },
-      { status: 500 }
-    )
-  }
-
-  return NextResponse.json({
-    id: connector.id,
-    type: connector.type,
-    name: connector.name,
-    config: validateConnectorType(connector.type) ? sanitizeConfigForResponse(connector.type, config) : config,
-    enabled: connector.enabled,
-    authType: getConnectorAuthType(config),
-    oauthConnected: validateConnectorType(connector.type)
-      ? Boolean(getConnectorOAuthConfig(connector.type, config)?.accessToken)
-      : false,
-    oauthExpiresAt: validateConnectorType(connector.type)
-      ? getConnectorOAuthConfig(connector.type, config)?.expiresAt
-      : undefined,
-    createdAt: connector.createdAt.toISOString(),
-    updatedAt: connector.updatedAt.toISOString(),
-  })
-}
+    return NextResponse.json({
+      id: connector.id,
+      type: connector.type,
+      name: connector.name,
+      config: validateConnectorType(connector.type) ? sanitizeConfigForResponse(connector.type, config) : config,
+      enabled: connector.enabled,
+      authType: getConnectorAuthType(config),
+      oauthConnected: validateConnectorType(connector.type)
+        ? Boolean(getConnectorOAuthConfig(connector.type, config)?.accessToken)
+        : false,
+      oauthExpiresAt: validateConnectorType(connector.type)
+        ? getConnectorOAuthConfig(connector.type, config)?.expiresAt
+        : undefined,
+      createdAt: connector.createdAt.toISOString(),
+      updatedAt: connector.updatedAt.toISOString(),
+    })
+  },
+)
 
 export interface UpdateConnectorRequest {
   name?: string
@@ -141,41 +144,20 @@ export interface UpdateConnectorRequest {
  * - 403: Not authorized
  * - 404: User or connector not found
  */
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string; id: string }> }
-): Promise<NextResponse<ConnectorDetail | { error: string; message?: string }>> {
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
+export const PATCH = withAuth<
+  ConnectorDetail | { error: string; message?: string },
+  { slug: string; id: string }
+>({ csrf: true }, async (request: NextRequest, { user, slug, params: { id } }) => {
+  const denied = requireCapability('connectors')
+  if (denied) return denied
 
-  const originValidation = validateSameOrigin(request)
-  if (!originValidation.ok) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
+  const targetUser = await userService.findIdBySlug(slug)
 
-  const { slug, id } = await params
-
-  // Verify authorization
-  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
-
-  // Get user
-  const user = await prisma.user.findUnique({
-    where: { slug },
-    select: { id: true },
-  })
-
-  if (!user) {
+  if (!targetUser) {
     return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
   }
 
-  // Get existing connector and verify ownership
-  const existingConnector = await prisma.connector.findFirst({
-    where: { id, userId: user.id },
-  })
+  const existingConnector = await connectorService.findByIdAndUserId(id, targetUser.id)
 
   if (!existingConnector) {
     return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
@@ -288,10 +270,7 @@ export async function PATCH(
   }
 
   // Update connector atomically while verifying ownership (prevents TOCTOU)
-  const result = await prisma.connector.updateMany({
-    where: { id, userId: user.id },
-    data: updateData,
-  })
+  const result = await connectorService.updateManyByIdAndUserId(id, targetUser.id, updateData)
 
   if (result.count === 0) {
     // Ownership changed concurrently or connector was deleted
@@ -299,9 +278,7 @@ export async function PATCH(
   }
 
   // Get updated connector for response
-  const connector = await prisma.connector.findUnique({
-    where: { id },
-  })
+  const connector = await connectorService.findById(id)
 
   // Defensive check (shouldn't happen given updateMany succeeded)
   if (!connector) {
@@ -310,7 +287,7 @@ export async function PATCH(
 
   // Audit log
   await auditEvent({
-    actorUserId: session.user.id,
+    actorUserId: user.id,
     action: 'connector.updated',
     metadata: { connectorId: connector.id, fields: Object.keys(updateData) },
   })
@@ -336,7 +313,7 @@ export async function PATCH(
     createdAt: connector.createdAt.toISOString(),
     updatedAt: connector.updatedAt.toISOString(),
   })
-}
+})
 
 /**
  * DELETE /api/u/[slug]/connectors/[id]
@@ -351,52 +328,30 @@ export async function PATCH(
  * - 403: Not authorized
  * - 404: User or connector not found
  */
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string; id: string }> }
-): Promise<NextResponse<{ ok: true } | { error: string }>> {
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
+export const DELETE = withAuth<{ ok: true } | { error: string }, { slug: string; id: string }>(
+  { csrf: true },
+  async (_request: NextRequest, { user, slug, params: { id } }) => {
+    const denied = requireCapability('connectors')
+    if (denied) return denied
 
-  const originValidation = validateSameOrigin(request)
-  if (!originValidation.ok) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
+    const targetUser = await userService.findIdBySlug(slug)
 
-  const { slug, id } = await params
+    if (!targetUser) {
+      return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
+    }
 
-  // Verify authorization
-  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
+    const result = await connectorService.deleteManyByIdAndUserId(id, targetUser.id)
 
-  // Get user
-  const user = await prisma.user.findUnique({
-    where: { slug },
-    select: { id: true },
-  })
+    if (result.count === 0) {
+      return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
+    }
 
-  if (!user) {
-    return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
-  }
+    await auditEvent({
+      actorUserId: user.id,
+      action: 'connector.deleted',
+      metadata: { connectorId: id },
+    })
 
-  // Delete connector atomically while verifying ownership (prevents TOCTOU)
-  const result = await prisma.connector.deleteMany({
-    where: { id, userId: user.id },
-  })
-
-  if (result.count === 0) {
-    return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
-  }
-
-  // Audit log
-  await auditEvent({
-    actorUserId: session.user.id,
-    action: 'connector.deleted',
-    metadata: { connectorId: id },
-  })
-
-  return NextResponse.json({ ok: true })
-}
+    return NextResponse.json({ ok: true })
+  },
+)

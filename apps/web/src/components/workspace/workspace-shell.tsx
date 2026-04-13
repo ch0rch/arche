@@ -2,38 +2,55 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { ChatCircle, Circle, Compass, File } from "@phosphor-icons/react";
 
 import { ensureInstanceRunningAction } from "@/actions/spawner";
 import type { SyncKbResult } from "@/app/api/instances/[slug]/sync-kb/route";
 import { useWorkspaceTheme } from "@/contexts/workspace-theme-context";
-import { useWorkspace } from "@/hooks/use-workspace";
+import { useWorkspace, type AgentCatalogItem } from "@/hooks/use-workspace";
 import type { WorkspaceFileNode, WorkspaceSession } from "@/lib/opencode/types";
+import { getDesktopWorkspaceHref } from '@/lib/runtime/desktop/current-vault'
 import {
   isProtectedWorkspacePath,
   normalizeWorkspacePath,
 } from "@/lib/workspace-paths";
 import { downloadWorkspaceFile } from "@/lib/workspace-file-download";
+import {
+  getWorkspaceLayoutCookieName,
+  getWorkspaceLayoutStorageKey,
+  type NormalizedLeftPanelState,
+  persistWorkspacePanelState,
+  parseWorkspaceLayoutState,
+  readWorkspacePanelState,
+  type StoredLayoutState,
+} from "@/lib/workspace-panel-state";
 import { takeWorkspaceStartPrompt } from "@/lib/workspace-start-prompt";
 import { cn } from "@/lib/utils";
 
-import { Circle } from "@phosphor-icons/react";
+import { useConfigStatus } from "@/hooks/use-config-status";
+import { useSkillsCatalog, type SkillListItem } from '@/hooks/use-skills-catalog'
 
 import { ChatPanel } from "./chat-panel";
+import { ConfigChangeBanner } from "./config-change-banner";
 import { CosmicLoader } from "./cosmic-loader";
-import { LeftPanel } from "./left-panel";
 import { InspectorPanel } from "./inspector-panel";
+import { LeftPanel } from "./left-panel";
 
 type WorkspaceShellProps = {
   slug: string;
+  persistenceScope?: string;
+  currentVault?: {
+    id: string;
+    name: string;
+    path: string;
+  } | null;
   initialFilePath?: string | null;
-};
-
-type StoredLayoutState = {
-  leftWidth?: number;
-  rightWidth?: number;
-  leftCollapsed?: boolean;
-  rightCollapsed?: boolean;
-  rightTab?: "preview" | "review";
+  initialSessionId?: string | null;
+  initialLayoutState?: StoredLayoutState | null;
+  initialLeftPanelState?: NormalizedLeftPanelState | null;
+  macDesktopWindowInset?: boolean;
+  workspaceAgentEnabled?: boolean;
+  reaperEnabled?: boolean;
 };
 
 const MIN_LEFT_PX = 200;
@@ -43,6 +60,10 @@ const DEFAULT_LEFT_RATIO = 0.15;
 const DEFAULT_RIGHT_RATIO = 0.3;
 const PANEL_GAP = 12; // Gap between floating panels in pixels
 const COLLAPSED_PANEL_PX = 48; // Width of minified (collapsed) panels
+const MOBILE_LAYOUT_BREAKPOINT =
+  MIN_LEFT_PX + MIN_RIGHT_PX + MIN_CENTER_PX + 2 * PANEL_GAP + 48;
+
+type MobileWorkspaceView = "chat" | "left" | "right";
 
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
@@ -75,6 +96,16 @@ const fitWidths = (containerWidth: number, leftWidth: number, rightWidth: number
   return { left: nextLeft, right: nextRight, minCenter };
 };
 
+const getDefaultExpandedRightWidth = (
+  containerWidth: number,
+  leftWidth: number,
+  leftCollapsed: boolean
+) => {
+  const effectiveLeft = leftCollapsed ? COLLAPSED_PANEL_PX : leftWidth;
+  const availableForCenterAndRight = containerWidth - effectiveLeft - 2 * PANEL_GAP;
+  return Math.max(availableForCenterAndRight / 2, MIN_RIGHT_PX);
+};
+
 const getContainerWidth = (container: HTMLDivElement | null) => {
   if (container) {
     return container.getBoundingClientRect().width;
@@ -85,24 +116,11 @@ const getContainerWidth = (container: HTMLDivElement | null) => {
   return MIN_LEFT_PX + MIN_RIGHT_PX + MIN_CENTER_PX;
 };
 
-const loadStoredLayout = (key: string): StoredLayoutState | null => {
-  if (typeof window === "undefined") return null;
-  const raw = window.localStorage.getItem(key);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as StoredLayoutState;
-  } catch {
-    return null;
-  }
-};
+const loadStoredLayout = (storageKey: string, cookieName: string): StoredLayoutState | null =>
+  readWorkspacePanelState(storageKey, cookieName, parseWorkspaceLayoutState);
 
-const persistLayout = (key: string, state: StoredLayoutState) => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(key, JSON.stringify(state));
-  } catch {
-    // ignore storage errors
-  }
+const persistLayout = (storageKey: string, cookieName: string, state: StoredLayoutState) => {
+  persistWorkspacePanelState(storageKey, cookieName, state);
 };
 
 function resolveRootSessionId(
@@ -169,68 +187,138 @@ const statusConfig = {
 
 const PANEL_ANIM = "200ms ease-out";
 const PANEL_TRANSITION = `width ${PANEL_ANIM}, min-width ${PANEL_ANIM}, opacity ${PANEL_ANIM}, margin ${PANEL_ANIM}, border-width ${PANEL_ANIM}`;
+const INSTANCE_START_POLL_INTERVAL_MS = 2_000;
+const INSTANCE_START_TIMEOUT_MS = 120_000;
 
-export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
+function formatInstanceStartupError(error: string): string {
+  if (error === "start_timeout") {
+    return "Workspace startup timed out. Try restarting again.";
+  }
+  if (error === "status_check_failed") {
+    return "Unable to verify workspace startup status.";
+  }
+  return error;
+}
+
+export function WorkspaceShell({
+  slug,
+  persistenceScope,
+  currentVault = null,
+  initialFilePath,
+  initialSessionId = null,
+  initialLayoutState = null,
+  initialLeftPanelState = null,
+  macDesktopWindowInset = false,
+  workspaceAgentEnabled = true,
+  reaperEnabled = true,
+}: WorkspaceShellProps) {
   const router = useRouter();
+  const routerRef = useRef(router);
+  routerRef.current = router;
   const containerRef = useRef<HTMLDivElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const layoutStorageKey = `arche.workspace.${slug}.layout`;
+  const resolvedPersistenceScope = persistenceScope ?? slug;
+  const layoutCookieName = getWorkspaceLayoutCookieName(resolvedPersistenceScope);
+  const layoutStorageKey = getWorkspaceLayoutStorageKey(resolvedPersistenceScope);
   
   // Instance startup state
   const [instanceStatus, setInstanceStatus] = useState<'starting' | 'running' | 'error' | null>(null);
   const [instanceError, setInstanceError] = useState<string | null>(null);
+  const [rightTab, setRightTab] = useState<"preview" | "review">("preview");
+  const effectiveRightTab = workspaceAgentEnabled ? rightTab : "preview";
+
+  // Config change detection
+  const configStatus = useConfigStatus(slug, instanceStatus === "running");
 
   // Auto-start instance on mount
   useEffect(() => {
     let cancelled = false;
-    
-    async function ensureRunning() {
-      const result = await ensureInstanceRunningAction(slug);
-      if (cancelled) return;
-      
-      if (result.status === 'error') {
-        if (result.error === 'setup_required') {
-          router.replace(`/u/${slug}?setup=required`);
-          return;
-        }
-        setInstanceStatus('error');
-        setInstanceError(result.error ?? 'Unknown error');
-        return;
+    let pollingTimer: ReturnType<typeof setInterval> | null = null;
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
+    let checking = false;
+
+    const clearTimers = () => {
+      if (pollingTimer) {
+        clearInterval(pollingTimer);
+        pollingTimer = null;
       }
-      
-      setInstanceStatus(result.status);
-      
-      if (result.status === 'starting') {
-        const poll = setInterval(async () => {
-          const check = await ensureInstanceRunningAction(slug);
-          if (cancelled) {
-            clearInterval(poll);
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+    };
+
+    const failStartup = (error: string) => {
+      clearTimers();
+      setInstanceStatus("error");
+      setInstanceError(formatInstanceStartupError(error));
+    };
+
+    const checkInstanceStatus = async () => {
+      if (checking) return;
+      checking = true;
+
+      try {
+        const result = await ensureInstanceRunningAction(slug);
+        if (cancelled) return;
+
+        if (result.status === "error") {
+          clearTimers();
+          if (result.error === "setup_required") {
+            routerRef.current.replace(`/u/${slug}?setup=required`);
             return;
           }
-          if (check.status === 'running') {
-            setInstanceStatus('running');
-            clearInterval(poll);
-          } else if (check.status === 'error') {
-            if (check.error === 'setup_required') {
-              clearInterval(poll);
-              router.replace(`/u/${slug}?setup=required`);
-              return;
-            }
-            setInstanceStatus('error');
-            setInstanceError(check.error ?? 'Unknown error');
-            clearInterval(poll);
-          }
-        }, 2000);
+          failStartup(result.error ?? "Unknown error");
+          return;
+        }
+
+        if (result.status === "running") {
+          clearTimers();
+          setInstanceStatus("running");
+          setInstanceError(null);
+          return;
+        }
+
+        setInstanceStatus("starting");
+
+        if (!pollingTimer) {
+          timeoutTimer = setTimeout(() => {
+            if (cancelled) return;
+            failStartup("start_timeout");
+          }, INSTANCE_START_TIMEOUT_MS);
+
+          pollingTimer = setInterval(() => {
+            void checkInstanceStatus();
+          }, INSTANCE_START_POLL_INTERVAL_MS);
+        }
+      } catch {
+        if (cancelled) return;
+        failStartup("status_check_failed");
+      } finally {
+        checking = false;
       }
-    }
-    
-    ensureRunning();
-    return () => { cancelled = true; };
-  }, [router, slug]);
+    };
+
+    void checkInstanceStatus();
+
+    return () => {
+      cancelled = true;
+      clearTimers();
+    };
+  }, [slug]);
 
   // Use workspace hook only when instance is running
-  const workspace = useWorkspace({ slug, pollInterval: 5000, enabled: instanceStatus === 'running' });
+  const workspace = useWorkspace({
+    slug,
+    storageScope: resolvedPersistenceScope,
+    initialSessionId,
+    pollInterval: 5000,
+    enabled: instanceStatus === 'running',
+    workspaceAgentEnabled,
+    reaperEnabled,
+  });
+  const skillsCatalog = useSkillsCatalog(slug)
 
   const sessionsById = useMemo(() => {
     const map = new Map<string, WorkspaceSession>();
@@ -318,34 +406,120 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     if (!workspace.isConnected || hasAutoStartedPrompt.current) return;
 
     let prompt: string | null = null;
-    try {
-      prompt = takeWorkspaceStartPrompt(window.sessionStorage, slug);
-    } catch {
-      prompt = null;
-    }
+      try {
+        prompt = takeWorkspaceStartPrompt(window.sessionStorage, resolvedPersistenceScope);
+      } catch {
+        prompt = null;
+      }
 
     hasAutoStartedPrompt.current = true;
     if (!prompt) return;
 
     void workspace.sendMessage(prompt, undefined, { forceNewSession: true });
-  }, [workspace, workspace.isConnected, slug]);
+  }, [resolvedPersistenceScope, workspace, workspace.isConnected]);
 
   // Layout state
-  const [leftWidth, setLeftWidth] = useState(MIN_LEFT_PX);
-  const [rightWidth, setRightWidth] = useState(MIN_RIGHT_PX);
+  const [leftWidth, setLeftWidth] = useState(initialLayoutState?.leftWidth ?? MIN_LEFT_PX);
+  const [rightWidth, setRightWidth] = useState(initialLayoutState?.rightWidth ?? MIN_RIGHT_PX);
   const [minCenterWidth, setMinCenterWidth] = useState(MIN_CENTER_PX);
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [rightCollapsed, setRightCollapsed] = useState(false);
-  const [rightTab, setRightTab] = useState<"preview" | "review">("preview");
+  const [leftCollapsed, setLeftCollapsed] = useState(initialLayoutState?.leftCollapsed ?? false);
+  const [rightCollapsed, setRightCollapsed] = useState(initialLayoutState?.rightCollapsed ?? false);
   const [hydratedLayoutKey, setHydratedLayoutKey] = useState<string | null>(null);
+  const [viewportWidth, setViewportWidth] = useState(() =>
+    typeof window === "undefined" ? MIN_LEFT_PX + MIN_RIGHT_PX + MIN_CENTER_PX : window.innerWidth
+  );
+  const [mobileView, setMobileView] = useState<MobileWorkspaceView>("chat");
+  const isCompactLayout = viewportWidth < MOBILE_LAYOUT_BREAKPOINT;
+  const wasCompactLayoutRef = useRef(isCompactLayout);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleResize = () => {
+      const nextWidth = window.innerWidth;
+      const nextCompactState = nextWidth < MOBILE_LAYOUT_BREAKPOINT;
+
+      setViewportWidth(nextWidth);
+
+      if (!wasCompactLayoutRef.current && nextCompactState) {
+        setMobileView("chat");
+      }
+
+      wasCompactLayoutRef.current = nextCompactState;
+    };
+
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
+  const handleToggleLeft = useCallback(() => {
+    if (isCompactLayout) {
+      setMobileView((prev) => (prev === "left" ? "chat" : "left"));
+      return;
+    }
+
+    setLeftCollapsed((prev) => !prev);
+  }, [isCompactLayout]);
+
+  const toggleRightPanel = useCallback(() => {
+    if (isCompactLayout) {
+      setMobileView((prev) => (prev === "right" ? "chat" : "right"));
+      return;
+    }
+
+    setRightCollapsed((previous) => {
+      if (!previous) {
+        return true;
+      }
+
+      const containerWidth = getContainerWidth(containerRef.current);
+      const nextRightWidth = getDefaultExpandedRightWidth(containerWidth, leftWidth, leftCollapsed);
+
+      if (leftCollapsed) {
+        const minCenter = getMinCenter(containerWidth);
+        const maxRight = Math.max(
+          MIN_RIGHT_PX,
+          containerWidth - COLLAPSED_PANEL_PX - minCenter - 2 * PANEL_GAP
+        );
+
+        setRightWidth(clamp(nextRightWidth, MIN_RIGHT_PX, maxRight));
+        setMinCenterWidth(minCenter);
+
+        return false;
+      }
+
+      const fitted = fitWidths(containerWidth, leftWidth, nextRightWidth);
+      setLeftWidth(fitted.left);
+      setRightWidth(fitted.right);
+      setMinCenterWidth(fitted.minCenter);
+
+      return false;
+    });
+  }, [isCompactLayout, leftCollapsed, leftWidth]);
+
+  const handleToggleRight = useCallback(() => {
+    toggleRightPanel();
+  }, [toggleRightPanel]);
+
+  const handleShowChat = useCallback(() => {
+    setMobileView("chat");
+  }, []);
 
   const focusSearchInput = useCallback(() => {
-    if (leftCollapsed) setLeftCollapsed(false);
+    if (isCompactLayout) {
+      setMobileView("left");
+    } else if (leftCollapsed) {
+      setLeftCollapsed(false);
+    }
+
     requestAnimationFrame(() => {
       searchInputRef.current?.focus();
       searchInputRef.current?.select();
     });
-  }, [leftCollapsed]);
+  }, [isCompactLayout, leftCollapsed]);
 
   const handleCreateSession = useCallback(async () => {
     await workspace.createSession();
@@ -354,8 +528,29 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing) return;
-      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey) return;
+
       const key = event.key.toLowerCase();
+      const isMetaCombo = event.metaKey || event.ctrlKey;
+      const isPlainMetaCombo = isMetaCombo && !event.altKey;
+      const isKeyB = key === "b" || event.code === "KeyB";
+
+      if (isKeyB) {
+        event.preventDefault();
+        if (event.altKey) {
+          toggleRightPanel();
+          return;
+        }
+
+        if (isCompactLayout) {
+          setMobileView((prev) => (prev === "left" ? "chat" : "left"));
+        } else {
+          setLeftCollapsed((prev) => !prev);
+        }
+        return;
+      }
+
+      if (!isPlainMetaCombo) return;
 
       if (key === ".") {
         event.preventDefault();
@@ -373,7 +568,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [focusSearchInput, handleCreateSession]);
+  }, [focusSearchInput, handleCreateSession, isCompactLayout, toggleRightPanel]);
 
   // File viewing state
   const safeInitialFilePath = useMemo(() => {
@@ -581,6 +776,10 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   }, [workspace.fileTree]);
 
   const filePathSet = useMemo(() => new Set(flattenedFilePaths), [flattenedFilePaths]);
+  const markdownFilePaths = useMemo(
+    () => flattenedFilePaths.filter((path) => path.toLowerCase().endsWith(".md")),
+    [flattenedFilePaths]
+  );
 
   const normalizePath = useCallback((path: string) => {
     return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+/g, "/");
@@ -645,7 +844,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
   // Load layout from localStorage
   useEffect(() => {
-    const stored = loadStoredLayout(layoutStorageKey);
+    const stored = loadStoredLayout(layoutStorageKey, layoutCookieName) ?? initialLayoutState;
     const containerWidth = getContainerWidth(containerRef.current);
     let leftCandidate = containerWidth * DEFAULT_LEFT_RATIO;
     let rightCandidate = containerWidth * DEFAULT_RIGHT_RATIO;
@@ -660,22 +859,27 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
 
     if (typeof stored?.leftCollapsed === "boolean") setLeftCollapsed(stored.leftCollapsed);
     if (typeof stored?.rightCollapsed === "boolean") setRightCollapsed(stored.rightCollapsed);
-    if (stored?.rightTab === "preview" || stored?.rightTab === "review") setRightTab(stored.rightTab);
+    if (
+      stored?.rightTab === "preview" ||
+      (workspaceAgentEnabled && stored?.rightTab === "review")
+    ) {
+      setRightTab(stored.rightTab);
+    }
 
     setHydratedLayoutKey(layoutStorageKey);
-  }, [layoutStorageKey]);
+  }, [initialLayoutState, layoutCookieName, layoutStorageKey, workspaceAgentEnabled]);
 
   // Persist layout
   useEffect(() => {
     if (hydratedLayoutKey !== layoutStorageKey) return;
-    persistLayout(layoutStorageKey, {
+    persistLayout(layoutStorageKey, layoutCookieName, {
       leftWidth,
       rightWidth,
       leftCollapsed,
       rightCollapsed,
-      rightTab,
+      rightTab: effectiveRightTab,
     });
-  }, [layoutStorageKey, leftWidth, rightWidth, leftCollapsed, rightCollapsed, rightTab, hydratedLayoutKey]);
+  }, [effectiveRightTab, hydratedLayoutKey, layoutCookieName, layoutStorageKey, leftCollapsed, leftWidth, rightCollapsed, rightWidth]);
 
   // Map workspace sessions to UI format
   const uiSessions = useMemo(() => {
@@ -684,7 +888,8 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       title: s.title,
       status: s.status === 'busy' ? 'active' as const : s.status === 'idle' ? 'idle' as const : 'archived' as const,
       updatedAt: s.updatedAt,
-      agent: 'OpenCode'
+      agent: 'OpenCode',
+      autopilot: s.autopilot,
     }));
   }, [workspace.sessions]);
 
@@ -733,11 +938,23 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   }, [openFilePaths, fileCache]);
 
   const handleOpenExpertsSettings = useCallback(() => {
-    router.push(`/u/${slug}/agents`);
+    router.push(currentVault ? getDesktopWorkspaceHref(slug, 'agents') : `/u/${slug}/agents`);
+  }, [currentVault, router, slug]);
+
+  const handleOpenSkillsSettings = useCallback(() => {
+    router.push(currentVault ? getDesktopWorkspaceHref(slug, 'skills') : `/u/${slug}/skills`);
+  }, [currentVault, router, slug]);
+
+  const handleOpenAutopilotSettings = useCallback(() => {
+    router.push(`/u/${slug}/autopilot`);
   }, [router, slug]);
 
   const handleCreateKnowledgeFile = useCallback(
     async (path: string) => {
+      if (!workspaceAgentEnabled) {
+        return { ok: false as const, error: "unsupported_in_desktop" };
+      }
+
       const normalizedPath = normalizePath(path).replace(/^\/+/, "");
       if (!normalizedPath) {
         return { ok: false as const, error: "invalid_path" };
@@ -777,13 +994,16 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
       setActiveFilePath(normalizedPath);
       setRightTab("preview");
       setRightCollapsed(false);
+      if (isCompactLayout) {
+        setMobileView("right");
+      }
 
       workspace.refreshFiles();
       workspace.refreshDiffs();
 
       return { ok: true as const };
     },
-    [filePathSet, normalizePath, openFilePaths, workspace]
+    [filePathSet, isCompactLayout, normalizePath, openFilePaths, workspace, workspaceAgentEnabled]
   );
 
   // File handlers
@@ -801,6 +1021,9 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     setActiveFilePath(normalizedPath);
     setRightTab("preview");
     setRightCollapsed(false);
+    if (isCompactLayout) {
+      setMobileView("right");
+    }
 
     // Load file content if not cached
     if (!fileCacheRef.current[normalizedPath]) {
@@ -830,7 +1053,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
           }));
         }
       }
-    }, [resolveFilePath, workspace]);
+    }, [isCompactLayout, resolveFilePath, workspace]);
 
   const handleSelectFile = useCallback((path: string) => {
     setActiveFilePath(path);
@@ -880,12 +1103,21 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     value: string;
   } | null>(null);
 
-  const handleSelectAgent = useCallback((agent: { displayName: string }) => {
+  const handleSelectAgent = useCallback((agent: AgentCatalogItem) => {
     if (!workspace.activeSessionId) return;
 
     setPendingInsert({
       sessionId: workspace.activeSessionId,
-      value: "@" + agent.displayName + " ",
+      value: `@${agent.id} `,
+    });
+  }, [workspace.activeSessionId]);
+
+  const handleSelectSkill = useCallback((skill: SkillListItem) => {
+    if (!workspace.activeSessionId) return;
+
+    setPendingInsert({
+      sessionId: workspace.activeSessionId,
+      value: `Use the "${skill.name}" skill for this task. `,
     });
   }, [workspace.activeSessionId]);
 
@@ -893,14 +1125,22 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     setPendingInsert(null);
   }, []);
 
-  const handleToggleRight = useCallback(() => {
-    setRightCollapsed((prev) => !prev);
-  }, []);
-
   const handleOpenReview = useCallback(() => {
+    if (!workspaceAgentEnabled) return;
     setRightCollapsed(false);
     setRightTab("review");
-  }, []);
+    if (isCompactLayout) {
+      setMobileView("right");
+    }
+  }, [isCompactLayout, workspaceAgentEnabled]);
+
+  const handleShowContext = useCallback(() => {
+    setRightCollapsed(false);
+    setRightTab("preview");
+    if (isCompactLayout) {
+      setMobileView("right");
+    }
+  }, [isCompactLayout]);
 
   // Resize handlers - now work via the gap area between panels
   const handleResizeLeft = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -982,21 +1222,25 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   if (instanceStatus !== 'running') {
     const loadingStatus = instanceStatus === 'starting' ? 'provisioning' : 'offline';
     const loadingStyle = statusConfig[loadingStatus as keyof typeof statusConfig];
+    const showInstanceHeader = instanceStatus === 'error';
     return (
       <div
         className={cn(
           'flex h-screen flex-col overflow-hidden bg-background text-foreground',
+          macDesktopWindowInset && 'pt-8',
           darkModeClasses,
           themeClassName,
         )}
       >
         <div className="flex h-full flex-col p-3">
-          <div className="flex items-center gap-2 p-4">
-            <span className="font-[family-name:var(--font-display)] text-base font-semibold tracking-tight">Archē</span>
-            <span className="text-sm text-muted-foreground">/</span>
-            <span className="text-sm text-muted-foreground">{slug}</span>
-            <Circle size={8} weight="fill" className={cn(loadingStyle.color, loadingStyle.pulse && "animate-pulse")} />
-          </div>
+          {showInstanceHeader && (
+            <div className="flex items-center gap-2 p-4">
+              <span className="type-display text-base font-semibold tracking-tight">Archē</span>
+              <span className="text-sm text-muted-foreground">/</span>
+              <span className="text-sm text-muted-foreground">{slug}</span>
+              <Circle size={8} weight="fill" className={cn(loadingStyle.color, loadingStyle.pulse && "animate-pulse")} />
+            </div>
+          )}
 
           <div className="relative z-10 flex flex-1 items-center justify-center">
             <div className="flex flex-col items-center gap-6 text-center">
@@ -1006,7 +1250,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                     <div className="h-16 w-16 animate-spin rounded-full border-4 border-muted border-t-primary" />
                   </div>
                   <div className="space-y-2">
-                    <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
+                    <h2 className="type-display text-xl font-semibold">
                       Starting workspace
                     </h2>
                     <p className="text-sm text-muted-foreground">
@@ -1021,7 +1265,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                     <span className="text-2xl">!</span>
                   </div>
                   <div className="space-y-2">
-                    <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold text-destructive">
+                    <h2 className="type-display text-xl font-semibold text-destructive">
                       Failed to start
                     </h2>
                     <p className="text-sm text-muted-foreground">
@@ -1034,7 +1278,7 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
                 <>
                   <CosmicLoader />
                   <div className="space-y-2">
-                    <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
+                    <h2 className="type-display text-xl font-semibold">
                       Connecting...
                     </h2>
                   </div>
@@ -1050,27 +1294,31 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
   // Connecting to OpenCode screen
   if (!workspace.isConnected) {
     const connectingStyle = statusConfig.provisioning;
+    const showConnectingHeader = workspace.connection.status === 'error';
     return (
       <div
         className={cn(
           'flex h-screen flex-col overflow-hidden bg-background text-foreground',
+          macDesktopWindowInset && 'pt-8',
           darkModeClasses,
           themeClassName,
         )}
       >
         <div className="flex h-full flex-col p-3">
-          <div className="flex items-center gap-2 p-4">
-            <span className="font-[family-name:var(--font-display)] text-base font-semibold tracking-tight">Archē</span>
-            <span className="text-sm text-muted-foreground">/</span>
-            <span className="text-sm text-muted-foreground">{slug}</span>
-            <Circle size={8} weight="fill" className={cn(connectingStyle.color, connectingStyle.pulse && "animate-pulse")} />
-          </div>
+          {showConnectingHeader && (
+            <div className="flex items-center gap-2 p-4">
+              <span className="type-display text-base font-semibold tracking-tight">Archē</span>
+              <span className="text-sm text-muted-foreground">/</span>
+              <span className="text-sm text-muted-foreground">{slug}</span>
+              <Circle size={8} weight="fill" className={cn(connectingStyle.color, connectingStyle.pulse && "animate-pulse")} />
+            </div>
+          )}
 
           <div className="relative z-10 flex flex-1 items-center justify-center">
             <div className="flex flex-col items-center gap-6 text-center">
               <CosmicLoader />
               <div className="space-y-2">
-                <h2 className="font-[family-name:var(--font-display)] text-xl font-semibold">
+                <h2 className="type-display text-xl font-semibold">
                   Connecting to OpenCode
                 </h2>
                 <p className="text-sm text-muted-foreground">
@@ -1086,161 +1334,317 @@ export function WorkspaceShell({ slug, initialFilePath }: WorkspaceShellProps) {
     );
   }
 
+  const leftPanelElement = (
+    <LeftPanel
+      key={slug}
+      slug={slug}
+      persistenceScope={resolvedPersistenceScope}
+      currentVault={currentVault}
+      status="active"
+      configChangePending={configStatus.pending}
+      configChangeReason={configStatus.reason}
+      configRestartError={configStatus.restartError}
+      configRestarting={configStatus.restarting}
+      leftCollapsed={isCompactLayout ? false : leftCollapsed}
+      onRestartConfig={configStatus.restart}
+      onToggleLeft={isCompactLayout ? handleShowChat : handleToggleLeft}
+      hideCollapseButton={isCompactLayout}
+      onSyncComplete={handleSyncComplete}
+      onNavigateDashboard={() => router.push(`/u/${slug}`)}
+      onNavigateSettings={() =>
+        router.push(
+          currentVault ? getDesktopWorkspaceHref(slug, 'providers') : `/u/${slug}/settings/security`,
+        )
+      }
+      onNavigateConnectors={() =>
+        router.push(
+          currentVault ? getDesktopWorkspaceHref(slug, 'connectors') : `/u/${slug}/connectors`,
+        )
+      }
+      onNavigateProviders={() =>
+        router.push(
+          currentVault ? getDesktopWorkspaceHref(slug, 'providers') : `/u/${slug}/settings/security`,
+        )
+      }
+      sessions={rootSessions}
+      activeSessionId={activeRootSessionId}
+      unseenCompletedSessions={workspace.unseenCompletedSessions}
+      onSelectSession={handleSelectSession}
+      onMarkAutopilotRunSeen={workspace.markAutopilotRunSeen}
+      onCreateSession={handleCreateSession}
+      onOpenAutopilotSettings={handleOpenAutopilotSettings}
+      agents={workspace.agentCatalog}
+      onSelectAgent={handleSelectAgent}
+      onOpenExpertsSettings={handleOpenExpertsSettings}
+      skills={skillsCatalog.skills}
+      onSelectSkill={handleSelectSkill}
+      onOpenSkillsSettings={handleOpenSkillsSettings}
+      fileNodes={workspace.fileTree}
+      activeFilePath={activeFilePath}
+      onSelectFile={handleOpenFile}
+      onDownloadFile={handleDownloadFile}
+      onCreateKnowledgeFile={handleCreateKnowledgeFile}
+      canCreateKnowledgeFile={workspaceAgentEnabled}
+      initialPanelState={initialLeftPanelState}
+      searchInputRef={searchInputRef}
+    />
+  );
+
+  const chatPanelElement = (
+    <ChatPanel
+      key={workspace.activeSessionId ?? "no-session"}
+      slug={slug}
+      agents={workspace.agentCatalog}
+      attachmentsEnabled={workspaceAgentEnabled}
+      sessions={uiSessions}
+      messages={uiMessages}
+      activeSessionId={workspace.activeSessionId}
+      isStartingNewSession={workspace.isStartingNewSession}
+      sessionTabs={activeSessionTabs}
+      openFilePaths={openFilePaths}
+      onCloseSession={handleCloseSession}
+      onRenameSession={handleRenameSession}
+      onSelectSessionTab={handleSelectSessionTab}
+      onOpenFile={handleOpenFile}
+      onShowContext={handleShowContext}
+      onSendMessage={workspace.sendMessage}
+      onAbortMessage={workspace.abortSession}
+      isSending={workspace.isSending}
+      models={workspace.models}
+      agentDefaultModel={workspace.agentDefaultModel}
+      selectedModel={workspace.selectedModel}
+      hasManualModelSelection={workspace.hasManualModelSelection}
+      onSelectModel={workspace.setSelectedModel}
+      activeAgentName={workspace.activeAgentName}
+      isReadOnly={isInspectingSubagentSession}
+      onReturnToMainConversation={
+        activeRootSessionId
+          ? () => workspace.selectSession(activeRootSessionId)
+          : undefined
+      }
+      pendingInsert={
+        pendingInsert?.sessionId === workspace.activeSessionId
+          ? pendingInsert.value
+          : null
+      }
+      onPendingInsertConsumed={handlePendingInsertConsumed}
+    />
+  );
+
+  const inspectorPanelElement = (
+    <InspectorPanel
+      slug={slug}
+      activeTab={effectiveRightTab}
+      workspaceAgentEnabled={workspaceAgentEnabled}
+      onTabChange={setRightTab}
+      rightCollapsed={isCompactLayout ? false : rightCollapsed}
+      onToggleRight={isCompactLayout ? handleShowChat : handleToggleRight}
+      hideCollapseButton={isCompactLayout}
+      pendingDiffsForBadge={workspace.diffs.length}
+      onOpenReview={handleOpenReview}
+      openFiles={openFiles}
+      activeFilePath={activeFilePath}
+      onSelectFile={handleSelectFile}
+      onCloseFile={handleCloseFile}
+      diffs={workspace.diffs}
+      isLoadingDiffs={workspace.isLoadingDiffs}
+      diffsError={workspace.diffsError}
+      onOpenFile={handleOpenFile}
+      internalLinkPaths={markdownFilePaths}
+      onReloadFile={handleReloadFile}
+      onSaveFile={workspaceAgentEnabled ? handleSaveFile : undefined}
+      onDiscardFileChanges={workspaceAgentEnabled ? handleDiscardFileChanges : undefined}
+      onPublish={workspaceAgentEnabled ? handlePublishComplete : undefined}
+      onResolveConflict={workspaceAgentEnabled ? handleResolveConflict : undefined}
+    />
+  );
+
+  const isLeftPanelActive = mobileView === "left";
+  const isChatActive = mobileView === "chat";
+  const isRightPanelActive = mobileView === "right";
+  const rightPanelBadgeLabel = workspace.diffs.length > 99 ? "99+" : String(workspace.diffs.length);
+
   return (
     <div
       className={cn(
         'flex h-screen flex-col overflow-hidden bg-background text-foreground',
+        macDesktopWindowInset && 'pt-8',
+        macDesktopWindowInset && 'desktop-no-select',
         darkModeClasses,
         themeClassName,
       )}
     >
-      {/* Outer padding container — no header/footer, panels fill 100% height */}
-        <div className="flex h-full flex-col pl-3">
-        {/* Main panels area */}
-        <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1 gap-3">
-          {/* Left panel - Sessions / Experts / Knowledge (floating) */}
-          <div
-            className="shrink-0 overflow-hidden py-3"
-            style={{
-              width: leftCollapsed ? COLLAPSED_PANEL_PX : leftWidth,
-              minWidth: leftCollapsed ? COLLAPSED_PANEL_PX : MIN_LEFT_PX,
-              opacity: 1,
-              transition: isDragging ? "none" : PANEL_TRANSITION,
-            }}
-          >
-            <LeftPanel
-              key={slug}
-              slug={slug}
-              status="active"
-              leftCollapsed={leftCollapsed}
-              onToggleLeft={() => setLeftCollapsed(prev => !prev)}
-              onSyncComplete={handleSyncComplete}
-              onNavigateDashboard={() => router.push(`/u/${slug}`)}
-              onNavigateSettings={() => router.push(`/u/${slug}/settings/security`)}
-              sessions={rootSessions}
-              activeSessionId={activeRootSessionId}
-              unseenCompletedSessions={workspace.unseenCompletedSessions}
-              onSelectSession={handleSelectSession}
-              onCreateSession={handleCreateSession}
-              agents={workspace.agentCatalog}
-              onSelectAgent={handleSelectAgent}
-              onOpenExpertsSettings={handleOpenExpertsSettings}
-              fileNodes={workspace.fileTree}
-              activeFilePath={activeFilePath}
-              onSelectFile={handleOpenFile}
-              onDownloadFile={handleDownloadFile}
-              onCreateKnowledgeFile={handleCreateKnowledgeFile}
-              searchInputRef={searchInputRef}
-            />
-          </div>
-
-          {/* Invisible resize handle for left panel - positioned in the gap */}
-          {!leftCollapsed && (
+      {macDesktopWindowInset && (
+        <div className="desktop-titlebar-drag absolute inset-x-0 top-0 z-50 h-8" />
+      )}
+      {!currentVault ? (
+        <ConfigChangeBanner
+          pending={configStatus.pending}
+          reason={configStatus.reason}
+          restarting={configStatus.restarting}
+          restartError={configStatus.restartError}
+          onRestart={configStatus.restart}
+        />
+      ) : null}
+      <div
+        className={cn(
+          "flex h-full flex-col",
+          !isCompactLayout && (leftCollapsed ? "pl-1" : "pl-3")
+        )}
+      >
+        {isCompactLayout ? (
+          <>
             <div
-              className="absolute top-0 bottom-0 z-20 w-6 cursor-col-resize"
-              style={{ left: leftWidth - 3 }}
-              onPointerDown={handleResizeLeft}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize left panel"
-            />
-          )}
-
-          {/* Center panel - Chat (floating) */}
-          <div
-            className="flex min-w-0 flex-1 items-stretch justify-center"
-            style={{ minWidth: minCenterWidth }}
-          >
-            <div className="flex h-full w-full max-w-[800px] flex-col overflow-hidden">
-            <ChatPanel
-              key={workspace.activeSessionId ?? "no-session"}
-              slug={slug}
-              sessions={uiSessions}
-              messages={uiMessages}
-              activeSessionId={workspace.activeSessionId}
-              isStartingNewSession={workspace.isStartingNewSession}
-              sessionTabs={activeSessionTabs}
-              openFilePaths={openFilePaths}
-              onCloseSession={handleCloseSession}
-              onRenameSession={handleRenameSession}
-              onSelectSessionTab={handleSelectSessionTab}
-              onOpenFile={handleOpenFile}
-              onShowContext={() => {
-                setRightCollapsed(false);
-                setRightTab("preview");
+              className="grid shrink-0 grid-cols-3 gap-2 border-b border-border/40 px-3"
+              style={{
+                minHeight: "calc(3rem + env(safe-area-inset-top, 0px))",
+                paddingTop: "env(safe-area-inset-top, 0px)",
               }}
-              onSendMessage={workspace.sendMessage}
-              onAbortMessage={workspace.abortSession}
-              isSending={workspace.isSending}
-              models={workspace.models}
-              agentDefaultModel={workspace.agentDefaultModel}
-              selectedModel={workspace.selectedModel}
-              hasManualModelSelection={workspace.hasManualModelSelection}
-              onSelectModel={workspace.setSelectedModel}
-              activeAgentName={workspace.activeAgentName}
-              isReadOnly={isInspectingSubagentSession}
-              onReturnToMainConversation={
-                activeRootSessionId
-                  ? () => workspace.selectSession(activeRootSessionId)
-                  : undefined
-              }
-              pendingInsert={
-                pendingInsert?.sessionId === workspace.activeSessionId
-                  ? pendingInsert.value
-                  : null
-              }
-              onPendingInsertConsumed={handlePendingInsertConsumed}
-            />
+            >
+              <button
+                type="button"
+                onClick={handleToggleLeft}
+                className={cn(
+                  "flex h-9 items-center justify-center gap-1.5 self-center rounded-lg text-xs font-medium transition-colors",
+                  isLeftPanelActive
+                    ? "bg-foreground/10 text-foreground"
+                    : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                )}
+                aria-label={isLeftPanelActive ? "Close navigate panel" : "Open navigate panel"}
+                aria-pressed={isLeftPanelActive}
+              >
+                <Compass size={14} weight="bold" />
+                <span>Navigate</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleShowChat}
+                className={cn(
+                  "flex h-9 items-center justify-center gap-1.5 self-center rounded-lg text-xs font-medium transition-colors",
+                  isChatActive
+                    ? "bg-foreground/10 text-foreground"
+                    : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                )}
+                aria-label="Show chat"
+                aria-pressed={isChatActive}
+              >
+                <ChatCircle size={14} weight="bold" />
+                <span>Chat</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleToggleRight}
+                className={cn(
+                  "relative flex h-9 items-center justify-center gap-1.5 self-center rounded-lg text-xs font-medium transition-colors",
+                  isRightPanelActive
+                    ? "bg-foreground/10 text-foreground"
+                    : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                )}
+                aria-label={isRightPanelActive ? "Close context panel" : "Open context panel"}
+                aria-pressed={isRightPanelActive}
+              >
+                <File size={14} weight="bold" />
+                <span>Context</span>
+                {workspace.diffs.length > 0 ? (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                    {rightPanelBadgeLabel}
+                  </span>
+                ) : null}
+              </button>
+            </div>
+
+            <div className="relative min-h-0 flex-1">
+              <div
+                className="absolute inset-0 min-h-0 overflow-hidden px-3 pb-3"
+                hidden={!isLeftPanelActive}
+                aria-hidden={!isLeftPanelActive}
+              >
+                {leftPanelElement}
+              </div>
+
+              <div
+                className="absolute inset-0 min-h-0 overflow-hidden"
+                hidden={!isChatActive}
+                aria-hidden={!isChatActive}
+              >
+                {chatPanelElement}
+              </div>
+
+              <div
+                className="absolute inset-0 min-h-0 overflow-hidden px-5 pb-4 pt-2"
+                hidden={!isRightPanelActive}
+                aria-hidden={!isRightPanelActive}
+              >
+                {inspectorPanelElement}
+              </div>
+            </div>
+          </>
+        ) : (
+          <div ref={containerRef} className="relative z-10 flex min-h-0 flex-1 gap-3">
+            <div
+              className={cn(
+                "shrink-0 overflow-hidden",
+                leftCollapsed ? "pb-1 pt-1" : "pb-3 pt-2"
+              )}
+              style={{
+                width: leftCollapsed ? COLLAPSED_PANEL_PX : leftWidth,
+                minWidth: leftCollapsed ? COLLAPSED_PANEL_PX : MIN_LEFT_PX,
+                opacity: 1,
+                transition: isDragging ? "none" : PANEL_TRANSITION,
+              }}
+            >
+              {leftPanelElement}
+            </div>
+
+            {!leftCollapsed && (
+              <div
+                className="absolute bottom-0 top-0 z-20 w-6 cursor-col-resize"
+                style={{ left: leftWidth - 3 }}
+                onPointerDown={handleResizeLeft}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize left panel"
+              />
+            )}
+
+            <div
+              className="flex min-w-0 flex-1 items-stretch justify-center"
+              style={{ minWidth: minCenterWidth }}
+            >
+              <div className="flex h-full w-full min-w-0 flex-col overflow-hidden">
+                {chatPanelElement}
+              </div>
+            </div>
+
+            {!rightCollapsed && (
+              <div
+                className="absolute bottom-0 top-0 z-20 w-6 cursor-col-resize"
+                style={{ right: rightWidth - 3 }}
+                onPointerDown={handleResizeRight}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize right panel"
+              />
+            )}
+
+            <div
+              className={cn(
+                "shrink-0 overflow-hidden",
+                rightCollapsed ? "pb-3 pr-3 pt-1" : "box-border pb-4 pl-1 pr-4 pt-4"
+              )}
+              style={{
+                width: rightCollapsed ? COLLAPSED_PANEL_PX : rightWidth,
+                minWidth: rightCollapsed ? COLLAPSED_PANEL_PX : MIN_RIGHT_PX,
+                opacity: 1,
+                transition: isDragging ? "none" : PANEL_TRANSITION,
+              }}
+            >
+              {inspectorPanelElement}
             </div>
           </div>
-
-          {/* Invisible resize handle for right panel - positioned in the gap */}
-          {!rightCollapsed && (
-            <div
-              className="absolute top-0 bottom-0 z-20 w-6 cursor-col-resize"
-              style={{ right: rightWidth - 3 }}
-              onPointerDown={handleResizeRight}
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize right panel"
-            />
-          )}
-
-          {/* Right panel - Inspector */}
-          <div
-            className={cn("shrink-0 overflow-hidden", rightCollapsed && "py-3 pr-3")}
-            style={{
-              width: rightCollapsed ? COLLAPSED_PANEL_PX : rightWidth,
-              minWidth: rightCollapsed ? COLLAPSED_PANEL_PX : MIN_RIGHT_PX,
-              opacity: 1,
-              transition: isDragging ? "none" : PANEL_TRANSITION,
-            }}
-          >
-            <InspectorPanel
-              slug={slug}
-              activeTab={rightTab}
-              onTabChange={setRightTab}
-              rightCollapsed={rightCollapsed}
-              onToggleRight={handleToggleRight}
-              pendingDiffsForBadge={workspace.diffs.length}
-              onOpenReview={handleOpenReview}
-              openFiles={openFiles}
-              activeFilePath={activeFilePath}
-              onSelectFile={handleSelectFile}
-              onCloseFile={handleCloseFile}
-              diffs={workspace.diffs}
-              isLoadingDiffs={workspace.isLoadingDiffs}
-              diffsError={workspace.diffsError}
-              onOpenFile={handleOpenFile}
-              onDownloadFile={handleDownloadFile}
-              onReloadFile={handleReloadFile}
-              onSaveFile={handleSaveFile}
-              onDiscardFileChanges={handleDiscardFileChanges}
-              onPublish={handlePublishComplete}
-              onResolveConflict={handleResolveConflict}
-            />
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );

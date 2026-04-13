@@ -1,19 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-import { auditEvent, getAuthenticatedUser } from '@/lib/auth'
+import { auditEvent } from '@/lib/auth'
 import { decryptConfig, encryptConfig } from '@/lib/connectors/crypto'
-import { buildConfigWithOAuth } from '@/lib/connectors/oauth-config'
 import {
   exchangeConnectorOAuthCode,
   isOAuthConnectorType,
   verifyConnectorOAuthState,
 } from '@/lib/connectors/oauth'
-import { getPublicBaseUrl } from '@/lib/http'
+import { buildConfigWithOAuth } from '@/lib/connectors/oauth-config'
 import { validateConnectorType } from '@/lib/connectors/validators'
-import { prisma } from '@/lib/prisma'
+import { getPublicBaseUrl } from '@/lib/http'
+import { getCurrentDesktopVault, getDesktopWorkspaceHref } from '@/lib/runtime/desktop/current-vault'
+import { getSession } from '@/lib/runtime/session'
+import { connectorService } from '@/lib/services'
+
+const KNOWN_OAUTH_ERRORS = new Set([
+  'access_denied',
+  'invalid_state',
+  'expired_state',
+  'missing_code',
+  'connector_not_found',
+  'unauthorized',
+  'forbidden',
+])
+
+function normalizeOAuthError(error: string): string {
+  if (KNOWN_OAUTH_ERRORS.has(error)) return error
+  return 'oauth_failed'
+}
 
 function buildRedirect(baseUrl: string, slug: string, status: 'success' | 'error', message?: string): URL {
-  const url = new URL(`/u/${slug}/connectors`, baseUrl)
+  const desktopVault = getCurrentDesktopVault()
+  const targetPath = desktopVault ? getDesktopWorkspaceHref('local', 'connectors') : `/u/${slug}/connectors`
+  const url = new URL(targetPath, baseUrl)
   url.searchParams.set('oauth', status)
   if (message) {
     url.searchParams.set('message', message)
@@ -23,7 +42,7 @@ function buildRedirect(baseUrl: string, slug: string, status: 'success' | 'error
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
   const baseUrl = getPublicBaseUrl(request.headers, request.nextUrl.origin)
-  const session = await getAuthenticatedUser()
+  const session = await getSession()
   const code = request.nextUrl.searchParams.get('code')
   const state = request.nextUrl.searchParams.get('state')
   const providerError = request.nextUrl.searchParams.get('error')
@@ -58,24 +77,18 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         error: providerError,
       },
     })
-    return NextResponse.redirect(buildRedirect(baseUrl, parsedState.slug, 'error', providerError))
+    return NextResponse.redirect(buildRedirect(baseUrl, parsedState.slug, 'error', normalizeOAuthError(providerError)))
   }
 
   if (!code) {
     return NextResponse.redirect(buildRedirect(baseUrl, parsedState.slug, 'error', 'missing_code'))
   }
 
-  const connector = await prisma.connector.findFirst({
-    where: {
-      id: parsedState.connectorId,
-      userId: parsedState.userId,
-    },
-    select: {
-      id: true,
-      type: true,
-      config: true,
-    },
-  })
+  const connector = await connectorService.findByIdAndUserIdSelect(
+    parsedState.connectorId,
+    parsedState.userId,
+    { id: true, type: true, config: true },
+  )
 
   if (!connector || !validateConnectorType(connector.type) || !isOAuthConnectorType(connector.type)) {
     return NextResponse.redirect(buildRedirect(baseUrl, parsedState.slug, 'error', 'connector_not_found'))
@@ -113,12 +126,9 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       },
     })
 
-    await prisma.connector.update({
-      where: { id: connector.id },
-      data: {
-        config: encryptConfig(nextConfig),
-        enabled: true,
-      },
+    await connectorService.updateByIdUnsafe(connector.id, {
+      config: encryptConfig(nextConfig),
+      enabled: true,
     })
 
     await auditEvent({
@@ -140,7 +150,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
         error: message,
       },
     })
-    return NextResponse.redirect(buildRedirect(baseUrl, parsedState.slug, 'error', message))
+    console.error('[oauth/callback] exchange failed:', message)
+    return NextResponse.redirect(buildRedirect(baseUrl, parsedState.slug, 'error', 'oauth_failed'))
   }
 
   return NextResponse.redirect(buildRedirect(baseUrl, parsedState.slug, 'success'))

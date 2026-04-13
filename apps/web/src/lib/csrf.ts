@@ -1,5 +1,8 @@
 import { getPublicBaseUrl } from '@/lib/http'
 
+/** Validates that the request origin matches the expected origin.
+ *  Callers are responsible for gating on runtime capabilities (caps.csrf)
+ *  before invoking this function. */
 export function validateSameOrigin(request: Request): { ok: true } | { ok: false } {
   const origin = request.headers.get('origin')
   if (!origin || origin === 'null') {

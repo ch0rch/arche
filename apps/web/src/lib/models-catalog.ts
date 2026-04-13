@@ -1,3 +1,5 @@
+import { getProviderLabel, normalizeProviderId } from '@/lib/providers/catalog'
+
 export type ModelCatalogEntry = {
   id: string
   label: string
@@ -15,12 +17,11 @@ type ModelsCatalogCache = {
 
 const MODELS_DEV_URL = 'https://models.dev/api.json'
 const MODELS_CACHE_TTL_MS = 60 * 60 * 1000
-
 let modelsCatalogCache: ModelsCatalogCache | null = null
 
 function toProviderLabel(providerId: string, providerName?: string): string {
   if (providerName && providerName.trim()) return providerName.trim()
-  return providerId
+  return getProviderLabel(providerId)
 }
 
 export async function fetchModelsCatalog(): Promise<
@@ -51,10 +52,11 @@ export async function fetchModelsCatalog(): Promise<
 
   const entries: ModelCatalogEntry[] = []
   for (const [providerId, provider] of Object.entries(payload)) {
-    const providerLabel = toProviderLabel(providerId, provider.name)
+    const normalizedProviderId = normalizeProviderId(providerId)
+    const providerLabel = toProviderLabel(normalizedProviderId, provider.name)
     const models = provider.models ?? {}
     for (const [modelId, model] of Object.entries(models)) {
-      const id = `${providerId}/${modelId}`
+      const id = `${normalizedProviderId}/${modelId}`
       const modelName = model.name?.trim() || modelId
       entries.push({
         id,

@@ -1,14 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
-// Mock next/headers
-vi.mock('next/headers', () => ({
-  cookies: vi.fn(),
+const mockProviderUpdateMany = vi.fn()
+
+// Mock runtime session
+vi.mock('@/lib/runtime/session', () => ({
+  getSession: vi.fn(),
 }))
 
-// Mock auth
-vi.mock('@/lib/auth', () => ({
-  SESSION_COOKIE_NAME: 'arche_session',
-  getSessionFromToken: vi.fn(),
+// Mock workspace host (start, stop, status, connection)
+vi.mock('@/lib/runtime/workspace-host', () => ({
+  startWorkspace: vi.fn(),
+  stopWorkspace: vi.fn(),
+  getWorkspaceStatus: vi.fn(),
+  getWorkspaceConnection: vi.fn().mockResolvedValue({
+    baseUrl: 'http://opencode-alice:4096',
+    authHeader: 'Basic dGVzdA==',
+  }),
 }))
 
 // Mock prisma (imported by actions for provider sync)
@@ -17,15 +24,10 @@ vi.mock('@/lib/prisma', () => ({
     user: {
       findUnique: vi.fn(),
     },
+    providerCredential: {
+      updateMany: (...args: unknown[]) => mockProviderUpdateMany(...args),
+    },
   },
-}))
-
-// Mock opencode client (imported by ensureInstanceRunningAction for getInstanceBasicAuth)
-vi.mock('@/lib/opencode/client', () => ({
-  getInstanceBasicAuth: vi.fn().mockResolvedValue({
-    baseUrl: 'http://opencode-alice:4096',
-    authHeader: 'Basic dGVzdA==',
-  }),
 }))
 
 // Mock provider sync (imported by ensureInstanceRunningAction)
@@ -33,12 +35,10 @@ vi.mock('@/lib/opencode/providers', () => ({
   syncProviderAccessForInstance: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
-// Mock spawner core
+// Mock spawner core (only isSlowStart is still imported from here)
 vi.mock('@/lib/spawner/core', () => ({
-  startInstance: vi.fn(),
-  stopInstance: vi.fn(),
-  getInstanceStatus: vi.fn(),
   isSlowStart: vi.fn(() => false),
+  listActiveInstances: vi.fn(),
 }))
 
 const mockGetKickstartStatus = vi.fn()
@@ -46,21 +46,18 @@ vi.mock('@/kickstart/status', () => ({
   getKickstartStatus: (...args: unknown[]) => mockGetKickstartStatus(...args),
 }))
 
-import { cookies } from 'next/headers'
-import { getSessionFromToken } from '@/lib/auth'
+import { getSession } from '@/lib/runtime/session'
+import { startWorkspace, stopWorkspace, getWorkspaceStatus, getWorkspaceConnection } from '@/lib/runtime/workspace-host'
 import { prisma } from '@/lib/prisma'
-import { getInstanceBasicAuth } from '@/lib/opencode/client'
-import { startInstance, stopInstance, getInstanceStatus } from '@/lib/spawner/core'
 import { syncProviderAccessForInstance } from '@/lib/opencode/providers'
 import { startInstanceAction, stopInstanceAction, getInstanceStatusAction, ensureInstanceRunningAction } from '../spawner'
 
-const mockCookies = vi.mocked(cookies)
-const mockGetSession = vi.mocked(getSessionFromToken)
-const mockStart = vi.mocked(startInstance)
-const mockStop = vi.mocked(stopInstance)
-const mockStatus = vi.mocked(getInstanceStatus)
+const mockGetSession = vi.mocked(getSession)
+const mockStart = vi.mocked(startWorkspace)
+const mockStop = vi.mocked(stopWorkspace)
+const mockStatus = vi.mocked(getWorkspaceStatus)
 const mockPrisma = vi.mocked(prisma)
-const mockGetInstanceBasicAuth = vi.mocked(getInstanceBasicAuth)
+const mockGetWorkspaceConnection = vi.mocked(getWorkspaceConnection)
 const mockSync = vi.mocked(syncProviderAccessForInstance)
 
 const fakeSession = {
@@ -75,10 +72,8 @@ const adminSession = {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockCookies.mockResolvedValue({
-    get: vi.fn(() => ({ name: 'arche_session', value: 'token-123' })),
-  } as never)
   mockGetKickstartStatus.mockResolvedValue('ready')
+  mockProviderUpdateMany.mockResolvedValue({ count: 0 })
 })
 
 describe('startInstanceAction', () => {
@@ -161,7 +156,7 @@ describe('getInstanceStatusAction', () => {
       startedAt: new Date(),
       stoppedAt: null,
       lastActivityAt: new Date(),
-    } as never)
+    })
     const result = await getInstanceStatusAction('alice')
     expect(result).toMatchObject({ status: 'running', slowStart: false })
   })
@@ -181,7 +176,7 @@ describe('ensureInstanceRunningAction', () => {
     const result = await ensureInstanceRunningAction('alice')
 
     expect(result).toEqual({ status: 'running' })
-    expect(mockGetInstanceBasicAuth).toHaveBeenCalledWith('alice')
+    expect(mockGetWorkspaceConnection).toHaveBeenCalledWith('alice')
     expect(mockSync).toHaveBeenCalledWith({
       instance: expect.objectContaining({ baseUrl: expect.any(String), authHeader: expect.any(String) }),
       slug: 'alice',
@@ -190,7 +185,7 @@ describe('ensureInstanceRunningAction', () => {
     expect(mockPrisma.user.findUnique).not.toHaveBeenCalled()
   })
 
-  it('skips provider sync when instance just started', async () => {
+  it('syncs providers even when instance just started', async () => {
     mockGetSession.mockResolvedValue(fakeSession)
     mockStatus.mockResolvedValue({
       status: 'running',
@@ -200,7 +195,11 @@ describe('ensureInstanceRunningAction', () => {
     const result = await ensureInstanceRunningAction('alice')
 
     expect(result).toEqual({ status: 'running' })
-    expect(mockSync).not.toHaveBeenCalled()
+    expect(mockSync).toHaveBeenCalledWith({
+      instance: expect.objectContaining({ baseUrl: expect.any(String), authHeader: expect.any(String) }),
+      slug: 'alice',
+      userId: 'user-1',
+    })
   })
 
   it('syncs providers against the workspace owner when admin opens another slug', async () => {
@@ -219,6 +218,20 @@ describe('ensureInstanceRunningAction', () => {
     })
   })
 
+  it('marks a restart as required when provider sync fails', async () => {
+    mockGetSession.mockResolvedValue(fakeSession)
+    mockStatus.mockResolvedValue({ status: 'running' } as never)
+    mockSync.mockResolvedValue({ ok: false, error: 'sync_failed' } as never)
+
+    const result = await ensureInstanceRunningAction('alice')
+
+    expect(result).toEqual({ status: 'running' })
+    expect(mockProviderUpdateMany).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+      data: { lastError: 'workspace_restart_required' },
+    })
+  })
+
   it('returns setup_required when kickstart is incomplete', async () => {
     mockGetSession.mockResolvedValue(fakeSession)
     mockGetKickstartStatus.mockResolvedValue('needs_setup')
@@ -226,5 +239,35 @@ describe('ensureInstanceRunningAction', () => {
     const result = await ensureInstanceRunningAction('alice')
     expect(result).toEqual({ status: 'error', error: 'setup_required' })
     expect(mockStatus).not.toHaveBeenCalled()
+  })
+
+  it('returns running when a start call reports a ready runtime', async () => {
+    mockGetSession.mockResolvedValue(fakeSession)
+    mockStatus.mockResolvedValue({ status: 'stopped' } as never)
+    mockStart.mockResolvedValue({ ok: true, status: 'started' } as never)
+
+    const result = await ensureInstanceRunningAction('alice')
+
+    expect(result).toEqual({ status: 'running' })
+    expect(mockStart).toHaveBeenCalledWith('alice', 'user-1')
+  })
+
+  it('keeps starting when start reports a non-ready status', async () => {
+    mockGetSession.mockResolvedValue(fakeSession)
+    mockStatus.mockResolvedValue({ status: 'stopped' } as never)
+    mockStart.mockResolvedValue({ ok: true, status: 'starting' } as never)
+
+    const result = await ensureInstanceRunningAction('alice')
+
+    expect(result).toEqual({ status: 'starting' })
+  })
+
+  it('returns a structured error when startup checks throw unexpectedly', async () => {
+    mockGetSession.mockResolvedValue(fakeSession)
+    mockStatus.mockRejectedValue(new Error('boom'))
+
+    const result = await ensureInstanceRunningAction('alice')
+
+    expect(result).toEqual({ status: 'error', error: 'status_check_failed' })
   })
 })

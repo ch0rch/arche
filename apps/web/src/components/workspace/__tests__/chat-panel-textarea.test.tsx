@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 
 import type { ComponentProps } from "react";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChatPanel } from "@/components/workspace/chat-panel";
@@ -86,6 +86,64 @@ afterEach(() => {
 });
 
 describe("ChatPanel textarea", () => {
+  it("does not load or render attachments when attachments are disabled", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderChatPanel(undefined, { attachmentsEnabled: false });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(
+      fetchMock.mock.calls.some(([input]) => input === "/api/w/alice/attachments")
+    ).toBe(false);
+    expect(screen.queryByRole("button", { name: "Manage attachments" })).toBeNull();
+  });
+
+  it("focuses the composer when switching to a new active session", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onSendMessage = vi.fn().mockResolvedValue(true);
+    const onCloseSession = vi.fn();
+    const onOpenFile = vi.fn();
+
+    const renderPanel = (activeSessionId: "s1" | "s2") => (
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatPanel
+          key={activeSessionId}
+          slug="alice"
+          sessions={[
+            { id: "s1", title: "Chat 1", status: "idle", updatedAt: "now", agent: "OpenCode" },
+            { id: "s2", title: "Chat 2", status: "idle", updatedAt: "now", agent: "OpenCode" },
+          ]}
+          messages={[]}
+          activeSessionId={activeSessionId}
+          openFilePaths={[]}
+          onCloseSession={onCloseSession}
+          onOpenFile={onOpenFile}
+          onSendMessage={onSendMessage}
+        />
+      </WorkspaceThemeProvider>
+    );
+
+    const { rerender } = render(renderPanel("s1"));
+
+    const firstTextarea = getTextarea();
+    firstTextarea.blur();
+
+    rerender(renderPanel("s2"));
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(getTextarea());
+    });
+  });
+
   it("resets textarea height after sending a multiline message", async () => {
     const onSendMessage = vi.fn().mockResolvedValue(true);
 
@@ -272,6 +330,158 @@ describe("ChatPanel textarea", () => {
     });
   });
 
+  it("accepts an expert mention suggestion with Enter and inserts the agent id", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onSendMessage = vi.fn().mockResolvedValue(true);
+    renderChatPanel(onSendMessage, {
+      agents: [
+        { id: "assistant", displayName: "Assistant", isPrimary: true },
+        { id: "ads-scripts", displayName: "Ads Scripts", isPrimary: false },
+        { id: "seo", displayName: "SEO", isPrimary: false },
+      ],
+    });
+
+    const textarea = getTextarea();
+    fireEvent.change(textarea, { target: { value: "Ask @ads" } });
+    textarea.setSelectionRange("Ask @ads".length, "Ask @ads".length);
+    fireEvent.select(textarea);
+
+    expect(await screen.findByRole("button", { name: /ads scripts/i })).toBeTruthy();
+
+    fireEvent.keyDown(textarea, { key: "Enter", code: "Enter" });
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("Ask @ads-scripts ");
+    });
+
+    expect(onSendMessage).not.toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /ads scripts/i })).toBeNull();
+  });
+
+  it("closes expert mention suggestions when the composer loses focus", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderChatPanel(undefined, {
+      agents: [
+        { id: "assistant", displayName: "Assistant", isPrimary: true },
+        { id: "ads-scripts", displayName: "Ads Scripts", isPrimary: false },
+      ],
+    });
+
+    const textarea = getTextarea();
+    fireEvent.change(textarea, { target: { value: "Ask @ads" } });
+    textarea.setSelectionRange("Ask @ads".length, "Ask @ads".length);
+    fireEvent.select(textarea);
+
+    expect(await screen.findByRole("button", { name: /ads scripts/i })).toBeTruthy();
+
+    textarea.focus();
+    fireEvent.blur(textarea);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /ads scripts/i })).toBeNull();
+    });
+  });
+
+  it("renders expert mention suggestions in a fixed popover anchored to the caret", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderChatPanel(undefined, {
+      agents: [
+        { id: "assistant", displayName: "Assistant", isPrimary: true },
+        { id: "ads-scripts", displayName: "Ads Scripts", isPrimary: false },
+      ],
+    });
+
+    const textarea = getTextarea();
+    fireEvent.change(textarea, { target: { value: "Ask @ads" } });
+    textarea.setSelectionRange("Ask @ads".length, "Ask @ads".length);
+    fireEvent.select(textarea);
+
+    const suggestion = await screen.findByRole("button", { name: /ads scripts/i });
+    const popover = suggestion.closest('[role="presentation"]');
+
+    expect(popover).toBeTruthy();
+
+    if (!(popover instanceof HTMLDivElement)) {
+      throw new Error("Expected popover container");
+    }
+
+    await waitFor(() => {
+      expect(popover.style.visibility).toBe("visible");
+    });
+
+    expect(popover.style.position).toBe("fixed");
+  });
+
+  it("inserts a pending expert mention at the current cursor position", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onPendingInsertConsumed = vi.fn();
+    const onSendMessage = vi.fn().mockResolvedValue(true);
+
+    const { rerender } = render(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatPanel
+          slug="alice"
+          sessions={[{ id: "s1", title: "Chat", status: "idle", updatedAt: "now", agent: "OpenCode" }]}
+          messages={[]}
+          activeSessionId="s1"
+          openFilePaths={[]}
+          onCloseSession={vi.fn()}
+          onOpenFile={vi.fn()}
+          onSendMessage={onSendMessage}
+          onPendingInsertConsumed={onPendingInsertConsumed}
+        />
+      </WorkspaceThemeProvider>
+    );
+
+    const textarea = getTextarea();
+    fireEvent.change(textarea, { target: { value: "Plan: campaign" } });
+    textarea.setSelectionRange("Plan: ".length, "Plan: ".length);
+    fireEvent.select(textarea);
+
+    rerender(
+      <WorkspaceThemeProvider storageScope="alice">
+        <ChatPanel
+          slug="alice"
+          sessions={[{ id: "s1", title: "Chat", status: "idle", updatedAt: "now", agent: "OpenCode" }]}
+          messages={[]}
+          activeSessionId="s1"
+          openFilePaths={[]}
+          onCloseSession={vi.fn()}
+          onOpenFile={vi.fn()}
+          onSendMessage={onSendMessage}
+          pendingInsert="@ads-scripts "
+          onPendingInsertConsumed={onPendingInsertConsumed}
+        />
+      </WorkspaceThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(textarea.value).toBe("Plan: @ads-scripts campaign");
+    });
+
+    expect(onPendingInsertConsumed).toHaveBeenCalledTimes(1);
+  });
+
   it("disables send while a pasted image upload is in progress", async () => {
     const attachmentStore: MockAttachment[] = [];
     const uploadedAttachment: MockAttachment = {
@@ -395,6 +605,29 @@ describe("ChatPanel textarea", () => {
         contextPaths: [],
       }
     );
+  });
+
+  it("focuses model search input when opening the model selector", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [], connectors: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderChatPanel(undefined, {
+      models: [defaultModel],
+      selectedModel: defaultModel,
+      hasManualModelSelection: false,
+      agentDefaultModel: defaultModel,
+    });
+
+    const modelTrigger = screen.getByRole("button", { name: /gpt 5\.4/i });
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+
+    const searchInput = await screen.findByPlaceholderText("Search models...");
+    await waitFor(() => {
+      expect(document.activeElement).toBe(searchInput);
+    });
   });
 
   it("does not auto-scroll when the user has scrolled away from the bottom", async () => {

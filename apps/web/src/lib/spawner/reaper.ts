@@ -1,7 +1,5 @@
-import { prisma } from '@/lib/prisma'
+import { auditService, instanceService } from '@/lib/services'
 import { getIdleTimeoutMinutes } from './config'
-import * as docker from './docker'
-import { auditEvent } from '@/lib/auth'
 
 let reaperInterval: NodeJS.Timeout | null = null
 
@@ -9,32 +7,25 @@ export async function reapIdleInstances(): Promise<number> {
   const timeoutMinutes = getIdleTimeoutMinutes()
   const threshold = new Date(Date.now() - timeoutMinutes * 60 * 1000)
 
-  const idleInstances = await prisma.instance.findMany({
-    where: {
-      status: 'running',
-      lastActivityAt: { lt: threshold },
-    },
-  })
+  const idleInstances = await instanceService.findIdleInstances(threshold)
 
   let reapedCount = 0
 
   for (const instance of idleInstances) {
     try {
       if (instance.containerId) {
-        await docker.stopContainer(instance.containerId).catch(() => {})
-        await docker.removeContainer(instance.containerId).catch(() => {})
+        const docker = await import('./docker')
+        await docker.stopContainer(instance.containerId).catch((err) => {
+          console.warn('[reaper] Failed to stop container:', { slug: instance.slug, containerId: instance.containerId, error: err })
+        })
+        await docker.removeContainer(instance.containerId).catch((err) => {
+          console.warn('[reaper] Failed to remove container:', { slug: instance.slug, containerId: instance.containerId, error: err })
+        })
       }
 
-      await prisma.instance.update({
-        where: { id: instance.id },
-        data: {
-          status: 'stopped',
-          stoppedAt: new Date(),
-          containerId: null,
-        },
-      })
+      await instanceService.setStoppedById(instance.id)
 
-      await auditEvent({
+      await auditService.createEvent({
         actorUserId: null,
         action: 'instance.reaped_idle',
         metadata: {
@@ -45,8 +36,8 @@ export async function reapIdleInstances(): Promise<number> {
       })
 
       reapedCount++
-    } catch {
-      // best-effort
+    } catch (err) {
+      console.error('[reaper] Failed to reap instance:', { slug: instance.slug, error: err })
     }
   }
 
@@ -68,7 +59,9 @@ export function startReaper(): void {
     }
   }, REAPER_INTERVAL_MS)
 
-  reapIdleInstances().catch(() => {})
+  reapIdleInstances().catch((err) => {
+    console.error('[reaper] Initial reap failed:', err)
+  })
 }
 
 export function stopReaper(): void {

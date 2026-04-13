@@ -4,6 +4,7 @@ export function getEncryptionKey(): Buffer {
   if (process.env.NODE_ENV === 'production') {
     throw new Error('ARCHE_ENCRYPTION_KEY is required in production')
   }
+  console.warn('[security] Using insecure development secret for encryption key. Set ARCHE_ENCRYPTION_KEY env var.')
   return Buffer.from('dev-insecure-key-32-bytes-long!!')
 }
 
@@ -57,6 +58,4 @@ export function getKbContentHostPath(): string {
   return value
 }
 
-export function getUsersBasePath(): string {
-  return process.env.ARCHE_USERS_PATH || '/opt/arche/users'
-}
+

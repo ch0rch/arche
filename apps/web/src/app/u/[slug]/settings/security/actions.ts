@@ -1,15 +1,14 @@
 'use server'
 
-import { cookies } from 'next/headers'
 import argon2 from 'argon2'
 
-import { prisma } from '@/lib/prisma'
 import {
-  SESSION_COOKIE_NAME,
-  getSessionFromToken,
   auditEvent,
   verifyPassword,
 } from '@/lib/auth'
+import { getRuntimeCapabilities } from '@/lib/runtime/capabilities'
+import { getSession } from '@/lib/runtime/session'
+import { sessionService, userService } from '@/lib/services'
 import {
   generateSecret,
   encryptSecret,
@@ -21,30 +20,119 @@ import {
 
 const ISSUER = 'Arche'
 
-async function getAuthenticatedUser() {
-  const cookieStore = await cookies()
-  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value
-  if (!token) return null
-  return getSessionFromToken(token)
+type ChangePasswordResult =
+  | { ok: true }
+  | {
+      ok: false
+      error:
+        | 'password_change_unavailable'
+        | 'not_authenticated'
+        | 'user_not_found'
+        | 'invalid_current_password'
+        | 'invalid_new_password'
+      message: string
+    }
+
+function invalidNewPassword(message: string): ChangePasswordResult {
+  return {
+    ok: false,
+    error: 'invalid_new_password',
+    message,
+  }
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+  newPasswordConfirmation: string,
+): Promise<ChangePasswordResult> {
+  if (!getRuntimeCapabilities().auth) {
+    return {
+      ok: false,
+      error: 'password_change_unavailable',
+      message: 'Password change is not available in this runtime mode',
+    }
+  }
+
+  if (!currentPassword) {
+    return {
+      ok: false,
+      error: 'invalid_current_password',
+      message: 'Current password is required',
+    }
+  }
+
+  if (!newPassword) {
+    return invalidNewPassword('New password is required')
+  }
+
+  if (!newPasswordConfirmation) {
+    return invalidNewPassword('New password confirmation is required')
+  }
+
+  if (newPassword !== newPasswordConfirmation) {
+    return invalidNewPassword('New password confirmation does not match')
+  }
+
+  if (newPassword === currentPassword) {
+    return invalidNewPassword('New password must be different from the current password')
+  }
+
+  const session = await getSession()
+  if (!session) {
+    return {
+      ok: false,
+      error: 'not_authenticated',
+      message: 'Not authenticated',
+    }
+  }
+
+  const user = await userService.findById(session.user.id)
+  if (!user) {
+    return {
+      ok: false,
+      error: 'user_not_found',
+      message: 'User not found',
+    }
+  }
+
+  const valid = await verifyPassword(currentPassword, user.passwordHash)
+  if (!valid) {
+    return {
+      ok: false,
+      error: 'invalid_current_password',
+      message: 'Current password is incorrect',
+    }
+  }
+
+  const passwordHash = await argon2.hash(newPassword)
+  await userService.updatePasswordHash(user.id, passwordHash)
+  await sessionService.revokeByUserIdExceptSession(user.id, session.sessionId)
+
+  await auditEvent({
+    actorUserId: user.id,
+    action: 'auth.password.changed',
+  })
+
+  return { ok: true }
 }
 
 export async function initiate2FASetup(): Promise<
   { ok: true; qrUri: string; secret: string } | { ok: false; error: string }
 > {
-  const session = await getAuthenticatedUser()
+  if (!getRuntimeCapabilities().twoFactor) return { ok: false, error: '2FA is not available in this runtime mode' }
+
+  const session = await getSession()
   if (!session) return { ok: false, error: 'Not authenticated' }
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id } })
+  const user = await userService.findById(session.user.id)
   if (!user) return { ok: false, error: 'User not found' }
   if (user.totpEnabled) return { ok: false, error: '2FA is already enabled' }
 
   const secret = generateSecret()
   const encrypted = encryptSecret(secret)
 
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { totpSecret: encrypted, totpVerifiedAt: null },
-  })
+  await userService.updateTotpSecret(user.id, encrypted)
 
   const qrUri = generateTotpUri({ secret, email: user.email, issuer: ISSUER })
 
@@ -59,10 +147,12 @@ export async function initiate2FASetup(): Promise<
 export async function verify2FASetup(
   code: string
 ): Promise<{ ok: true; recoveryCodes: string[] } | { ok: false; error: string }> {
-  const session = await getAuthenticatedUser()
+  if (!getRuntimeCapabilities().twoFactor) return { ok: false, error: '2FA is not available in this runtime mode' }
+
+  const session = await getSession()
   if (!session) return { ok: false, error: 'Not authenticated' }
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id } })
+  const user = await userService.findById(session.user.id)
   if (!user) return { ok: false, error: 'User not found' }
   if (user.totpEnabled) return { ok: false, error: '2FA is already enabled' }
   if (!user.totpSecret) return { ok: false, error: '2FA setup not initiated' }
@@ -82,21 +172,10 @@ export async function verify2FASetup(
     recoveryCodes.map((c) => argon2.hash(c))
   )
 
-  await prisma.$transaction(async (tx) => {
-    await tx.user.update({
-      where: { id: user.id },
-      data: { totpEnabled: true, totpVerifiedAt: new Date() },
-    })
-
-    await tx.twoFactorRecovery.deleteMany({ where: { userId: user.id } })
-
-    await tx.twoFactorRecovery.createMany({
-      data: hashedCodes.map((codeHash) => ({
-        userId: user.id,
-        codeHash,
-      })),
-    })
-  })
+  await userService.enableTwoFactor(
+    user.id,
+    hashedCodes.map((codeHash) => ({ userId: user.id, codeHash })),
+  )
 
   await auditEvent({
     actorUserId: user.id,
@@ -109,29 +188,19 @@ export async function verify2FASetup(
 export async function disable2FA(
   password: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const session = await getAuthenticatedUser()
+  if (!getRuntimeCapabilities().twoFactor) return { ok: false, error: '2FA is not available in this runtime mode' }
+
+  const session = await getSession()
   if (!session) return { ok: false, error: 'Not authenticated' }
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id } })
+  const user = await userService.findById(session.user.id)
   if (!user) return { ok: false, error: 'User not found' }
   if (!user.totpEnabled) return { ok: false, error: '2FA is not enabled' }
 
   const valid = await verifyPassword(password, user.passwordHash)
   if (!valid) return { ok: false, error: 'Invalid password' }
 
-  await prisma.$transaction(async (tx) => {
-    await tx.user.update({
-      where: { id: user.id },
-      data: {
-        totpEnabled: false,
-        totpSecret: null,
-        totpVerifiedAt: null,
-        totpLastUsedAt: null,
-      },
-    })
-
-    await tx.twoFactorRecovery.deleteMany({ where: { userId: user.id } })
-  })
+  await userService.disableTwoFactor(user.id)
 
   await auditEvent({
     actorUserId: user.id,
@@ -144,12 +213,14 @@ export async function disable2FA(
 export async function regenerateRecoveryCodes(password: string): Promise<
   { ok: true; recoveryCodes: string[] } | { ok: false; error: string }
 > {
+  if (!getRuntimeCapabilities().twoFactor) return { ok: false, error: '2FA is not available in this runtime mode' }
+
   if (!password) return { ok: false, error: 'Password is required' }
 
-  const session = await getAuthenticatedUser()
+  const session = await getSession()
   if (!session) return { ok: false, error: 'Not authenticated' }
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id } })
+  const user = await userService.findById(session.user.id)
   if (!user) return { ok: false, error: 'User not found' }
   if (!user.totpEnabled) return { ok: false, error: '2FA is not enabled' }
 
@@ -161,16 +232,10 @@ export async function regenerateRecoveryCodes(password: string): Promise<
     recoveryCodes.map((c) => argon2.hash(c))
   )
 
-  await prisma.$transaction(async (tx) => {
-    await tx.twoFactorRecovery.deleteMany({ where: { userId: user.id } })
-
-    await tx.twoFactorRecovery.createMany({
-      data: hashedCodes.map((codeHash) => ({
-        userId: user.id,
-        codeHash,
-      })),
-    })
-  })
+  await userService.regenerateRecoveryCodes(
+    user.id,
+    hashedCodes.map((codeHash) => ({ userId: user.id, codeHash })),
+  )
 
   await auditEvent({
     actorUserId: user.id,
@@ -184,15 +249,15 @@ export async function get2FAStatus(): Promise<
   | { ok: true; enabled: boolean; verifiedAt: Date | null; recoveryCodesRemaining: number }
   | { ok: false; error: string }
 > {
-  const session = await getAuthenticatedUser()
+  if (!getRuntimeCapabilities().twoFactor) return { ok: false, error: '2FA is not available in this runtime mode' }
+
+  const session = await getSession()
   if (!session) return { ok: false, error: 'Not authenticated' }
 
-  const user = await prisma.user.findUnique({ where: { id: session.user.id } })
+  const user = await userService.findById(session.user.id)
   if (!user) return { ok: false, error: 'User not found' }
 
-  const recoveryCodesRemaining = await prisma.twoFactorRecovery.count({
-    where: { userId: user.id, usedAt: null },
-  })
+  const recoveryCodesRemaining = await userService.countUnusedRecoveryCodes(user.id)
 
   return {
     ok: true,

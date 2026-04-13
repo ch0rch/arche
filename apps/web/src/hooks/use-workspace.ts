@@ -5,6 +5,7 @@ import {
   listSessionsAction,
   createSessionAction,
   deleteSessionAction,
+  markAutopilotRunSeenAction,
   updateSessionAction,
   listMessagesAction,
   abortSessionAction,
@@ -20,12 +21,15 @@ import type {
   MessagePart,
 } from "@/lib/opencode/types";
 import { extractTextContent, transformParts } from "@/lib/opencode/transform";
-import { PROVIDERS, type ProviderId } from "@/lib/providers/types";
+import { isProviderId, normalizeProviderId } from "@/lib/providers/catalog";
+import type { ProviderId } from "@/lib/providers/types";
+import { INITIAL_SSE_PARSE_STATE, parseSseChunk } from "@/lib/sse-parser";
 import {
   canAutoResume,
   recordResumeFailure,
   type ResumeFailureState,
 } from "@/lib/workspace-resume-policy";
+import { WORKSPACE_CONFIG_STATUS_CHANGED_EVENT } from "@/lib/runtime/config-status-events";
 import { SerialJobExecutor } from "@/lib/serial-job-executor";
 import { useInstanceHeartbeat } from "@/hooks/use-instance-heartbeat";
 import { useWorkspaceConnection } from "@/hooks/use-workspace-connection";
@@ -42,9 +46,15 @@ export type AgentCatalogItem = {
   isPrimary: boolean;
 };
 
+type ProviderStatusEntry = {
+  providerId: ProviderId;
+  status: string;
+};
+
 const STALE_PENDING_ASSISTANT_MS = 5_000;
 const RESUME_POLL_INTERVAL_MS = 4_000;
 const EMPTY_WORKSPACE_MESSAGES: WorkspaceMessage[] = [];
+const PRE_SESSION_SELECTION_KEY = "__pre_session__";
 
 function areStatusInfoEqual(
   left: WorkspaceMessage["statusInfo"],
@@ -94,8 +104,88 @@ function areMessageListsEqual(left: WorkspaceMessage[], right: WorkspaceMessage[
   return left.every((message, index) => areMessagesEqual(message, right[index]));
 }
 
-function getActiveSessionStorageKey(slug: string): string {
-  return `arche.workspace.${slug}.active-session`;
+function extractPartDeltaText(delta: unknown): string | null {
+  if (typeof delta === "string") {
+    return delta;
+  }
+
+  if (!delta || typeof delta !== "object") {
+    return null;
+  }
+
+  const maybeText = (delta as { text?: unknown }).text;
+  return typeof maybeText === "string" ? maybeText : null;
+}
+
+function applyDeltaToPart(
+  messageId: string,
+  part: unknown,
+  delta: unknown,
+  textAccumulatorByPart: Map<string, string>
+): unknown {
+  if (!part || typeof part !== "object") {
+    return part;
+  }
+
+  const partRecord = part as Record<string, unknown>;
+  const partType = partRecord.type;
+  if (partType !== "text" && partType !== "reasoning") {
+    return part;
+  }
+
+  const partId =
+    typeof partRecord.id === "string" && partRecord.id.trim().length > 0
+      ? partRecord.id
+      : `${String(partType)}:${messageId}`;
+  const accumulatorKey = `${messageId}:${partId}`;
+  const partText = typeof partRecord.text === "string" ? partRecord.text : "";
+
+  if (partText.length > 0) {
+    textAccumulatorByPart.set(accumulatorKey, partText);
+    return {
+      ...partRecord,
+      id: partId,
+    };
+  }
+
+  const deltaText = extractPartDeltaText(delta);
+  if (!deltaText || deltaText.length === 0) {
+    return {
+      ...partRecord,
+      id: partId,
+    };
+  }
+
+  const nextText = `${textAccumulatorByPart.get(accumulatorKey) ?? ""}${deltaText}`;
+  textAccumulatorByPart.set(accumulatorKey, nextText);
+
+  return {
+    ...partRecord,
+    id: partId,
+    text: nextText,
+  };
+}
+
+export function filterModelsByProviderStatus(
+  models: AvailableModel[],
+  providerStatuses: ProviderStatusEntry[]
+): AvailableModel[] {
+  const enabledProviders = new Set(
+    providerStatuses
+      .filter((provider) => provider.status === "enabled")
+      .map((provider) => normalizeProviderId(provider.providerId))
+  );
+
+  return models.filter((model) => {
+    const normalizedProviderId = normalizeProviderId(model.providerId);
+    if (!isProviderId(normalizedProviderId)) return true;
+    if (normalizedProviderId === "opencode") return true;
+    return enabledProviders.has(normalizedProviderId);
+  });
+}
+
+function getActiveSessionStorageKey(scope: string): string {
+  return `arche.workspace.${scope}.active-session`;
 }
 
 function readStoredValue(storage: Storage, key: string): string | null {
@@ -166,8 +256,11 @@ function resolveModelEntry(
   modelId: string,
   models: AvailableModel[]
 ): AvailableModel {
+  const normalizedProviderId = normalizeProviderId(providerId);
   const match = models.find(
-    (entry) => entry.providerId === providerId && entry.modelId === modelId
+    (entry) =>
+      normalizeProviderId(entry.providerId) === normalizedProviderId &&
+      entry.modelId === modelId
   );
   if (match) return match;
 
@@ -185,13 +278,20 @@ function hasModelEntry(
   modelId: string,
   models: AvailableModel[]
 ): boolean {
+  const normalizedProviderId = normalizeProviderId(providerId);
   return models.some(
-    (entry) => entry.providerId === providerId && entry.modelId === modelId
+    (entry) =>
+      normalizeProviderId(entry.providerId) === normalizedProviderId &&
+      entry.modelId === modelId
   );
 }
 
 function getPrimaryAgent(catalog: AgentCatalogItem[]): AgentCatalogItem | null {
   return catalog.find((agent) => agent.isPrimary) ?? null;
+}
+
+function getSessionSelectionKey(sessionId: string | null): string {
+  return sessionId ?? PRE_SESSION_SELECTION_KEY;
 }
 
 type SessionSelectionState = {
@@ -212,10 +312,15 @@ function createDefaultSessionSelectionState(
 
 export type UseWorkspaceOptions = {
   slug: string;
+  storageScope?: string;
+  initialSessionId?: string | null;
   /** Poll interval in ms for session status updates */
   pollInterval?: number;
   /** Skip connection attempts when false */
   enabled?: boolean;
+  workspaceAgentEnabled?: boolean;
+  /** Enable instance heartbeat for idle timeout (web mode) */
+  reaperEnabled?: boolean;
 };
 
 export type UseWorkspaceReturn = {
@@ -246,6 +351,7 @@ export type UseWorkspaceReturn = {
   isLoadingSessions: boolean;
   unseenCompletedSessions: ReadonlySet<string>;
   selectSession: (id: string) => void;
+  markAutopilotRunSeen: (runId: string) => Promise<void>;
   createSession: (title?: string) => Promise<WorkspaceSession | null>;
   deleteSession: (id: string) => Promise<boolean>;
   renameSession: (id: string, title: string) => Promise<boolean>;
@@ -287,10 +393,15 @@ export type UseWorkspaceReturn = {
 
 export function useWorkspace({
   slug,
+  storageScope,
+  initialSessionId = null,
   pollInterval = 5000,
   enabled = true,
+  workspaceAgentEnabled = true,
+  reaperEnabled = true,
 }: UseWorkspaceOptions): UseWorkspaceReturn {
-  const activeSessionStorageKey = getActiveSessionStorageKey(slug);
+  const activeSessionStorageKey = getActiveSessionStorageKey(storageScope ?? slug);
+  const initialSessionIdRef = useRef(initialSessionId);
 
   // --- Sub-hooks ---
   // onConnectedRef holds the real init callback. We declare it as a ref so
@@ -307,9 +418,13 @@ export function useWorkspace({
     () => onConnectedRef.current(),
   );
 
-  const files = useWorkspaceFiles(slug);
-  const diffsHook = useWorkspaceDiffs(slug, enabled, isConnected);
-  useInstanceHeartbeat(slug, enabled);
+  const files = useWorkspaceFiles(slug, workspaceAgentEnabled);
+  const diffsHook = useWorkspaceDiffs(
+    slug,
+    enabled && workspaceAgentEnabled,
+    isConnected
+  );
+  useInstanceHeartbeat(slug, enabled && reaperEnabled);
 
   // Sessions
   const [sessions, setSessions] = useState<WorkspaceSession[]>([]);
@@ -345,7 +460,9 @@ export function useWorkspace({
   }>());
   const resumeFailureStateRef = useRef<Map<string, ResumeFailureState>>(new Map());
   const sessionExecutorsRef = useRef(new Map<string, SerialJobExecutor>());
+  const latestStreamTokensRef = useRef(new Map<string, number>());
   const isMountedRef = useRef(true);
+  const autoMarkedAutopilotRunIdRef = useRef<string | null>(null);
 
   // Workspace refresh scheduling (diffs + files after stream completion)
   const workspaceRefreshTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -356,6 +473,8 @@ export function useWorkspace({
   const [sessionSelectionState, setSessionSelectionState] = useState<
     Record<string, SessionSelectionState>
   >({});
+  const sessionSelectionStateRef = useRef(sessionSelectionState);
+  sessionSelectionStateRef.current = sessionSelectionState;
 
   const messages = useMemo(
     () => (activeSessionId ? messagesBySession[activeSessionId] ?? EMPTY_WORKSPACE_MESSAGES : EMPTY_WORKSPACE_MESSAGES),
@@ -387,10 +506,9 @@ export function useWorkspace({
   const activeSession = enrichedSessions.find((s) => s.id === activeSessionId) ?? null;
   const primaryAgent = getPrimaryAgent(agentCatalog);
   const primaryAgentId = primaryAgent?.id ?? null;
-  const currentSessionSelection = activeSessionId
-    ? sessionSelectionState[activeSessionId] ??
-      createDefaultSessionSelectionState(primaryAgentId)
-    : createDefaultSessionSelectionState(primaryAgentId);
+  const currentSessionSelection =
+    sessionSelectionState[getSessionSelectionKey(activeSessionId)] ??
+    createDefaultSessionSelectionState(primaryAgentId);
   const activeCatalogAgent = currentSessionSelection.activeAgentId
     ? findAgentInCatalog(agentCatalog, currentSessionSelection.activeAgentId)
     : undefined;
@@ -410,7 +528,9 @@ export function useWorkspace({
   const selectedModel =
     currentSessionSelection.manualModel ??
     currentSessionSelection.runtimeModel ??
-    agentDefaultModel;
+    agentDefaultModel ??
+    models[0] ??
+    null;
   const hasManualModelSelection = currentSessionSelection.manualModel !== null;
 
   // --- Session selection state helpers ---
@@ -454,9 +574,15 @@ export function useWorkspace({
   );
 
   const initializeSessionSelectionState = useCallback(
-    (sessionId: string) => {
+    (sessionId: string, seed?: SessionSelectionState) => {
       updateSessionSelection(sessionId, () =>
-        createDefaultSessionSelectionState(primaryAgentId)
+        seed
+          ? {
+              manualModel: seed.manualModel,
+              runtimeModel: seed.runtimeModel,
+              activeAgentId: seed.activeAgentId,
+            }
+          : createDefaultSessionSelectionState(primaryAgentId)
       );
     },
     [primaryAgentId, updateSessionSelection]
@@ -464,10 +590,9 @@ export function useWorkspace({
 
   const updateSelectedModel = useCallback(
     (model: AvailableModel | null) => {
-      const sessionId = activeSessionIdRef.current;
-      if (!sessionId) return;
+      const selectionKey = getSessionSelectionKey(activeSessionIdRef.current);
 
-      updateSessionSelection(sessionId, (current) => ({
+      updateSessionSelection(selectionKey, (current) => ({
         ...current,
         manualModel: model,
       }));
@@ -479,9 +604,11 @@ export function useWorkspace({
     (sessionId: string, providerId?: string, modelId?: string) => {
       if (!providerId || !modelId) return;
 
+      const normalizedProviderId = normalizeProviderId(providerId);
+
       updateSessionSelection(sessionId, (current) => {
         if (
-          current.runtimeModel?.providerId === providerId &&
+          current.runtimeModel?.providerId === normalizedProviderId &&
           current.runtimeModel?.modelId === modelId
         ) {
           return current;
@@ -489,7 +616,7 @@ export function useWorkspace({
 
         return {
           ...current,
-          runtimeModel: resolveModelEntry(providerId, modelId, models),
+          runtimeModel: resolveModelEntry(normalizedProviderId, modelId, models),
         };
       });
     },
@@ -679,6 +806,11 @@ export function useWorkspace({
           const next: Record<string, SessionSelectionState> = {};
 
           for (const [sessionId, state] of Object.entries(prev)) {
+            if (sessionId === PRE_SESSION_SELECTION_KEY) {
+              next[sessionId] = state;
+              continue;
+            }
+
             if (!sessionIds.has(sessionId)) {
               changed = true;
               continue;
@@ -689,7 +821,13 @@ export function useWorkspace({
           return changed ? next : prev;
         });
         const currentSessionId = activeSessionIdRef.current;
+        const requestedSessionId = initialSessionIdRef.current;
         const storedSessionId = loadStoredActiveSessionId(activeSessionStorageKey);
+        const firstManualRootSession = sessions.find(
+          (session) =>
+            (!session.parentId || !sessionIds.has(session.parentId)) &&
+            !session.autopilot
+        );
         const firstRootSession = sessions.find(
           (session) => !session.parentId || !sessionIds.has(session.parentId)
         );
@@ -697,12 +835,18 @@ export function useWorkspace({
           (currentSessionId && sessionIds.has(currentSessionId)
             ? currentSessionId
             : null) ??
+          (requestedSessionId && sessionIds.has(requestedSessionId)
+            ? requestedSessionId
+            : null) ??
           (storedSessionId && sessionIds.has(storedSessionId)
             ? storedSessionId
             : null) ??
+          firstManualRootSession?.id ??
           firstRootSession?.id ??
           sessions[0]?.id ??
           null;
+
+        initialSessionIdRef.current = null;
 
         if (nextActiveSessionId !== currentSessionId) {
           console.log(
@@ -729,6 +873,9 @@ export function useWorkspace({
 
       activeStream.abortController.abort();
       activeStreamsRef.current.delete(sessionId);
+      if (latestStreamTokensRef.current.get(sessionId) === activeStream.token) {
+        latestStreamTokensRef.current.delete(sessionId);
+      }
       streamCounterRef.current += 1;
       setSessionStreamStatusTo(sessionId, "ready");
     },
@@ -739,6 +886,7 @@ export function useWorkspace({
     for (const sessionId of activeStreamsRef.current.keys()) {
       const activeStream = activeStreamsRef.current.get(sessionId);
       activeStream?.abortController.abort();
+      latestStreamTokensRef.current.delete(sessionId);
       setSessionStreamStatusTo(sessionId, "ready");
     }
     activeStreamsRef.current.clear();
@@ -761,21 +909,72 @@ export function useWorkspace({
     []
   );
 
+  const markAutopilotRunSeen = useCallback(
+    async (runId: string) => {
+      let touched = false;
+
+      setSessions((prev) =>
+        prev.map((session) => {
+          if (session.autopilot?.runId !== runId || !session.autopilot.hasUnseenResult) {
+            return session;
+          }
+
+          touched = true;
+          return {
+            ...session,
+            autopilot: {
+              ...session.autopilot,
+              hasUnseenResult: false,
+            },
+          };
+        })
+      );
+
+      const result = await markAutopilotRunSeenAction(slug, runId);
+      if (!result.ok && touched) {
+        void loadSessions();
+      }
+    },
+    [loadSessions, slug]
+  );
+
+  useEffect(() => {
+    const runId = activeSession?.autopilot?.hasUnseenResult
+      ? activeSession.autopilot.runId
+      : null;
+    if (!runId || autoMarkedAutopilotRunIdRef.current === runId) {
+      return;
+    }
+
+    autoMarkedAutopilotRunIdRef.current = runId;
+    void markAutopilotRunSeen(runId);
+  }, [activeSession, markAutopilotRunSeen]);
+
   const createSession = useCallback(
     async (title?: string) => {
       const result = await createSessionAction(slug, title);
       if (result.ok && result.session) {
+        const draftSelection = sessionSelectionStateRef.current[PRE_SESSION_SELECTION_KEY];
         markSessionsMutated();
         setSessions((prev) => [result.session!, ...prev]);
         setActiveSessionId(result.session.id);
         activeSessionIdRef.current = result.session.id;
         updateSessionMessages(result.session.id, []);
-        initializeSessionSelectionState(result.session.id);
+        initializeSessionSelectionState(result.session.id, draftSelection);
+        if (draftSelection) {
+          clearSessionSelectionState(PRE_SESSION_SELECTION_KEY);
+        }
         return result.session;
       }
       return null;
     },
-    [initializeSessionSelectionState, markSessionsMutated, slug, updateSessionMessages]
+    [
+      clearSessionSelectionState,
+      initializeSessionSelectionState,
+      markSessionsMutated,
+      slug,
+      updateSessionMessages,
+    ]
   );
 
   const deleteSession = useCallback(
@@ -1066,6 +1265,7 @@ export function useWorkspace({
         targetMessageId,
         abortController,
       });
+      latestStreamTokensRef.current.set(sessionId, token);
 
       setSessionStreamStatusTo(sessionId, "submitted");
 
@@ -1086,6 +1286,7 @@ export function useWorkspace({
       let assistantMessageId: string | null =
         mode === "resume" ? targetMessageId : null;
       const bufferedParts = new Map<string, MessagePart[]>();
+      const textAccumulatorByPart = new Map<string, string>();
       let streamCompleted = false;
       let receivedAssistantPart = false;
       let receivedStreamData = false;
@@ -1118,9 +1319,10 @@ export function useWorkspace({
         bufferedParts.delete(messageId);
       };
 
-      const handlePartUpdate = (part: unknown, messageId?: string) => {
+      const handlePartUpdate = (part: unknown, delta: unknown, messageId?: string) => {
         if (!messageId) return;
-        const transformed = transformParts([part]);
+        const withDelta = applyDeltaToPart(messageId, part, delta, textAccumulatorByPart);
+        const transformed = transformParts([withDelta]);
         if (transformed.length === 0) return;
 
         if (mode === "resume") {
@@ -1211,102 +1413,97 @@ export function useWorkspace({
         }
 
         const decoder = new TextDecoder();
-        let buffer = "";
+        let parseState = INITIAL_SSE_PARSE_STATE;
 
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
 
-          buffer += decoder.decode(value, { stream: true });
+          const parsed = parseSseChunk(parseState, decoder.decode(value, { stream: true }));
+          parseState = parsed.state;
 
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
+          for (const parsedEvent of parsed.events) {
+            try {
+              receivedStreamData = true;
+              setSessionStreamStatusTo(sessionId, "streaming");
+              const data = JSON.parse(parsedEvent.data);
 
-          let eventType = "";
-          let eventData = "";
-
-          for (const line of lines) {
-            if (line.startsWith("event:")) {
-              eventType = line.slice(6).trim();
-            } else if (line.startsWith("data:")) {
-              eventData = line.slice(5).trim();
-            } else if (line === "" && eventData) {
-              try {
-                receivedStreamData = true;
-                setSessionStreamStatusTo(sessionId, "streaming");
-                const data = JSON.parse(eventData);
-
-                switch (eventType) {
-                  case "status": {
-                    const status = data.status as MessageStatus;
-                    updateStatus(status, data.toolName, data.detail);
-                    if (status === "complete" || status === "error") {
-                      streamCompleted = true;
-                    }
-                    break;
+              switch (parsedEvent.event) {
+                case "status": {
+                  const status = data.status as MessageStatus;
+                  updateStatus(status, data.toolName, data.detail);
+                  if (status === "complete" || status === "error") {
+                    streamCompleted = true;
                   }
+                  break;
+                }
 
-                  case "message": {
-                    if (
-                      mode === "send" &&
-                      data.role === "assistant" &&
-                      !assistantMessageId &&
-                      typeof data.id === "string"
-                    ) {
-                      assistantMessageId = data.id;
-                      flushBufferedParts(data.id);
-                    }
-                    break;
+                case "message": {
+                  if (
+                    mode === "send" &&
+                    data.role === "assistant" &&
+                    !assistantMessageId &&
+                    typeof data.id === "string"
+                  ) {
+                    assistantMessageId = data.id;
+                    flushBufferedParts(data.id);
                   }
+                  break;
+                }
 
-                  case "assistant-meta": {
-                    if (typeof data.providerID === "string" && typeof data.modelID === "string") {
-                      syncRuntimeSelectedModel(sessionId, data.providerID, data.modelID);
-                    }
-                    if (typeof data.agent === "string") {
-                      syncActiveAgentFromRuntime(sessionId, data.agent);
-                    }
-                    break;
+                case "assistant-meta": {
+                  if (typeof data.providerID === "string" && typeof data.modelID === "string") {
+                    syncRuntimeSelectedModel(sessionId, data.providerID, data.modelID);
                   }
+                  if (typeof data.agent === "string") {
+                    syncActiveAgentFromRuntime(sessionId, data.agent);
+                  }
+                  break;
+                }
 
-                  case "agent": {
-                    if (typeof data.agent === "string") {
-                      syncActiveAgentFromRuntime(sessionId, data.agent);
-                    }
-                    break;
+                case "agent": {
+                  if (typeof data.agent === "string") {
+                    syncActiveAgentFromRuntime(sessionId, data.agent);
                   }
+                  break;
+                }
 
-                  case "part": {
-                    if (!data.part) break;
-                    const messageId = data.messageId ?? data.part?.messageID;
-                    handlePartUpdate(data.part, messageId);
-                    break;
-                  }
+                case "part": {
+                  if (!data.part) break;
+                  const messageId = data.messageId ?? data.part?.messageID;
+                  handlePartUpdate(data.part, data.delta, messageId);
+                  break;
+                }
 
-                  case "workspace-updated": {
-                    scheduleWorkspaceRefresh();
-                    break;
-                  }
+                case "workspace-updated": {
+                  scheduleWorkspaceRefresh();
+                  break;
+                }
 
                   case "done": {
+                    updateStatus("complete");
                     streamCompleted = true;
                     break;
                   }
 
-                  case "error": {
-                    terminalErrorDetail = typeof data.error === "string" ? data.error : terminalErrorDetail;
-                    updateStatus("error", undefined, data.error);
-                    streamCompleted = true;
-                    break;
-                  }
+                case "error": {
+                  terminalErrorDetail = typeof data.error === "string" ? data.error : terminalErrorDetail;
+                  updateStatus("error", undefined, data.error);
+                  streamCompleted = true;
+                  break;
                 }
-              } catch {
-                // Invalid JSON, skip
               }
-
-              eventType = "";
-              eventData = "";
+            } catch {
+              // Invalid JSON, skip
             }
+          }
+
+          // In Electron's Turbopack dev server, the HTTP response body doesn't
+          // signal EOF after controller.close(), so reader.read() hangs
+          // indefinitely. Break as soon as the server signals completion.
+          if (streamCompleted) {
+            reader.cancel().catch(() => {});
+            break;
           }
         }
       } catch (error) {
@@ -1325,7 +1522,7 @@ export function useWorkspace({
           clearInterval(resumePollInterval);
         }
 
-        const isLatest = activeStreamsRef.current.get(sessionId)?.token === token;
+        const isLatestStream = () => latestStreamTokensRef.current.get(sessionId) === token;
 
         if (mode === "resume") {
           if (streamCompleted || receivedAssistantPart) {
@@ -1353,9 +1550,16 @@ export function useWorkspace({
           }
         }
 
-        if (isLatest && isMountedRef.current) {
+        if (isLatestStream()) {
+          activeStreamsRef.current.delete(sessionId);
+          if (isMountedRef.current) {
+            setSessionStreamStatusTo(sessionId, "ready");
+          }
+        }
+
+        if (isLatestStream() && isMountedRef.current) {
           await new Promise((resolve) => setTimeout(resolve, 250));
-          if (!isMountedRef.current) {
+          if (!isMountedRef.current || !isLatestStream()) {
             return;
           }
 
@@ -1389,7 +1593,7 @@ export function useWorkspace({
           };
 
           const result = await loadLatestMessages();
-          if (!isMountedRef.current) {
+          if (!isMountedRef.current || !isLatestStream()) {
             return;
           }
 
@@ -1456,14 +1660,35 @@ export function useWorkspace({
               hydratedMessages.length === 0
             ) {
               const fallbackTerminalErrorDetail = terminalErrorDetail;
+              const idToUpdate = assistantMessageId ?? targetMessageId;
 
               updateSessionMessages(sessionId, (prev) =>
                 prev.map((message) => {
-                  if (message.id !== assistantMessageId) return message;
+                  if (message.id !== idToUpdate) return message;
                   return {
                     ...message,
                     pending: false,
                     statusInfo: { status: "error", detail: fallbackTerminalErrorDetail },
+                  };
+                })
+              );
+            } else if (
+              mode === "send" &&
+              terminalErrorDetail &&
+              !assistantMessageId
+            ) {
+              // Stream received initial events (e.g. "thinking" status) but
+              // the prompt failed before creating an assistant message on the
+              // server. Preserve temp messages and show error.
+              const fallbackDetail = terminalErrorDetail;
+
+              updateSessionMessages(sessionId, (prev) =>
+                prev.map((message) => {
+                  if (message.id !== targetMessageId) return message;
+                  return {
+                    ...message,
+                    pending: false,
+                    statusInfo: { status: "error", detail: fallbackDetail },
                   };
                 })
               );
@@ -1483,9 +1708,8 @@ export function useWorkspace({
           scheduleWorkspaceRefresh();
         }
 
-        if (isLatest && isMountedRef.current) {
-          activeStreamsRef.current.delete(sessionId);
-          setSessionStreamStatusTo(sessionId, "ready");
+        if (isLatestStream()) {
+          latestStreamTokensRef.current.delete(sessionId);
         }
       }
     },
@@ -1568,13 +1792,21 @@ export function useWorkspace({
       let resolvedModel = model;
       if (!resolvedModel) {
         const selection =
-          sessionSelectionState[sessionId] ??
+          sessionSelectionStateRef.current[sessionId] ??
+          sessionSelectionStateRef.current[PRE_SESSION_SELECTION_KEY] ??
           createDefaultSessionSelectionState(primaryAgentId);
 
-        if (selection.manualModel) {
+        const fallbackModel =
+          selection.manualModel ??
+          selection.runtimeModel ??
+          agentDefaultModel ??
+          models[0] ??
+          null;
+
+        if (fallbackModel) {
           resolvedModel = {
-            providerId: selection.manualModel.providerId,
-            modelId: selection.manualModel.modelId,
+            providerId: fallbackModel.providerId,
+            modelId: fallbackModel.modelId,
           };
         }
       }
@@ -1628,8 +1860,9 @@ export function useWorkspace({
     },
     [
       createSession,
+      agentDefaultModel,
+      models,
       primaryAgentId,
-      sessionSelectionState,
       streamChat,
       updateSessionMessages,
     ]
@@ -1668,18 +1901,12 @@ export function useWorkspace({
       });
       if (response.ok) {
         const data = (await response.json()) as {
-          providers?: Array<{ providerId: ProviderId; status: string }>;
+          providers?: ProviderStatusEntry[];
         };
-        const enabledProviders = new Set(
-          (data.providers ?? [])
-            .filter((p) => p.status === "enabled")
-            .map((p) => p.providerId)
+        nextModels = filterModelsByProviderStatus(
+          nextModels,
+          data.providers ?? []
         );
-
-        nextModels = nextModels.filter((m) => {
-          if (!PROVIDERS.includes(m.providerId as ProviderId)) return true;
-          return enabledProviders.has(m.providerId as ProviderId);
-        });
       }
     } catch {
       // ignore — fall back to server action list
@@ -1797,6 +2024,27 @@ export function useWorkspace({
     }
   }, [activeSessionId, isConnected, refreshMessages]);
 
+  useEffect(() => {
+    if (!enabled || !isConnected) return;
+
+    const handleWorkspaceConfigChanged = () => {
+      void loadModels();
+      void loadAgentCatalog();
+    };
+
+    window.addEventListener(
+      WORKSPACE_CONFIG_STATUS_CHANGED_EVENT,
+      handleWorkspaceConfigChanged
+    );
+
+    return () => {
+      window.removeEventListener(
+        WORKSPACE_CONFIG_STATUS_CHANGED_EVENT,
+        handleWorkspaceConfigChanged
+      );
+    };
+  }, [enabled, isConnected, loadAgentCatalog, loadModels]);
+
   // Derive a stable fingerprint of pending assistant messages so the resume
   // effect only re-runs when the *set* of pending IDs changes — not on every
   // content/part update that occurs during active streaming.
@@ -1891,17 +2139,29 @@ export function useWorkspace({
 
     const interval = setInterval(() => {
       loadSessions();
-      diffsHook.refreshDiffs();
 
       const currentSessions = sessionsRef.current;
       const currentActiveSessionId = activeSessionIdRef.current;
+      const hasBusySessions = currentSessions.some(
+        (session) => session.status === "busy",
+      );
+
+      if (hasBusySessions) {
+        diffsHook.refreshDiffs();
+      }
+
       const sessionIdsToRefresh = new Set<string>();
       currentSessions.forEach((session) => {
         if (session.status === "busy") {
           sessionIdsToRefresh.add(session.id);
         }
       });
-      if (currentActiveSessionId) {
+      if (
+        currentActiveSessionId &&
+        currentSessions.some(
+          (s) => s.id === currentActiveSessionId && s.status === "busy",
+        )
+      ) {
         sessionIdsToRefresh.add(currentActiveSessionId);
       }
 
@@ -1921,6 +2181,7 @@ export function useWorkspace({
 
   // Cleanup on unmount
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
       if (workspaceRefreshTimeoutRef.current) {
@@ -1948,6 +2209,7 @@ export function useWorkspace({
     isLoadingSessions,
     unseenCompletedSessions,
     selectSession,
+    markAutopilotRunSeen,
     createSession,
     deleteSession,
     renameSession,

@@ -1,22 +1,51 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { promises as fs } from 'fs'
+import { tmpdir } from 'os'
+import path from 'path'
 
-// Mock prisma
-vi.mock('@/lib/prisma', () => ({
-  prisma: {
-    instance: {
-      findUnique: vi.fn(),
-      upsert: vi.fn(),
-      update: vi.fn(),
-    },
-    user: {
-      findUnique: vi.fn(),
-    },
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const mockReadConfigRepoSnapshot = vi.fn()
+let snapshotRepoDir: string | null = null
+
+async function writeSnapshotRepoFile(relativePath: string, content: string): Promise<void> {
+  if (!snapshotRepoDir) {
+    throw new Error('snapshot_repo_not_configured')
+  }
+
+  const filePath = path.join(snapshotRepoDir, relativePath)
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  await fs.writeFile(filePath, content, 'utf-8')
+}
+
+// Mock services (used directly by core.ts and transitively by runtime-config-hash.ts, mcp-config.ts)
+vi.mock('@/lib/services', () => ({
+  instanceService: {
+    findBySlug: vi.fn(),
+    upsertStarting: vi.fn(),
+    setContainerId: vi.fn(),
+    setError: vi.fn(),
+    setRunning: vi.fn(),
+    setStopped: vi.fn(),
+    setStoppedNoContainer: vi.fn(),
+    correctToRunning: vi.fn(),
+    findStatusBySlug: vi.fn(),
+    findActiveInstances: vi.fn(),
   },
-}))
-
-// Mock auth
-vi.mock('@/lib/auth', () => ({
-  auditEvent: vi.fn(),
+  userService: {
+    findIdentityBySlug: vi.fn(),
+    findIdBySlug: vi.fn(),
+  },
+  connectorService: {
+    findHashEntriesByUserId: vi.fn().mockResolvedValue([]),
+    findEnabledMcpByUserId: vi.fn().mockResolvedValue([]),
+  },
+  providerService: {
+    markWorkspaceRestartRequired: vi.fn().mockResolvedValue({ count: 0 }),
+    clearWorkspaceRestartRequired: vi.fn().mockResolvedValue({ count: 0 }),
+  },
+  auditService: {
+    createEvent: vi.fn(),
+  },
 }))
 
 // Mock opencode client
@@ -52,6 +81,16 @@ vi.mock('@/lib/common-workspace-config-store', () => ({
   }),
 }))
 
+vi.mock('@/lib/config-repo-store', () => ({
+  readConfigRepoSnapshot: (
+    reader: (context: { repoDir: string; hash: string | null }) => Promise<unknown>
+  ) => mockReadConfigRepoSnapshot(reader),
+}))
+
+vi.mock('@/lib/skills/skill-store', () => ({
+  readSkillBundlesFromRepoDir: vi.fn().mockResolvedValue([]),
+}))
+
 // Mock docker
 vi.mock('../docker', () => ({
   createContainer: vi.fn(),
@@ -73,34 +112,68 @@ vi.mock('../crypto', () => ({
   decryptPassword: vi.fn(() => 'test-password-123'),
 }))
 
-import { prisma } from '@/lib/prisma'
-import { auditEvent } from '@/lib/auth'
 import { isInstanceHealthyWithPassword } from '@/lib/opencode/client'
 import { syncProviderAccessForInstance } from '@/lib/opencode/providers'
+import { auditService, instanceService, userService } from '@/lib/services'
+import { startInstance, stopInstance, getInstanceStatus, isSlowStart } from '../core'
 import * as docker from '../docker'
 import { buildMcpConfigForSlug } from '../mcp-config'
-import { startInstance, stopInstance, getInstanceStatus, isSlowStart } from '../core'
 
-const mockPrisma = vi.mocked(prisma)
+const mockInstance = vi.mocked(instanceService)
+const mockUser = vi.mocked(userService)
+const mockAudit = vi.mocked(auditService)
 const mockDocker = vi.mocked(docker)
 const mockBuildMcpConfigForSlug = vi.mocked(buildMcpConfigForSlug)
-const mockAudit = vi.mocked(auditEvent)
 const mockHealth = vi.mocked(isInstanceHealthyWithPassword)
 const mockSync = vi.mocked(syncProviderAccessForInstance)
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks()
+  if (snapshotRepoDir) {
+    await fs.rm(snapshotRepoDir, { recursive: true, force: true })
+  }
+
+  snapshotRepoDir = await fs.mkdtemp(path.join(tmpdir(), 'core-runtime-repo-'))
+  await Promise.all([
+    writeSnapshotRepoFile(
+      'CommonWorkspaceConfig.json',
+      JSON.stringify({
+        $schema: 'https://opencode.ai/config.json',
+        default_agent: 'assistant',
+        agent: {},
+      })
+    ),
+    writeSnapshotRepoFile('AGENTS.md', '# AGENTS.md'),
+  ])
+
+  mockReadConfigRepoSnapshot.mockImplementation(
+    async (
+      reader: (context: { repoDir: string; hash: string | null }) => Promise<unknown>
+    ) => ({
+      ok: true,
+      hash: 'snapshot-hash',
+      data: await reader({ repoDir: snapshotRepoDir!, hash: 'snapshot-hash' }),
+    })
+  )
   mockHealth.mockResolvedValue(true)
   mockBuildMcpConfigForSlug.mockResolvedValue(null)
 })
 
+afterEach(async () => {
+  if (snapshotRepoDir) {
+    await fs.rm(snapshotRepoDir, { recursive: true, force: true })
+    snapshotRepoDir = null
+  }
+})
+
 describe('startInstance', () => {
   it('returns already_running if instance is running', async () => {
-    mockPrisma.instance.findUnique.mockResolvedValue({
+    mockInstance.findBySlug.mockResolvedValue({
       id: '1', slug: 'alice', status: 'running',
       containerId: 'abc', serverPassword: 'enc',
       createdAt: new Date(), startedAt: new Date(),
       stoppedAt: null, lastActivityAt: new Date(),
+      appliedConfigSha: null,
     })
 
     const result = await startInstance('alice', 'user-1')
@@ -114,10 +187,11 @@ describe('startInstance', () => {
       $schema: 'https://opencode.ai/config.json',
       mcp: {},
     })
-    mockPrisma.instance.findUnique.mockResolvedValue(null)
-    mockPrisma.instance.upsert.mockResolvedValue({} as never)
-    mockPrisma.instance.update.mockResolvedValue({} as never)
-    mockPrisma.user.findUnique.mockResolvedValue({ id: 'owner-1', slug: 'alice', email: 'alice@example.com' } as never)
+    mockInstance.findBySlug.mockResolvedValue(null)
+    mockInstance.upsertStarting.mockResolvedValue({} as never)
+    mockInstance.setContainerId.mockResolvedValue({} as never)
+    mockInstance.setRunning.mockResolvedValue({} as never)
+    mockUser.findIdentityBySlug.mockResolvedValue({ id: 'owner-1', slug: 'alice', email: 'alice@example.com' })
     mockDocker.createContainer.mockResolvedValue({ id: 'container-123' } as never)
     mockDocker.startContainer.mockResolvedValue(undefined)
     mockDocker.isContainerRunning.mockResolvedValue(true)
@@ -125,12 +199,13 @@ describe('startInstance', () => {
     const result = await startInstance('alice', 'user-1')
 
     expect(result).toEqual({ ok: true, status: 'running' })
-    const [slug, password, configContent, agentsMd, gitAuthor] = mockDocker.createContainer.mock.calls[0] ?? []
+    const [slug, password, configContent, agentsMd, skills, gitAuthor] = mockDocker.createContainer.mock.calls[0] ?? []
     expect(slug).toBe('alice')
     expect(password).toBe('test-password-123')
     expect(typeof configContent).toBe('string')
     expect(configContent).toContain('"$schema":"https://opencode.ai/config.json"')
     expect(typeof agentsMd).toBe('string')
+    expect(skills).toEqual([])
     expect(gitAuthor).toEqual({ name: 'alice', email: 'alice@example.com' })
     expect(mockDocker.startContainer).toHaveBeenCalledWith('container-123')
     expect(mockSync).toHaveBeenCalledWith({
@@ -138,7 +213,7 @@ describe('startInstance', () => {
       slug: 'alice',
       userId: 'owner-1',
     })
-    expect(mockAudit).toHaveBeenCalledWith({
+    expect(mockAudit.createEvent).toHaveBeenCalledWith({
       actorUserId: 'user-1',
       action: 'instance.started',
       metadata: { slug: 'alice' },
@@ -146,21 +221,18 @@ describe('startInstance', () => {
   })
 
   it('syncs providers before marking instance as running', async () => {
-    mockPrisma.instance.findUnique.mockResolvedValue(null)
-    mockPrisma.instance.upsert.mockResolvedValue({} as never)
-    mockPrisma.instance.update.mockResolvedValue({} as never)
-    mockPrisma.user.findUnique.mockResolvedValue({ id: 'owner-1', slug: 'alice', email: 'alice@example.com' } as never)
+    mockInstance.findBySlug.mockResolvedValue(null)
+    mockInstance.upsertStarting.mockResolvedValue({} as never)
+    mockInstance.setContainerId.mockResolvedValue({} as never)
+    mockInstance.setRunning.mockResolvedValue({} as never)
+    mockUser.findIdentityBySlug.mockResolvedValue({ id: 'owner-1', slug: 'alice', email: 'alice@example.com' })
     mockDocker.createContainer.mockResolvedValue({ id: 'container-123' } as never)
     mockDocker.startContainer.mockResolvedValue(undefined)
     mockDocker.isContainerRunning.mockResolvedValue(true)
 
     let syncCalledBeforeRunning = false
     mockSync.mockImplementation(async () => {
-      const updateCalls = mockPrisma.instance.update.mock.calls
-      const runningCall = updateCalls.find(
-        (call) => (call[0] as { data?: { status?: string } })?.data?.status === 'running',
-      )
-      syncCalledBeforeRunning = !runningCall
+      syncCalledBeforeRunning = !mockInstance.setRunning.mock.calls.length
       return { ok: true }
     })
 
@@ -171,10 +243,11 @@ describe('startInstance', () => {
   })
 
   it('does not suppress dispose when syncing providers', async () => {
-    mockPrisma.instance.findUnique.mockResolvedValue(null)
-    mockPrisma.instance.upsert.mockResolvedValue({} as never)
-    mockPrisma.instance.update.mockResolvedValue({} as never)
-    mockPrisma.user.findUnique.mockResolvedValue({ id: 'owner-1', slug: 'alice', email: 'alice@example.com' } as never)
+    mockInstance.findBySlug.mockResolvedValue(null)
+    mockInstance.upsertStarting.mockResolvedValue({} as never)
+    mockInstance.setContainerId.mockResolvedValue({} as never)
+    mockInstance.setRunning.mockResolvedValue({} as never)
+    mockUser.findIdentityBySlug.mockResolvedValue({ id: 'owner-1', slug: 'alice', email: 'alice@example.com' })
     mockDocker.createContainer.mockResolvedValue({ id: 'container-123' } as never)
     mockDocker.startContainer.mockResolvedValue(undefined)
     mockDocker.isContainerRunning.mockResolvedValue(true)
@@ -186,9 +259,10 @@ describe('startInstance', () => {
   })
 
   it('returns timeout when container never becomes healthy', async () => {
-    mockPrisma.instance.findUnique.mockResolvedValue(null)
-    mockPrisma.instance.upsert.mockResolvedValue({} as never)
-    mockPrisma.instance.update.mockResolvedValue({} as never)
+    mockInstance.findBySlug.mockResolvedValue(null)
+    mockInstance.upsertStarting.mockResolvedValue({} as never)
+    mockInstance.setContainerId.mockResolvedValue({} as never)
+    mockInstance.setError.mockResolvedValue({} as never)
     mockDocker.createContainer.mockResolvedValue({ id: 'container-123' } as never)
     mockDocker.startContainer.mockResolvedValue(undefined)
     mockDocker.isContainerRunning.mockResolvedValue(false)
@@ -206,9 +280,9 @@ describe('startInstance', () => {
   })
 
   it('returns start_failed on docker error', async () => {
-    mockPrisma.instance.findUnique.mockResolvedValue(null)
-    mockPrisma.instance.upsert.mockResolvedValue({} as never)
-    mockPrisma.instance.update.mockResolvedValue({} as never)
+    mockInstance.findBySlug.mockResolvedValue(null)
+    mockInstance.upsertStarting.mockResolvedValue({} as never)
+    mockInstance.setError.mockResolvedValue({} as never)
     mockDocker.createContainer.mockRejectedValue(new Error('Docker unavailable'))
 
     const result = await startInstance('alice', 'user-1')
@@ -219,7 +293,7 @@ describe('startInstance', () => {
 
 describe('stopInstance', () => {
   it('returns not_running if instance does not exist', async () => {
-    mockPrisma.instance.findUnique.mockResolvedValue(null)
+    mockInstance.findBySlug.mockResolvedValue(null)
 
     const result = await stopInstance('alice', 'user-1')
 
@@ -227,11 +301,12 @@ describe('stopInstance', () => {
   })
 
   it('returns not_running if instance already stopped', async () => {
-    mockPrisma.instance.findUnique.mockResolvedValue({
+    mockInstance.findBySlug.mockResolvedValue({
       id: '1', slug: 'alice', status: 'stopped',
       containerId: null, serverPassword: 'enc',
       createdAt: new Date(), startedAt: null,
       stoppedAt: new Date(), lastActivityAt: null,
+      appliedConfigSha: null,
     })
 
     const result = await stopInstance('alice', 'user-1')
@@ -240,22 +315,23 @@ describe('stopInstance', () => {
   })
 
   it('stops and removes container when running', async () => {
-    mockPrisma.instance.findUnique.mockResolvedValue({
+    mockInstance.findBySlug.mockResolvedValue({
       id: '1', slug: 'alice', status: 'running',
       containerId: 'abc-123', serverPassword: 'enc',
       createdAt: new Date(), startedAt: new Date(),
       stoppedAt: null, lastActivityAt: new Date(),
+      appliedConfigSha: null,
     })
     mockDocker.stopContainer.mockResolvedValue(undefined)
     mockDocker.removeContainer.mockResolvedValue(undefined)
-    mockPrisma.instance.update.mockResolvedValue({} as never)
+    mockInstance.setStopped.mockResolvedValue({} as never)
 
     const result = await stopInstance('alice', 'user-1')
 
     expect(result).toEqual({ ok: true, status: 'stopped' })
     expect(mockDocker.stopContainer).toHaveBeenCalledWith('abc-123')
     expect(mockDocker.removeContainer).toHaveBeenCalledWith('abc-123')
-    expect(mockAudit).toHaveBeenCalledWith({
+    expect(mockAudit.createEvent).toHaveBeenCalledWith({
       actorUserId: 'user-1',
       action: 'instance.stopped',
       metadata: { slug: 'alice' },
@@ -266,9 +342,10 @@ describe('stopInstance', () => {
 describe('getInstanceStatus', () => {
   it('returns instance status fields', async () => {
     const now = new Date()
-    mockPrisma.instance.findUnique.mockResolvedValue({
+    mockInstance.findStatusBySlug.mockResolvedValue({
       status: 'running', startedAt: now, stoppedAt: null, lastActivityAt: now, containerId: 'abc',
-    } as never)
+      serverPassword: 'enc',
+    })
     mockDocker.isContainerRunning.mockResolvedValue(true)
     mockHealth.mockResolvedValue(true)
 
@@ -276,11 +353,12 @@ describe('getInstanceStatus', () => {
 
     expect(result).toEqual({
       status: 'running', startedAt: now, stoppedAt: null, lastActivityAt: now, containerId: 'abc',
+      serverPassword: 'enc',
     })
   })
 
   it('returns null for non-existent instance', async () => {
-    mockPrisma.instance.findUnique.mockResolvedValue(null)
+    mockInstance.findStatusBySlug.mockResolvedValue(null)
 
     const result = await getInstanceStatus('unknown')
 
@@ -309,5 +387,74 @@ describe('isSlowStart', () => {
   it('returns false if starting but within expected time', () => {
     const recent = new Date(Date.now() - 1_000) // 1s ago
     expect(isSlowStart({ status: 'starting', startedAt: recent })).toBe(false)
+  })
+})
+
+describe('startInstance - agent config transforms', () => {
+  it('remaps connector IDs and injects self-delegation guards', async () => {
+    await writeSnapshotRepoFile(
+      'CommonWorkspaceConfig.json',
+      JSON.stringify({
+        $schema: 'https://opencode.ai/config.json',
+        default_agent: 'assistant',
+        agent: {
+          assistant: {
+            mode: 'primary',
+            prompt: 'You are helpful.',
+            tools: { task: true, bash: true },
+          },
+          linear: {
+            mode: 'subagent',
+            prompt: 'Handle Linear tasks.',
+            tools: { task: true, 'arche_*': false, 'arche_linear_admin111_*': true },
+          },
+        },
+      })
+    )
+
+    mockBuildMcpConfigForSlug.mockResolvedValue({
+      $schema: 'https://opencode.ai/config.json',
+      mcp: {
+        arche_linear_user999: {
+          type: 'remote',
+          url: 'https://mcp.linear.app/mcp',
+          enabled: true,
+          headers: { Authorization: 'Bearer tok' },
+          oauth: false,
+        },
+      },
+    })
+
+    mockInstance.findBySlug.mockResolvedValue(null)
+    mockInstance.upsertStarting.mockResolvedValue({} as never)
+    mockInstance.setContainerId.mockResolvedValue({} as never)
+    mockInstance.setRunning.mockResolvedValue({} as never)
+    mockUser.findIdentityBySlug.mockResolvedValue({ id: 'owner-1', slug: 'bob', email: 'bob@example.com' })
+    mockDocker.createContainer.mockResolvedValue({ id: 'container-456' } as never)
+    mockDocker.startContainer.mockResolvedValue(undefined)
+    mockDocker.isContainerRunning.mockResolvedValue(true)
+
+    await startInstance('bob', 'user-2')
+
+    const configContent = mockDocker.createContainer.mock.calls[0]?.[2] as string
+    expect(configContent).toBeDefined()
+
+    const parsed = JSON.parse(configContent)
+
+    const linearTools = parsed.agent.linear.tools
+    expect(linearTools['arche_linear_user999_*']).toBe(true)
+    expect(linearTools['arche_linear_admin111_*']).toBeUndefined()
+    expect(linearTools['arche_*']).toBe(false)
+    expect(linearTools.email_draft).toBe(true)
+
+    const assistantTools = parsed.agent.assistant.tools
+    expect(assistantTools.email_draft).toBe(true)
+
+    const linearPrompt = parsed.agent.linear.prompt as string
+    expect(linearPrompt).toContain('## Delegation constraint')
+    expect(linearPrompt).toContain('MUST NEVER use the task tool to invoke yourself ("linear")')
+
+    const assistantPrompt = parsed.agent.assistant.prompt as string
+    expect(assistantPrompt).not.toContain('Delegation constraint')
   })
 })

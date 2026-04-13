@@ -1,13 +1,14 @@
-import { prisma } from '@/lib/prisma'
-import { auditEvent } from '@/lib/auth'
-import { readCommonWorkspaceConfig, readConfigRepoFile } from '@/lib/common-workspace-config-store'
+import { auditService, instanceService, providerService } from '@/lib/services'
 import { getInstanceUrl, isInstanceHealthyWithPassword } from '@/lib/opencode/client'
 import { syncProviderAccessForInstance } from '@/lib/opencode/providers'
 import * as docker from './docker'
 import { decryptPassword, generatePassword, encryptPassword } from './crypto'
 import { getStartExpectedMs, getStartTimeoutMs } from './config'
-import { buildMcpConfigForSlug } from './mcp-config'
-import { getRuntimeConfigHashForSlug } from './runtime-config-hash'
+import {
+  buildWorkspaceRuntimeArtifacts,
+  getWebProviderGatewayConfig,
+  hashWorkspaceRuntimeArtifacts,
+} from './runtime-artifacts'
 
 export type StartResult =
   | { ok: true; status: 'running' }
@@ -28,21 +29,8 @@ function getErrorDetail(err: unknown): string | undefined {
   return error.json?.message ?? error.message ?? error.reason
 }
 
-function withWorkspaceIdentity(agentsMd: string, identity: { slug: string; email?: string | null }): string {
-  const emailLine = identity.email ? `- Email: ${identity.email}\n` : ''
-  const block =
-    `\n\n## Workspace User Identity\n\n` +
-    `Use this identity as the primary user context for this workspace session.\n\n` +
-    `- Slug: ${identity.slug}\n` +
-    emailLine
-
-  return agentsMd + block
-}
-
 export async function startInstance(slug: string, userId: string): Promise<StartResult> {
-  const existing = await prisma.instance.findUnique({ where: { slug } })
-  const runtimeHashResult = await getRuntimeConfigHashForSlug(slug)
-  const appliedConfigSha = runtimeHashResult.ok ? runtimeHashResult.hash : null
+  const existing = await instanceService.findBySlug(slug)
 
   if (existing?.status === 'running') {
     return { ok: false, error: 'already_running' }
@@ -51,86 +39,23 @@ export async function startInstance(slug: string, userId: string): Promise<Start
   const password = generatePassword()
   const encryptedPassword = encryptPassword(password)
 
-  await prisma.instance.upsert({
-    where: { slug },
-    create: {
-      slug,
-      status: 'starting',
-      serverPassword: encryptedPassword,
-      startedAt: new Date(),
-    },
-    update: {
-      status: 'starting',
-      serverPassword: encryptedPassword,
-      startedAt: new Date(),
-      stoppedAt: null,
-      containerId: null,
-    },
-  })
+  await instanceService.upsertStarting(slug, encryptedPassword)
 
   let containerId: string | null = null
 
   try {
-    let opencodeConfigContent: string | undefined
-    try {
-      // Read workspace config (agents, default_agent, prompts, etc.)
-      let baseConfig: Record<string, unknown> = {}
-      const commonConfigResult = await readCommonWorkspaceConfig()
-      if (commonConfigResult.ok) {
-        try {
-          baseConfig = JSON.parse(commonConfigResult.content)
-        } catch {
-          console.warn('[spawner] Failed to parse CommonWorkspaceConfig')
-        }
-      }
+    const artifacts = await buildWorkspaceRuntimeArtifacts(slug, getWebProviderGatewayConfig())
+    const appliedConfigSha = hashWorkspaceRuntimeArtifacts(artifacts)
+    const { owner, opencodeConfigContent, agentsMd, skills } = artifacts
 
-      // Merge MCP connectors config
-      const mcpConfig = await buildMcpConfigForSlug(slug)
-      if (mcpConfig?.mcp && Object.keys(mcpConfig.mcp).length > 0) {
-        baseConfig = { ...baseConfig, mcp: mcpConfig.mcp }
-      }
-
-      if (Object.keys(baseConfig).length > 0) {
-        opencodeConfigContent = JSON.stringify(baseConfig)
-      }
-    } catch {
-      console.warn('[spawner] Config build failed')
-    }
-
-    // Read AGENTS.md from config repo to inject into workspace
-    let agentsMd: string | undefined
-    try {
-      const agentsResult = await readConfigRepoFile('AGENTS.md')
-      if (agentsResult.ok) {
-        agentsMd = agentsResult.content
-      }
-    } catch {
-      console.warn('[spawner] Failed to read AGENTS.md')
-    }
-
-    const owner = await prisma.user.findUnique({
-      where: { slug },
-      select: { id: true, email: true, slug: true },
-    })
-
-    if (agentsMd) {
-      agentsMd = withWorkspaceIdentity(agentsMd, {
-        slug: owner?.slug ?? slug,
-        email: owner?.email,
-      })
-    }
-
-    const container = await docker.createContainer(slug, password, opencodeConfigContent, agentsMd, {
+    const container = await docker.createContainer(slug, password, opencodeConfigContent, agentsMd, skills, {
       name: owner?.slug ?? slug,
-      email: owner?.email,
+      email: owner?.email ?? undefined,
     })
     containerId = container.id
     await docker.startContainer(container.id)
 
-    await prisma.instance.update({
-      where: { slug },
-      data: { containerId: container.id },
-    })
+    await instanceService.setContainerId(slug, container.id)
 
     const healthy = await waitForHealthy(container.id, slug, password)
 
@@ -138,10 +63,7 @@ export async function startInstance(slug: string, userId: string): Promise<Start
       await docker.stopContainer(container.id).catch(() => {})
       await docker.removeContainer(container.id).catch(() => {})
       containerId = null
-      await prisma.instance.update({
-        where: { slug },
-        data: { status: 'error', containerId: null },
-      })
+      await instanceService.setError(slug)
       return { ok: false, error: 'timeout', detail: 'healthcheck timeout' }
     }
 
@@ -158,19 +80,15 @@ export async function startInstance(slug: string, userId: string): Promise<Start
       userId: syncUserId,
     })
     if (!syncResult.ok) {
+      await providerService.markWorkspaceRestartRequired(syncUserId)
       console.error('[spawner] Failed to sync OpenCode providers', syncResult.error)
+    } else {
+      await providerService.clearWorkspaceRestartRequired(syncUserId)
     }
 
-    await prisma.instance.update({
-      where: { slug },
-      data: {
-        status: 'running',
-        lastActivityAt: new Date(),
-        appliedConfigSha
-      },
-    })
+    await instanceService.setRunning(slug, appliedConfigSha)
 
-    await auditEvent({
+    await auditService.createEvent({
       actorUserId: userId,
       action: 'instance.started',
       metadata: { slug },
@@ -191,17 +109,14 @@ export async function startInstance(slug: string, userId: string): Promise<Start
       await docker.removeContainer(containerId).catch(() => {})
     }
 
-    await prisma.instance.update({
-      where: { slug },
-      data: { status: 'error', containerId: null },
-    }).catch(() => {})
+    await instanceService.setError(slug).catch(() => {})
 
     return { ok: false, error: 'start_failed', detail }
   }
 }
 
 export async function stopInstance(slug: string, userId: string): Promise<StopResult> {
-  const instance = await prisma.instance.findUnique({ where: { slug } })
+  const instance = await instanceService.findBySlug(slug)
 
   if (!instance || instance.status === 'stopped') {
     return { ok: false, error: 'not_running' }
@@ -213,16 +128,9 @@ export async function stopInstance(slug: string, userId: string): Promise<StopRe
       await docker.removeContainer(instance.containerId).catch(() => {})
     }
 
-    await prisma.instance.update({
-      where: { slug },
-      data: {
-        status: 'stopped',
-        stoppedAt: new Date(),
-        containerId: null,
-      },
-    })
+    await instanceService.setStopped(slug)
 
-    await auditEvent({
+    await auditService.createEvent({
       actorUserId: userId,
       action: 'instance.stopped',
       metadata: { slug },
@@ -235,26 +143,13 @@ export async function stopInstance(slug: string, userId: string): Promise<StopRe
 }
 
 export async function getInstanceStatus(slug: string) {
-  const instance = await prisma.instance.findUnique({
-    where: { slug },
-    select: {
-      status: true,
-      startedAt: true,
-      stoppedAt: true,
-      lastActivityAt: true,
-      containerId: true,
-      serverPassword: true,
-    },
-  })
+  const instance = await instanceService.findStatusBySlug(slug)
 
   if (!instance) return null
 
   // If the DB says running/starting but there is no containerId, it is out of sync
   if ((instance.status === 'running' || instance.status === 'starting') && !instance.containerId) {
-    await prisma.instance.update({
-      where: { slug },
-      data: { status: 'stopped', stoppedAt: new Date() },
-    })
+    await instanceService.setStoppedNoContainer(slug)
     return { ...instance, status: 'stopped' as const, containerId: null }
   }
 
@@ -267,10 +162,7 @@ export async function getInstanceStatus(slug: string) {
       // Try to remove the container if it still exists
       await docker.removeContainer(instance.containerId).catch(() => {})
 
-      await prisma.instance.update({
-        where: { slug },
-        data: { status: 'stopped', stoppedAt: new Date(), containerId: null },
-      })
+      await instanceService.setStopped(slug)
       return { ...instance, status: 'stopped' as const, containerId: null }
     }
 
@@ -281,10 +173,7 @@ export async function getInstanceStatus(slug: string) {
 
       if (isHealthy) {
         if (instance.status !== 'running') {
-          await prisma.instance.update({
-            where: { slug },
-            data: { status: 'running', lastActivityAt: new Date() },
-          })
+          await instanceService.correctToRunning(slug)
         }
         return { ...instance, status: 'running' as const }
       }
@@ -303,18 +192,7 @@ export async function getInstanceStatus(slug: string) {
 }
 
 export async function listActiveInstances() {
-  return prisma.instance.findMany({
-    where: {
-      status: { in: ['running', 'starting'] },
-    },
-    select: {
-      slug: true,
-      status: true,
-      startedAt: true,
-      lastActivityAt: true,
-    },
-    orderBy: { startedAt: 'desc' },
-  })
+  return instanceService.findActiveInstances()
 }
 
 export function isSlowStart(instance: { status: string; startedAt: Date | null } | null): boolean {

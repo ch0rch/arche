@@ -1,8 +1,10 @@
-import { NextRequest } from 'next/server'
-import { getAuthenticatedUser } from '@/lib/auth'
+import { NextRequest, NextResponse } from 'next/server'
+
 import { extractPdfText, isPdfMime } from '@/lib/attachments/pdf-text-extractor'
-import { validateSameOrigin } from '@/lib/csrf'
-import { prisma } from '@/lib/prisma'
+import { getInstanceUrl } from '@/lib/opencode/client'
+import { normalizeProviderId, resolveRuntimeProviderId } from '@/lib/providers/catalog'
+import { withAuth } from '@/lib/runtime/with-auth'
+import { instanceService } from '@/lib/services'
 import { INITIAL_SSE_PARSE_STATE, parseSseChunk } from '@/lib/sse-parser'
 import { decryptPassword } from '@/lib/spawner/crypto'
 import {
@@ -36,11 +38,20 @@ type WorkspaceAgentReadResponse = {
 }
 
 const MAX_PDF_BYTES_FOR_EXTRACTION = 8 * 1024 * 1024
+const MAX_IMAGE_BYTES_FOR_INLINE = 8 * 1024 * 1024
 const MAX_PDF_TEXT_CHARS = 24_000
 const MAX_CONTEXT_REFERENCES_PER_MESSAGE = 20
 const STREAM_RELEVANT_EVENT_TICK_MS = 1000
 const SEND_STREAM_RELEVANT_EVENT_TIMEOUT_MS = 20_000
 const RESUME_STREAM_RELEVANT_EVENT_TIMEOUT_MS = 12_000
+
+function jsonErrorResponse(status: number, error: string) {
+  return NextResponse.json({ error }, { status })
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
 
 function normalizeContextPaths(value: unknown): string[] {
   if (!Array.isArray(value)) return []
@@ -85,6 +96,32 @@ function normalizeMessageAttachments(
       mime: typeof item.mime === 'string' ? item.mime : undefined,
     }))
     .filter((item) => item.path.length > 0)
+}
+
+const IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+])
+
+function isImageMime(mime: string): boolean {
+  return IMAGE_MIME_TYPES.has(mime.toLowerCase())
+}
+
+async function readWorkspaceImageAttachment(
+  agent: { baseUrl: string; authHeader: string },
+  path: string,
+): Promise<Buffer | null> {
+  const response = await workspaceAgentFetch<WorkspaceAgentReadResponse>(agent, '/files/read', {
+    path,
+  })
+  if (!response.ok) return null
+
+  const decoded = decodeWorkspaceAgentFileContent(response.data)
+  if (!decoded || decoded.length === 0) return null
+  if (decoded.length > MAX_IMAGE_BYTES_FOR_INLINE) return null
+  return decoded
 }
 
 function toWorkspaceFileUrl(path: string): string {
@@ -177,52 +214,24 @@ async function readWorkspaceAttachment(
  * - done: { refresh: true } - Stream complete, client should refresh messages
  * - error: { error: string }
  */
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string }> }
-) {
-  const { slug } = await params
-
-  // Authenticate user
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return new Response(JSON.stringify({ error: 'unauthorized' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' }
-    })
-  }
-
-  const originValidation = validateSameOrigin(request)
-  if (!originValidation.ok) {
-    return new Response(JSON.stringify({ error: 'forbidden' }), {
-      status: 403,
-      headers: { 'Content-Type': 'application/json' }
-    })
-  }
-
-  // Check authorization
-  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
-    return new Response(JSON.stringify({ error: 'forbidden' }), {
-      status: 403,
-      headers: { 'Content-Type': 'application/json' }
-    })
-  }
-  
+export const POST = withAuth(
+  { csrf: true },
+  async (request: NextRequest, { slug }) => {
   // Get instance credentials
-  const instance = await prisma.instance.findUnique({
-    where: { slug },
-    select: { serverPassword: true, status: true }
-  })
-  
+  const instance = await instanceService.findCredentialsBySlug(slug)
+
   if (!instance || !instance.serverPassword || instance.status !== 'running') {
-    return new Response(JSON.stringify({ error: 'instance_unavailable' }), { 
-      status: 503,
-      headers: { 'Content-Type': 'application/json' }
-    })
+    return jsonErrorResponse(503, 'instance_unavailable')
   }
-  
+
   // Parse request body
-  const body = await request.json()
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return jsonErrorResponse(400, 'invalid_json')
+  }
+
   const { sessionId, text, model, resume, messageId } = body as {
     sessionId: string
     text?: string
@@ -235,39 +244,48 @@ export async function POST(
 
   const attachments = normalizeMessageAttachments((body as { attachments?: unknown }).attachments)
   const contextPaths = normalizeContextPaths((body as { contextPaths?: unknown }).contextPaths)
-  
+
   if (!sessionId || (!resume && !text && attachments.length === 0)) {
-    return new Response(JSON.stringify({ error: 'missing_fields' }), { 
-      status: 400,
-      headers: { 'Content-Type': 'application/json' }
-    })
+    return jsonErrorResponse(400, 'missing_fields')
   }
 
   if (attachments.length > MAX_ATTACHMENTS_PER_MESSAGE) {
-    return new Response(JSON.stringify({ error: 'too_many_attachments' }), {
-      status: 400,
-      headers: { 'Content-Type': 'application/json' }
-    })
+    return jsonErrorResponse(400, 'too_many_attachments')
   }
-  
+
   const password = decryptPassword(instance.serverPassword)
   const authHeader = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
-  const baseUrl = `http://opencode-${slug}:4096`
+  const baseUrl = getInstanceUrl(slug)
   const workspaceAgentUrl = getWorkspaceAgentUrl(slug)
-  
+
   // Create SSE stream
   const encoder = new TextEncoder()
-  
+
    const stream = new ReadableStream({
     async start(controller) {
       // Track whether the downstream client (browser) has disconnected.
-      // When true we keep reading from OpenCode's event stream so the
-      // session is not aborted, but we stop trying to enqueue data.
       let clientGone = false
+      let aborted = false
+      let promptSent = Boolean(resume)
+      let promptAcknowledged = Boolean(resume)
 
-      if (request.signal) {
-        request.signal.addEventListener('abort', () => { clientGone = true }, { once: true })
+      // Shared reference so the abort path and finally block can always
+      // clean up the active reader when it exists.
+      let eventReader: ReadableStreamDefaultReader<Uint8Array> | null = null
+
+      const handleAbort = () => {
+        clientGone = true
+        aborted = true
+        void eventReader?.cancel().catch(() => undefined)
+        try { controller.close() } catch { /* already closed/errored */ }
       }
+
+      if (request.signal.aborted) {
+        handleAbort()
+        return
+      }
+
+      request.signal.addEventListener('abort', handleAbort, { once: true })
 
       const sendEvent = (event: string, data: unknown) => {
         if (clientGone) return
@@ -277,21 +295,12 @@ export async function POST(
           clientGone = true
         }
       }
-      
-      let aborted = false
-      let promptSent = Boolean(resume)
-      let promptAcknowledged = Boolean(resume)
-      
-      // Shared reference so the finally block can always clean up the reader,
-      // even if the error occurred before the reader was assigned.
-      let eventReader: ReadableStreamDefaultReader<Uint8Array> | null = null
 
       try {
         sendEvent('status', { status: 'connecting' })
 
         // Subscribe first so we don't miss fast session events.
         const eventsUrl = `${baseUrl}/event`
-        console.log('[stream] Connecting to events:', eventsUrl)
 
         const eventsResponse = await fetch(eventsUrl, {
           method: 'GET',
@@ -299,13 +308,11 @@ export async function POST(
             'Authorization': authHeader,
             'Accept': 'text/event-stream',
             'Cache-Control': 'no-cache'
-          }
+          },
+          signal: request.signal,
         })
 
-        console.log('[stream] Events connection:', eventsResponse.status)
-
         if (!eventsResponse.ok || !eventsResponse.body) {
-          console.log('[stream] Events connection failed')
           sendEvent('error', { error: 'Failed to connect to event stream' })
           return
         }
@@ -318,7 +325,7 @@ export async function POST(
         const cancelReader = async () => {
           await reader.cancel().catch(() => undefined)
         }
-        
+
         if (!resume) {
           const promptParts: Array<
             { type: 'text'; text: string } |
@@ -403,6 +410,33 @@ export async function POST(
                 continue
               }
 
+              if (isImageMime(mime)) {
+                const imageBytes = await readWorkspaceImageAttachment(
+                  { baseUrl: workspaceAgentUrl, authHeader },
+                  attachmentPath,
+                )
+
+                if (imageBytes) {
+                  const base64 = imageBytes.toString('base64')
+                  promptParts.push({
+                    type: 'file',
+                    mime,
+                    filename: fileName,
+                    url: `data:${mime};base64,${base64}`,
+                  })
+                } else {
+                  promptParts.push({
+                    type: 'file',
+                    mime,
+                    filename: fileName,
+                    url: toWorkspaceFileUrl(attachmentPath),
+                  })
+                }
+
+                attachmentPathsForHint.push(attachmentPath)
+                continue
+              }
+
               promptParts.push({
                 type: 'file',
                 mime,
@@ -429,26 +463,28 @@ export async function POST(
 
           const promptBody = {
             parts: promptParts,
-            ...(model && { model: { providerID: model.providerId, modelID: model.modelId } })
+            ...(model && {
+              model: {
+                providerID: resolveRuntimeProviderId(model.providerId),
+                modelID: model.modelId,
+              },
+            })
           }
-          
+
           const promptUrl = `${baseUrl}/session/${sessionId}/prompt_async`
-          console.log('[stream] POST to:', promptUrl)
-          
+
           const promptResponse = await fetch(promptUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'Authorization': authHeader
             },
-            body: JSON.stringify(promptBody)
+            body: JSON.stringify(promptBody),
+            signal: request.signal,
           })
-          
-          console.log('[stream] prompt_async response:', promptResponse.status)
-          
+
           if (!promptResponse.ok) {
             const errorText = await promptResponse.text()
-            console.log('[stream] prompt_async error:', errorText)
             sendEvent('error', { error: `Failed to start message: ${errorText}` })
             await cancelReader()
             return
@@ -456,9 +492,9 @@ export async function POST(
 
           promptSent = true
         }
-        
+
         sendEvent('status', { status: 'thinking' })
-        
+
         // Track state for the assistant response
         let currentStatus: string | null = null
         let currentToolName: string | undefined
@@ -486,6 +522,8 @@ export async function POST(
         }
 
         const finalizeFromIdle = () => {
+          if (aborted) return
+
           if (!resume && !assistantMessageSeen) {
             emitStatus('error', undefined, 'stream_no_assistant_message')
             sendEvent('error', { error: 'stream_no_assistant_message' })
@@ -500,14 +538,11 @@ export async function POST(
             return
           }
 
-          console.log('[stream] Session idle, completing')
           emitStatus('complete')
           sendEvent('done', { refresh: true })
           aborted = true
         }
-        
-        console.log('[stream] Starting to read events...')
-        
+
         while (!aborted) {
           const readPromise = reader.read()
           let streamReadResult: ReadableStreamReadResult<Uint8Array> | null = null
@@ -538,21 +573,27 @@ export async function POST(
 
           const { done, value } = streamReadResult
           if (done || !value) {
-            console.log('[stream] Event stream ended')
+            if (!resume && !aborted) {
+              finalizeFromIdle()
+            }
             break
           }
-          
+
           const parsed = parseSseChunk(parseState, decoder.decode(value, { stream: true }))
           parseState = parsed.state
 
           for (const parsedEvent of parsed.events) {
+            if (aborted) {
+              break
+            }
+
             const eventData = parsedEvent.data
             if (!eventData) continue
 
             // End of event, process it
               try {
                 const event = JSON.parse(eventData)
-                
+
                 // Get sessionID from event
                 const eventSessionId =
                   event.properties?.sessionID ||
@@ -570,7 +611,7 @@ export async function POST(
                   eventType === 'session.status' ||
                   eventType === 'session.idle' ||
                   eventType === 'session.error'
-                
+
                 // Filter events for our session only
                 if (!isWorkspaceEvent) {
                   if (isSessionScopedEvent && eventSessionId !== sessionId) {
@@ -581,15 +622,12 @@ export async function POST(
                     continue
                   }
                 }
-                
-                console.log('[stream] Event:', eventType)
-                
+
                 switch (eventType) {
                   // Session status changes
                   case 'session.status': {
                     markRelevantEvent()
                     const status = event.properties?.status
-                    console.log('[stream] Session status:', status?.type)
 
                     if (status?.type === 'busy') {
                       promptSent = true
@@ -600,7 +638,6 @@ export async function POST(
                       emitStatus('thinking', undefined, status?.message)
                     } else if (status?.type === 'idle') {
                       if (!promptSent || !promptAcknowledged) {
-                        console.log('[stream] Ignoring pre-prompt idle session.status event')
                         break
                       }
                       finalizeFromIdle()
@@ -610,9 +647,7 @@ export async function POST(
 
                   case 'session.idle': {
                     markRelevantEvent()
-                    console.log('[stream] Session idle event')
                     if (!promptSent || !promptAcknowledged) {
-                      console.log('[stream] Ignoring pre-prompt session.idle event')
                       break
                     }
                     finalizeFromIdle()
@@ -622,9 +657,10 @@ export async function POST(
                   case 'session.error': {
                     markRelevantEvent()
                     const error = event.properties?.error
-                    console.log('[stream] Session error:', error)
-                    emitStatus('error', undefined, error?.data?.message || 'Unknown error')
-                    sendEvent('error', { error: error?.data?.message || 'Unknown error' })
+                    const errorMessage = error?.data?.message || 'Unknown error'
+
+                    emitStatus('error', undefined, errorMessage)
+                    sendEvent('error', { error: errorMessage })
                     aborted = true
                     break
                   }
@@ -645,7 +681,10 @@ export async function POST(
                         assistantPartSeen = true
                       }
                       sendEvent('assistant-meta', {
-                        providerID: info.providerID,
+                        providerID:
+                          typeof info.providerID === 'string'
+                            ? normalizeProviderId(info.providerID)
+                            : info.providerID,
                         modelID: info.modelID,
                         agent: info.agent
                       })
@@ -728,6 +767,76 @@ export async function POST(
                     break
                   }
 
+                  case 'message.part.delta': {
+                    markRelevantEvent()
+
+                    const properties =
+                      event.properties && typeof event.properties === 'object'
+                        ? event.properties as Record<string, unknown>
+                        : null
+                    const rawPart =
+                      properties?.part && typeof properties.part === 'object'
+                        ? properties.part as Record<string, unknown>
+                        : null
+                    const delta = properties?.delta ?? rawPart?.delta ?? properties?.text ?? properties?.value
+                    const partMessageId =
+                      typeof rawPart?.messageID === 'string'
+                        ? rawPart.messageID
+                        : typeof properties?.messageID === 'string'
+                          ? properties.messageID
+                          : typeof assistantMessageId === 'string'
+                            ? assistantMessageId
+                            : null
+
+                    if (!partMessageId) break
+                    seenPartMessageIds.add(partMessageId)
+
+                    const knownRole = messageRoles.get(partMessageId)
+                    if (!assistantMessageId && knownRole === 'assistant') {
+                      assistantMessageId = partMessageId
+                      assistantMessageSeen = true
+                    }
+
+                    const isAssistantPart = assistantMessageId
+                      ? partMessageId === assistantMessageId
+                      : knownRole === 'assistant'
+
+                    const part: Record<string, unknown> = rawPart ? { ...rawPart } : {}
+                    if (typeof part.id !== 'string') {
+                      if (typeof properties?.partID === 'string') {
+                        part.id = properties.partID
+                      } else if (typeof properties?.id === 'string') {
+                        part.id = properties.id
+                      }
+                    }
+                    if (typeof part.type !== 'string') {
+                      part.type = typeof properties?.partType === 'string' ? properties.partType : 'text'
+                    }
+                    if (typeof part.messageID !== 'string') {
+                      part.messageID = partMessageId
+                    }
+                    if (typeof part.sessionID !== 'string' && typeof eventSessionId === 'string') {
+                      part.sessionID = eventSessionId
+                    }
+
+                    sendEvent('part', { messageId: partMessageId, part, delta })
+
+                    if (!isAssistantPart) break
+
+                    promptAcknowledged = true
+                    assistantPartSeen = true
+
+                    const partType = typeof part.type === 'string' ? part.type : 'text'
+                    if (partType === 'reasoning') {
+                      emitStatus('reasoning')
+                    } else if (partType === 'text') {
+                      emitStatus('writing')
+                    } else {
+                      emitStatus('thinking')
+                    }
+                    break
+                  }
+
                   case 'file.edited':
                   case 'file.created':
                   case 'file.deleted':
@@ -751,33 +860,32 @@ export async function POST(
                     break
 
                   default:
-                    console.log('[stream] Unhandled event type:', eventType)
+                    break
                 }
               } catch {
-                console.log('[stream] Failed to parse event:', eventData.substring(0, 100))
+                // Ignore malformed upstream event payloads.
               }
           }
         }
-        
+
         reader.releaseLock()
-        
+
       } catch (error) {
-        console.log('[stream] Error:', error)
-        sendEvent('error', { 
-          error: error instanceof Error ? error.message : 'Unknown error' 
-        })
+        if (!aborted && !request.signal.aborted && !isAbortError(error)) {
+          sendEvent('error', {
+            error: error instanceof Error ? error.message : 'Unknown error'
+          })
+        }
       } finally {
-        // Always clean up the OpenCode event reader to release the HTTP
-        // connection, even when an enqueue error skipped releaseLock above.
+        request.signal.removeEventListener('abort', handleAbort)
         if (eventReader) {
           await eventReader.cancel().catch(() => undefined)
         }
-        console.log('[stream] Closing stream')
         try { controller.close() } catch { /* already closed/errored */ }
       }
     }
   })
-  
+
   return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
@@ -786,4 +894,5 @@ export async function POST(
       'X-Accel-Buffering': 'no'
     }
   })
-}
+  },
+)

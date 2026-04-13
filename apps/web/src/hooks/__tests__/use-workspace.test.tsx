@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useWorkspace } from "@/hooks/use-workspace";
 import type { WorkspaceMessage } from "@/lib/opencode/types";
+import { WORKSPACE_CONFIG_STATUS_CHANGED_EVENT } from "@/lib/runtime/config-status-events";
 
 const opencodeMocks = vi.hoisted(() => ({
   checkConnectionAction: vi.fn(),
   listSessionsAction: vi.fn(),
   createSessionAction: vi.fn(),
   deleteSessionAction: vi.fn(),
+  markAutopilotRunSeenAction: vi.fn(),
   updateSessionAction: vi.fn(),
   listMessagesAction: vi.fn(),
   abortSessionAction: vi.fn(),
@@ -31,8 +33,26 @@ const workspaceAgentMocks = vi.hoisted(() => ({
 vi.mock("@/actions/opencode", () => opencodeMocks);
 vi.mock("@/actions/workspace-agent", () => workspaceAgentMocks);
 
+function createStorageMock() {
+  let store: Record<string, string> = {};
+
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = value;
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+  };
+}
+
 function createPendingStreamBody() {
   let resolveRead: ((value: ReadableStreamReadResult<Uint8Array>) => void) | null = null;
+  let closed = false;
 
   return {
     body: {
@@ -40,12 +60,17 @@ function createPendingStreamBody() {
         return {
           read: () =>
             new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => {
+              if (closed) {
+                resolve({ done: true, value: undefined });
+                return;
+              }
               resolveRead = resolve;
             }),
         };
       },
     },
     close() {
+      closed = true;
       resolveRead?.({ done: true, value: undefined });
     },
   };
@@ -53,7 +78,10 @@ function createPendingStreamBody() {
 
 describe("useWorkspace", () => {
   beforeEach(() => {
+    vi.stubGlobal("localStorage", createStorageMock());
+    vi.stubGlobal("sessionStorage", createStorageMock());
     localStorage.clear();
+    sessionStorage.clear();
     opencodeMocks.checkConnectionAction.mockResolvedValue({ status: "connected" });
     opencodeMocks.listSessionsAction.mockResolvedValue({
       ok: true,
@@ -64,6 +92,7 @@ describe("useWorkspace", () => {
       session: { id: "s2", title: "Fresh", status: "active", updatedAt: "now" },
     });
     opencodeMocks.deleteSessionAction.mockResolvedValue({ ok: true });
+    opencodeMocks.markAutopilotRunSeenAction.mockResolvedValue({ ok: true });
     opencodeMocks.updateSessionAction.mockResolvedValue({ ok: true });
     opencodeMocks.listMessagesAction.mockImplementation(async (_slug: string, sessionId: string) => {
       if (sessionId === "s1") {
@@ -136,6 +165,15 @@ describe("useWorkspace", () => {
           };
         }
 
+        if (String(input) === "/api/u/alice/providers") {
+          return {
+            ok: true,
+            json: async () => ({
+              providers: [{ providerId: "openai", status: "enabled" }],
+            }),
+          };
+        }
+
         throw new Error(`Unexpected fetch: ${String(input)}`);
       })
     );
@@ -193,6 +231,624 @@ describe("useWorkspace", () => {
     expect(result.current.selectedModel?.modelId).toBe("gpt-5.2");
     expect(result.current.hasManualModelSelection).toBe(true);
     expect(result.current.agentDefaultModel?.modelId).toBe("gpt-5.4");
+  });
+
+  it("marks unseen autopilot results as seen when a deep-linked session becomes active", async () => {
+    opencodeMocks.listSessionsAction.mockResolvedValue({
+      ok: true,
+      sessions: [
+        {
+          id: "task-1-session",
+          title: "Autopilot | Daily brief | Apr 12",
+          status: "idle",
+          updatedAt: "now",
+          autopilot: {
+            runId: "run-1",
+            taskId: "task-1",
+            taskName: "Daily brief",
+            trigger: "schedule",
+            hasUnseenResult: true,
+          },
+        },
+      ],
+    });
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0, initialSessionId: "task-1-session" })
+    );
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("task-1-session");
+    });
+
+    await waitFor(() => {
+      expect(opencodeMocks.markAutopilotRunSeenAction).toHaveBeenCalledWith("alice", "run-1");
+    });
+  });
+
+  it("sends the primary agent model when there is no manual selection", async () => {
+    let requestBody:
+      | {
+          model?: { providerId: string; modelId: string };
+        }
+      | null = null;
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  model: "openai/gpt-5.4",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/u/alice/providers") {
+          return {
+            ok: true,
+            json: async () => ({
+              providers: [{ providerId: "openai", status: "enabled" }],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/w/alice/chat/stream") {
+          requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+            model?: { providerId: string; modelId: string };
+          };
+
+          return {
+            ok: true,
+            body: {
+              getReader() {
+                return {
+                  read: async () => ({ done: true, value: undefined }),
+                };
+              },
+            },
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("s1");
+      expect(result.current.agentDefaultModel?.modelId).toBe("gpt-5.4");
+    });
+
+    await act(async () => {
+      await result.current.createSession("Fresh");
+    });
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("s2");
+      expect(result.current.hasManualModelSelection).toBe(false);
+    });
+
+    let accepted = false;
+    await act(async () => {
+      accepted = await result.current.sendMessage("Use default model");
+    });
+
+    expect(accepted).toBe(true);
+
+    await waitFor(() => {
+      expect(requestBody).not.toBeNull();
+    });
+
+    expect(requestBody?.model).toEqual({
+      providerId: "openai",
+      modelId: "gpt-5.4",
+    });
+  });
+
+  it("allows selecting a model before the first session exists", async () => {
+    let requestBody:
+      | {
+          model?: { providerId: string; modelId: string };
+        }
+      | null = null;
+
+    opencodeMocks.listSessionsAction.mockResolvedValue({
+      ok: true,
+      sessions: [],
+    });
+    opencodeMocks.createSessionAction.mockResolvedValue({
+      ok: true,
+      session: { id: "first", title: "Fresh", status: "active", updatedAt: "now" },
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  model: "openai/gpt-5.4",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/u/alice/providers") {
+          return {
+            ok: true,
+            json: async () => ({
+              providers: [{ providerId: "openai", status: "enabled" }],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/w/alice/chat/stream") {
+          requestBody = JSON.parse(String(init?.body ?? "{}")) as {
+            model?: { providerId: string; modelId: string };
+          };
+
+          return {
+            ok: true,
+            body: {
+              getReader() {
+                return {
+                  read: async () => ({ done: true, value: undefined }),
+                };
+              },
+            },
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBeNull();
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.4");
+    });
+
+    act(() => {
+      result.current.setSelectedModel({
+        providerId: "openai",
+        providerName: "OpenAI",
+        modelId: "gpt-5.2",
+        modelName: "GPT 5.2",
+        isDefault: true,
+      });
+    });
+
+    expect(result.current.selectedModel?.modelId).toBe("gpt-5.2");
+    expect(result.current.hasManualModelSelection).toBe(true);
+
+    let accepted = false;
+    await act(async () => {
+      accepted = await result.current.sendMessage("Use the preselected model");
+    });
+
+    expect(accepted).toBe(true);
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("first");
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.2");
+      expect(requestBody?.model).toEqual({
+        providerId: "openai",
+        modelId: "gpt-5.2",
+      });
+    });
+  });
+
+  it("clears the pre-session model selection after the first session consumes it", async () => {
+    const requestBodies: Array<{
+      model?: { providerId: string; modelId: string };
+    }> = [];
+
+    opencodeMocks.listSessionsAction.mockResolvedValue({
+      ok: true,
+      sessions: [],
+    });
+    opencodeMocks.createSessionAction
+      .mockResolvedValueOnce({
+        ok: true,
+        session: { id: "first", title: "Fresh", status: "active", updatedAt: "now" },
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        session: { id: "second", title: "Second", status: "active", updatedAt: "now" },
+      });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  model: "openai/gpt-5.4",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/u/alice/providers") {
+          return {
+            ok: true,
+            json: async () => ({
+              providers: [{ providerId: "openai", status: "enabled" }],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/w/alice/chat/stream") {
+          requestBodies.push(JSON.parse(String(init?.body ?? "{}")) as {
+            model?: { providerId: string; modelId: string };
+          });
+
+          return {
+            ok: true,
+            body: {
+              getReader() {
+                return {
+                  read: async () => ({ done: true, value: undefined }),
+                };
+              },
+            },
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBeNull();
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.4");
+    });
+
+    act(() => {
+      result.current.setSelectedModel({
+        providerId: "openai",
+        providerName: "OpenAI",
+        modelId: "gpt-5.2",
+        modelName: "GPT 5.2",
+        isDefault: true,
+      });
+    });
+
+    await act(async () => {
+      await result.current.sendMessage("Use the preselected model");
+    });
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("first");
+      expect(requestBodies[0]?.model).toEqual({
+        providerId: "openai",
+        modelId: "gpt-5.2",
+      });
+    });
+
+    await act(async () => {
+      await result.current.createSession("Second");
+    });
+
+    await waitFor(() => {
+      expect(result.current.activeSessionId).toBe("second");
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.4");
+      expect(result.current.hasManualModelSelection).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.sendMessage("Use the default model");
+    });
+
+    await waitFor(() => {
+      expect(requestBodies).toHaveLength(2);
+    });
+
+    expect(requestBodies[1]?.model).toEqual({
+      providerId: "openai",
+      modelId: "gpt-5.4",
+    });
+  });
+
+  it("preserves the pre-session model selection across session refreshes", async () => {
+    vi.useFakeTimers();
+
+    try {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [],
+      });
+
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 1000 })
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(result.current.activeSessionId).toBeNull();
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.4");
+
+      act(() => {
+        result.current.setSelectedModel({
+          providerId: "openai",
+          providerName: "OpenAI",
+          modelId: "gpt-5.2",
+          modelName: "GPT 5.2",
+          isDefault: true,
+        });
+      });
+
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.2");
+      expect(result.current.hasManualModelSelection).toBe(true);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(result.current.activeSessionId).toBeNull();
+      expect(result.current.selectedModel?.modelId).toBe("gpt-5.2");
+      expect(result.current.hasManualModelSelection).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reloads models when workspace config changes", async () => {
+    let providerRequestCount = 0;
+
+    opencodeMocks.listModelsAction
+      .mockResolvedValueOnce({
+        ok: true,
+        models: [
+          {
+            providerId: "openai",
+            providerName: "OpenAI",
+            modelId: "gpt-5.2",
+            modelName: "GPT 5.2",
+            isDefault: true,
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        models: [
+          {
+            providerId: "openai",
+            providerName: "OpenAI",
+            modelId: "gpt-5.2",
+            modelName: "GPT 5.2",
+            isDefault: true,
+          },
+          {
+            providerId: "anthropic",
+            providerName: "Anthropic",
+            modelId: "claude-sonnet-4",
+            modelName: "Claude Sonnet 4",
+            isDefault: false,
+          },
+        ],
+      });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  model: "openai/gpt-5.2",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/u/alice/providers") {
+          providerRequestCount += 1;
+          return {
+            ok: true,
+            json: async () => ({
+              providers:
+                providerRequestCount === 1
+                  ? [{ providerId: "openai", status: "enabled" }]
+                  : [
+                      { providerId: "openai", status: "enabled" },
+                      { providerId: "anthropic", status: "enabled" },
+                    ],
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.models).toHaveLength(1);
+      expect(result.current.models[0]?.providerId).toBe("openai");
+    });
+
+    act(() => {
+      window.dispatchEvent(new Event(WORKSPACE_CONFIG_STATUS_CHANGED_EVENT));
+    });
+
+    await waitFor(() => {
+      expect(
+        result.current.models.some(
+          (model) =>
+            model.providerId === "anthropic" && model.modelId === "claude-sonnet-4"
+        )
+      ).toBe(true);
+    });
+  });
+
+  it("keeps opencode models available when provider credentials are missing", async () => {
+    opencodeMocks.listModelsAction.mockResolvedValue({
+      ok: true,
+      models: [
+        {
+          providerId: "opencode",
+          providerName: "OpenCode",
+          modelId: "free-model",
+          modelName: "Free model",
+          isDefault: true,
+        },
+      ],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  model: "opencode/free-model",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/u/alice/providers") {
+          return {
+            ok: true,
+            json: async () => ({
+              providers: [{ providerId: "opencode", status: "missing" }],
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.models).toHaveLength(1);
+      expect(result.current.models[0]?.providerId).toBe("opencode");
+      expect(result.current.agentDefaultModel?.providerId).toBe("opencode");
+    });
+  });
+
+  it("resolves fireworks agent defaults to the canonical provider id", async () => {
+    opencodeMocks.listModelsAction.mockResolvedValue({
+      ok: true,
+      models: [
+        {
+          providerId: "fireworks",
+          providerName: "Fireworks AI",
+          modelId: "accounts/fireworks/models/glm-5",
+          modelName: "GLM-5",
+          isDefault: true,
+        },
+      ],
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  model: "fireworks/accounts/fireworks/models/glm-5",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        if (String(input) === "/api/u/alice/providers") {
+          return {
+            ok: true,
+            json: async () => ({
+              providers: [{ providerId: "fireworks", status: "enabled" }],
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspace({ slug: "alice", pollInterval: 0 })
+    );
+
+    await waitFor(() => {
+      expect(result.current.agentDefaultModel?.providerId).toBe("fireworks");
+    });
+
+    await act(async () => {
+      await result.current.createSession("Fresh");
+    });
+
+    await waitFor(() => {
+      expect(result.current.selectedModel?.providerId).toBe("fireworks");
+      expect(result.current.selectedModel?.modelId).toBe(
+        "accounts/fireworks/models/glm-5"
+      );
+    });
   });
 
   it("keeps the requested manual title when the OpenCode update response is stale", async () => {
@@ -596,6 +1252,14 @@ describe("useWorkspace", () => {
     });
 
     await waitFor(() => {
+      expect(result.current.isSending).toBe(false);
+    });
+
+    await act(async () => {
+      await result.current.refreshMessages();
+    });
+
+    await waitFor(() => {
       expect(result.current.messages.map((message) => message.content)).toEqual([
         "Investigate this",
         "Done now",
@@ -841,6 +1505,124 @@ describe("useWorkspace", () => {
 
     act(() => {
       stream.close();
+    });
+  });
+
+  describe("idle polling optimization", () => {
+    it("does not poll diffs when all sessions are idle", async () => {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [
+          { id: "s1", title: "First", status: "idle", updatedAt: "now" },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 200 })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.activeSessionId).toBe("s1");
+      });
+
+      opencodeMocks.getWorkspaceDiffsAction.mockClear();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+
+      expect(opencodeMocks.getWorkspaceDiffsAction).not.toHaveBeenCalled();
+    });
+
+    it("does not poll messages for the active session when it is idle", async () => {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [
+          { id: "s1", title: "First", status: "idle", updatedAt: "now" },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 200 })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.activeSessionId).toBe("s1");
+      });
+
+      opencodeMocks.listMessagesAction.mockClear();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+
+      expect(opencodeMocks.listMessagesAction).not.toHaveBeenCalled();
+    });
+
+    it("polls diffs and messages when a session is busy", async () => {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [
+          { id: "s1", title: "First", status: "busy", updatedAt: "now" },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 200 })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.activeSessionId).toBe("s1");
+      });
+
+      opencodeMocks.getWorkspaceDiffsAction.mockClear();
+      opencodeMocks.listMessagesAction.mockClear();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+
+      expect(opencodeMocks.getWorkspaceDiffsAction).toHaveBeenCalled();
+      expect(opencodeMocks.listMessagesAction).toHaveBeenCalledWith("alice", "s1");
+    });
+
+    it("polls messages only for busy sessions, not the idle active session", async () => {
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [
+          { id: "s1", title: "First", status: "idle", updatedAt: "now" },
+          { id: "s2", title: "Second", status: "busy", updatedAt: "now" },
+        ],
+      });
+
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 200 })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.activeSessionId).toBe("s1");
+      });
+
+      opencodeMocks.getWorkspaceDiffsAction.mockClear();
+      opencodeMocks.listMessagesAction.mockClear();
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+
+      // Diffs should be polled because s2 is busy
+      expect(opencodeMocks.getWorkspaceDiffsAction).toHaveBeenCalled();
+      // Messages for s2 (busy) should be polled
+      expect(opencodeMocks.listMessagesAction).toHaveBeenCalledWith("alice", "s2");
+      // Messages for s1 (idle active) should NOT be polled
+      const s1Calls = opencodeMocks.listMessagesAction.mock.calls.filter(
+        ([, sessionId]: [string, string]) => sessionId === "s1"
+      );
+      expect(s1Calls).toHaveLength(0);
     });
   });
 

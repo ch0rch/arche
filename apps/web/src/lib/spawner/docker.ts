@@ -1,6 +1,5 @@
-import { chmod, writeFile } from "fs/promises";
-import { join } from "path";
-import Docker from "dockerode";
+import { getUserDataHostPath, ensureUserDirectory } from "@/lib/user-data";
+import type { SkillBundle } from '@/lib/skills/types'
 import {
   getContainerSocketPath,
   getContainerProxyUrl,
@@ -9,76 +8,37 @@ import {
   getKbContentHostPath,
   getWorkspaceAgentPort,
 } from "./config";
-import { getUserDataHostPath, ensureUserDirectory } from "@/lib/user-data";
+import {
+  getDefaultWebRuntimeConfigContent,
+  parseRuntimeConfigContent,
+  serializeRuntimeConfig,
+} from "./runtime-config";
 
-const WORKSPACE_EDIT_DENY_RULES: Record<string, "deny"> = {
-  ".gitignore": "deny",
-  ".gitkeep": "deny",
-  "**/.gitkeep": "deny",
-  "opencode.json": "deny",
-  "AGENTS.md": "deny",
-  "agents.md": "deny",
-  "node_modules": "deny",
-  "node_modules/*": "deny",
-  "*/node_modules": "deny",
-  "*/node_modules/*": "deny",
-};
+type DockerConstructor = typeof import("dockerode");
+type DockerClient = InstanceType<DockerConstructor>;
 
-const WORKSPACE_BASH_DENY_RULES: Record<string, "deny"> = {
-  "*.gitignore*": "deny",
-  "*.gitkeep*": "deny",
-  "*opencode.json*": "deny",
-  "*AGENTS.md*": "deny",
-  "*agents.md*": "deny",
-  "npm install*": "deny",
-  "npm i*": "deny",
-  "npm ci*": "deny",
-  "npm init*": "deny",
-  "npm create*": "deny",
-  "pnpm install*": "deny",
-  "pnpm add*": "deny",
-  "pnpm init*": "deny",
-  "pnpm create*": "deny",
-  "yarn install*": "deny",
-  "yarn add*": "deny",
-  "yarn init*": "deny",
-  "yarn create*": "deny",
-  "bun install*": "deny",
-  "bun add*": "deny",
-  "bun init*": "deny",
-  "bun create*": "deny",
-};
-
-function mergePermissionRule(
-  current: unknown,
-  enforced: Record<string, "allow" | "ask" | "deny">
-): Record<string, unknown> {
-  if (typeof current === "string") {
-    return { "*": current, ...enforced };
+function importRuntimeModule<T>(specifier: string): Promise<T> {
+  if (process.env.VITEST) {
+    return import(specifier) as Promise<T>;
   }
 
-  if (current && typeof current === "object") {
-    return { ...(current as Record<string, unknown>), ...enforced };
-  }
-
-  return { ...enforced };
+  // SECURITY NOTE: Function() is used intentionally as a bundler bypass.
+  // Next.js/webpack statically analyzes import() calls and may fail to resolve
+  // dynamic specifiers at build time. The Function() constructor creates a scope
+  // where import() is opaque to the bundler, ensuring the module is loaded at
+  // runtime from node_modules. The specifier is NOT user-controlled — it is
+  // always a hardcoded package name passed by callers within this module.
+  return Function("runtimeSpecifier", "return import(runtimeSpecifier)")(specifier) as Promise<T>;
 }
 
-function withWorkspacePermissionGuards(config: Record<string, unknown>): Record<string, unknown> {
-  const next = { ...config };
-  const permission =
-    next.permission && typeof next.permission === "object"
-      ? { ...(next.permission as Record<string, unknown>) }
-      : {};
-
-  permission.edit = mergePermissionRule(permission.edit, WORKSPACE_EDIT_DENY_RULES);
-  permission.bash = mergePermissionRule(permission.bash, WORKSPACE_BASH_DENY_RULES);
-
-  next.permission = permission;
-  return next;
+async function getDockerConstructor(): Promise<DockerConstructor> {
+  const dockerModule = await importRuntimeModule<typeof import("dockerode")>("dockerode");
+  const defaultExport = (dockerModule as { default?: DockerConstructor }).default;
+  return defaultExport ?? dockerModule;
 }
 
-function getContainerClient(): Docker {
+async function getContainerClient(): Promise<DockerClient> {
+  const Docker = await getDockerConstructor();
   const socketPath = getContainerSocketPath();
   if (socketPath) {
     return new Docker({ socketPath });
@@ -113,48 +73,22 @@ export async function createContainer(
   password: string,
   opencodeConfigContent?: string,
   agentsMd?: string,
+  skills?: SkillBundle[],
   gitAuthor?: { name: string; email?: string }
 ) {
-  const docker = getContainerClient();
-  await ensureImageExists(getOpencodeImage());
+  const docker = await getContainerClient();
   const containerName = `opencode-${slug}`;
   const volumeName = `arche-workspace-${slug}`;
   const opencodeShareVolumeName = `arche-opencode-share-${slug}`;
   const opencodeStateVolumeName = `arche-opencode-state-${slug}`;
 
-  // Configure provider base URLs to route through Arche's internal gateway.
-  // Auth is still managed at runtime via the OpenCode /auth endpoints.
-  const providerGatewayConfig = {
-    provider: {
-      openai: {
-        options: { baseURL: "http://web:3000/api/internal/providers/openai" },
-      },
-      anthropic: {
-        options: {
-          baseURL: "http://web:3000/api/internal/providers/anthropic",
-        },
-      },
-      openrouter: {
-        options: {
-          baseURL: "http://web:3000/api/internal/providers/openrouter",
-        },
-      },
-      opencode: {
-        options: {
-          baseURL: "http://web:3000/api/internal/providers/opencode",
-        },
-      },
-    },
-  };
+  const runtimeConfigContent = (() => {
+    if (!opencodeConfigContent) {
+      return getDefaultWebRuntimeConfigContent();
+    }
 
-  // Merge passed-in config (agents, MCP connectors, etc.) with provider gateway
-  const baseConfig = opencodeConfigContent
-    ? (JSON.parse(opencodeConfigContent) as Record<string, unknown>)
-    : {};
-  const mergedConfig = withWorkspacePermissionGuards({
-    ...baseConfig,
-    ...providerGatewayConfig,
-  });
+    return serializeRuntimeConfig(parseRuntimeConfigContent(opencodeConfigContent));
+  })();
 
   // Ensure volumes exist for persistent workspace and OpenCode state
   for (const name of [
@@ -164,8 +98,8 @@ export async function createContainer(
   ]) {
     try {
       await docker.createVolume({ Name: name });
-    } catch {
-      // Volume might already exist, ignore error
+    } catch (err) {
+      console.warn('[docker] Volume creation skipped (may already exist):', { name, error: err instanceof Error ? err.message : err })
     }
   }
 
@@ -182,6 +116,8 @@ export async function createContainer(
   // Persist runtime files in host user-data directory.
   // We mount files individually into /tmp inside the container so the workspace
   // can remain empty during init-workspace git bootstrap.
+  const { chmod, mkdir, rm, writeFile } = await importRuntimeModule<typeof import("fs/promises")>("fs/promises");
+  const { join } = await importRuntimeModule<typeof import("path")>("path");
   const userDataPath = getUserDataHostPath(slug);
   await ensureUserDirectory(slug);
 
@@ -190,18 +126,32 @@ export async function createContainer(
   const opencodeConfigPath = join(userDataPath, "opencode-config.json");
   await writeFile(
     opencodeConfigPath,
-    JSON.stringify(mergedConfig),
+    runtimeConfigContent,
     "utf-8"
   );
   await chmod(opencodeConfigPath, 0o644);
-  binds.push(`${opencodeConfigPath}:/tmp/arche-user-data/opencode-config.json:ro`);
 
+  const agentsPath = join(userDataPath, 'AGENTS.md')
   if (agentsMd) {
-    const agentsPath = join(userDataPath, "AGENTS.md");
     await writeFile(agentsPath, agentsMd, "utf-8");
     await chmod(agentsPath, 0o644);
-    binds.push(`${agentsPath}:/tmp/arche-user-data/AGENTS.md:ro`);
+  } else {
+    await rm(agentsPath, { force: true }).catch(() => {})
   }
+
+  const skillsDir = join(userDataPath, 'skills')
+  await rm(skillsDir, { recursive: true, force: true }).catch(() => {})
+  for (const skill of skills ?? []) {
+    const skillDir = join(skillsDir, skill.skill.frontmatter.name)
+    await mkdir(skillDir, { recursive: true })
+    for (const file of skill.files) {
+      const filePath = join(skillDir, file.path)
+      await mkdir(join(skillDir, file.path.split('/').slice(0, -1).join('/')), { recursive: true })
+      await writeFile(filePath, Buffer.from(file.content))
+    }
+  }
+
+  binds.push(`${userDataPath}:/tmp/arche-user-data:ro`);
 
   const env = [
     `OPENCODE_SERVER_PASSWORD=${password}`,
@@ -211,6 +161,7 @@ export async function createContainer(
     // Force HOME/XDG to mounted /home/workspace paths so session data persists.
     `HOME=/home/workspace`,
     `XDG_DATA_HOME=/home/workspace/.local/share`,
+    `XDG_CONFIG_HOME=/home/workspace/.config`,
     `XDG_STATE_HOME=/home/workspace/.local/state`,
     `WORKSPACE_AGENT_PORT=${getWorkspaceAgentPort()}`,
     `WORKSPACE_GIT_AUTHOR_NAME=${gitAuthor?.name ?? slug}`,
@@ -237,25 +188,25 @@ export async function createContainer(
 }
 
 export async function startContainer(containerId: string): Promise<void> {
-  const docker = getContainerClient();
+  const docker = await getContainerClient();
   const container = docker.getContainer(containerId);
   await container.start();
 }
 
 export async function stopContainer(containerId: string): Promise<void> {
-  const docker = getContainerClient();
+  const docker = await getContainerClient();
   const container = docker.getContainer(containerId);
   await container.stop({ t: 10 });
 }
 
 export async function removeContainer(containerId: string): Promise<void> {
-  const docker = getContainerClient();
+  const docker = await getContainerClient();
   const container = docker.getContainer(containerId);
   await container.remove({ force: true });
 }
 
 export async function inspectContainer(containerId: string) {
-  const docker = getContainerClient();
+  const docker = await getContainerClient();
   const container = docker.getContainer(containerId);
   return container.inspect();
 }
@@ -295,7 +246,8 @@ export async function isOpencodeHealthy(containerId: string): Promise<boolean> {
     // Parse the health response
     const data = JSON.parse(result.stdout);
     return data.healthy === true;
-  } catch {
+  } catch (err) {
+    console.warn('[docker] Health check failed:', { containerId, error: err instanceof Error ? err.message : err });
     return false;
   }
 }
@@ -315,7 +267,7 @@ export async function execInContainer(
   cmd: string[],
   options: { workingDir?: string; timeout?: number } = {}
 ): Promise<ExecResult> {
-  const docker = getContainerClient();
+  const docker = await getContainerClient();
   const container = docker.getContainer(containerId);
 
   const exec = await container.exec({
@@ -378,8 +330,8 @@ export async function execInContainer(
             stdout,
             stderr,
           });
-        } catch {
-          // If we can't inspect, assume success if we got output
+        } catch (inspectErr) {
+          console.warn('[docker] exec.inspect() failed, assuming exit code 0:', inspectErr instanceof Error ? inspectErr.message : inspectErr);
           resolve({ exitCode: 0, stdout, stderr });
         }
       });

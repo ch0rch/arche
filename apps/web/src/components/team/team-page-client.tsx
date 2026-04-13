@@ -15,6 +15,7 @@ type TeamPageClientProps = {
   slug: string
   isAdmin: boolean
   currentUserId: string | null
+  canManageUsers: boolean
 }
 
 function formatCreatedAt(value: string): string {
@@ -30,7 +31,12 @@ function formatCreatedAt(value: string): string {
   })
 }
 
-export function TeamPageClient({ slug, isAdmin, currentUserId }: TeamPageClientProps) {
+export function TeamPageClient({
+  slug,
+  isAdmin,
+  currentUserId,
+  canManageUsers,
+}: TeamPageClientProps) {
   const [users, setUsers] = useState<TeamUser[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -102,14 +108,14 @@ export function TeamPageClient({ slug, isAdmin, currentUserId }: TeamPageClientP
       <div className="space-y-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-2">
-            <h1 className="font-[family-name:var(--font-display)] text-3xl font-semibold tracking-tight">
+            <h1 className="type-display text-3xl font-semibold tracking-tight">
               Team
             </h1>
             <p className="text-muted-foreground">
               Directory of all users in this Arche installation.
             </p>
           </div>
-          {isAdmin ? (
+          {isAdmin && canManageUsers ? (
             <Button variant="outline" onClick={() => setIsCreateDialogOpen(true)}>Add user</Button>
           ) : null}
         </div>
@@ -176,7 +182,7 @@ export function TeamPageClient({ slug, isAdmin, currentUserId }: TeamPageClientP
           </div>
         ) : null}
 
-        {isAdmin ? (
+        {isAdmin && canManageUsers ? (
           <CreateUserDialog
             open={isCreateDialogOpen}
             slug={slug}
@@ -190,6 +196,7 @@ export function TeamPageClient({ slug, isAdmin, currentUserId }: TeamPageClientP
             open={isEditDialogOpen}
             slug={slug}
             user={editingUser}
+            canManageUsers={canManageUsers}
             onOpenChange={handleEditOpenChange}
             onUserUpdated={handleUserUpdated}
             onUserDeleted={handleUserDeleted}

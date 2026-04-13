@@ -3,6 +3,7 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { stubBrowserStorage } from "@/__tests__/storage";
 import { useWorkspace } from "@/hooks/use-workspace";
 
 // ---------------------------------------------------------------------------
@@ -14,6 +15,7 @@ const opencodeMocks = vi.hoisted(() => ({
   listSessionsAction: vi.fn(),
   createSessionAction: vi.fn(),
   deleteSessionAction: vi.fn(),
+  markAutopilotRunSeenAction: vi.fn(),
   updateSessionAction: vi.fn(),
   listMessagesAction: vi.fn(),
   abortSessionAction: vi.fn(),
@@ -159,6 +161,7 @@ async function renderConnectedHook(options?: { pollInterval?: number }) {
 
 describe("useWorkspace streaming", () => {
   beforeEach(() => {
+    stubBrowserStorage();
     localStorage.clear();
     setupDefaultMocks();
   });
@@ -212,6 +215,55 @@ describe("useWorkspace streaming", () => {
       // After stream + reconciliation, status returns to ready
       await waitFor(() => {
         expect(result.current.isSending).toBe(false);
+      });
+    });
+
+    it("releases isSending after done even if the final refresh hangs", async () => {
+      const sse = createSSEStream();
+      stubFetchWithStream(() => sse);
+
+      const result = await renderConnectedHook({ pollInterval: 60_000 });
+
+      opencodeMocks.listMessagesAction.mockImplementation(
+        () => new Promise(() => undefined)
+      );
+
+      await act(async () => {
+        await result.current.sendMessage("hello");
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSending).toBe(true);
+      });
+
+      act(() => {
+        sse.push(
+          sseEvent("message", {
+            id: "assistant-1",
+            role: "assistant",
+          })
+        );
+        sse.push(
+          sseEvent("part", {
+            messageId: "assistant-1",
+            part: {
+              id: "part-1",
+              type: "text",
+              text: "hello back",
+              messageID: "assistant-1",
+            },
+            delta: "hello back",
+          })
+        );
+        sse.push(sseEvent("done", {}));
+        sse.close();
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSending).toBe(false);
+        const assistant = result.current.messages.find((message) => message.role === "assistant");
+        expect(assistant?.content).toContain("hello back");
+        expect(assistant?.pending).toBe(false);
       });
     });
 
@@ -509,6 +561,7 @@ describe("useWorkspace streaming", () => {
         sse.close();
       });
     });
+
   });
 
   // -----------------------------------------------------------------------
@@ -815,6 +868,108 @@ describe("useWorkspace streaming", () => {
 
       act(() => { sse.close(); });
     });
+
+    it("parses split part and done events across stream reads", async () => {
+      const sse = createSSEStream();
+      stubFetchWithStream(() => sse);
+
+      const result = await renderConnectedHook();
+
+      await act(async () => {
+        await result.current.sendMessage("hello");
+      });
+
+      act(() => {
+        sse.push(
+          sseEvent("message", {
+            id: "assistant-1",
+            role: "assistant",
+          })
+        );
+        sse.push("event:part\n");
+        sse.push(
+          `data:${JSON.stringify({
+            messageId: "assistant-1",
+            part: {
+              id: "part-1",
+              type: "text",
+              text: "hello back",
+              messageID: "assistant-1",
+            },
+            delta: "hello back",
+          })}\n\n`
+        );
+        sse.push("event:done\n");
+        sse.push(`data:${JSON.stringify({ refresh: true })}\n\n`);
+        sse.close();
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSending).toBe(false);
+        const assistant = result.current.messages.find((m) => m.role === "assistant");
+        expect(assistant?.content).toContain("hello back");
+      });
+    });
+
+    it("streams delta-only text updates progressively", async () => {
+      const sse = createSSEStream();
+      stubFetchWithStream(() => sse);
+
+      const result = await renderConnectedHook();
+
+      await act(async () => {
+        await result.current.sendMessage("hello");
+      });
+
+      act(() => {
+        sse.push(
+          sseEvent("message", {
+            id: "assistant-1",
+            role: "assistant",
+          })
+        );
+        sse.push(
+          sseEvent("part", {
+            messageId: "assistant-1",
+            part: {
+              id: "part-1",
+              type: "text",
+              text: "",
+              messageID: "assistant-1",
+            },
+            delta: "hello ",
+          })
+        );
+      });
+
+      await waitFor(() => {
+        const assistant = result.current.messages.find((m) => m.role === "assistant");
+        expect(assistant?.content).toContain("hello ");
+      });
+
+      act(() => {
+        sse.push(
+          sseEvent("part", {
+            messageId: "assistant-1",
+            part: {
+              id: "part-1",
+              type: "text",
+              text: "",
+              messageID: "assistant-1",
+            },
+            delta: { text: "world" },
+          })
+        );
+        sse.push(sseEvent("done", {}));
+        sse.close();
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSending).toBe(false);
+        const assistant = result.current.messages.find((m) => m.role === "assistant");
+        expect(assistant?.content).toContain("hello world");
+      });
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -1038,6 +1193,12 @@ describe("useWorkspace streaming", () => {
 
     it("polls for sessions and messages at the configured interval", async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
+
+      // Set up a busy session so polling refreshes messages
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [{ id: "s1", title: "Existing", status: "busy", updatedAt: "now" }],
+      });
       stubFetchWithStream(() => createSSEStream());
 
       await renderConnectedHook({ pollInterval: 2000 });
@@ -1451,7 +1612,7 @@ describe("useWorkspace streaming", () => {
         ],
       });
 
-      const sse = createSSEStream();
+      const openedStreams: Array<ReturnType<typeof createSSEStream>> = [];
       vi.stubGlobal(
         "fetch",
         vi.fn(async (input: RequestInfo | URL) => {
@@ -1459,7 +1620,9 @@ describe("useWorkspace streaming", () => {
             return { ok: true, json: async () => ({ agents: DEFAULT_AGENTS }) };
           }
           if (String(input) === "/api/w/alice/chat/stream") {
-            return { ok: true, body: sse };
+            const stream = createSSEStream();
+            openedStreams.push(stream);
+            return { ok: true, body: stream };
           }
           throw new Error(`Unexpected fetch: ${String(input)}`);
         })
@@ -1474,7 +1637,9 @@ describe("useWorkspace streaming", () => {
       });
 
       // Close the stream without any assistant data (simulates timeout/disconnect)
-      act(() => { sse.close(); });
+      act(() => {
+        openedStreams[0]?.close();
+      });
 
       // Wait for finally block to run
       await act(async () => {

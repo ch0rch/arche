@@ -14,6 +14,7 @@ type SessionsPanelProps = {
   unseenCompletedSessions: ReadonlySet<string>;
   onSelectSession: (id: string) => void;
   onCreateSession: () => void;
+  kind?: "chats" | "tasks";
   query?: string;
 };
 
@@ -23,13 +24,15 @@ export function SessionsPanel({
   unseenCompletedSessions,
   onSelectSession,
   onCreateSession,
+  kind = "chats",
   query = "",
 }: SessionsPanelProps) {
   const normalizedQuery = query.trim().toLowerCase();
   const filteredSessions = useMemo(() => {
     if (!normalizedQuery) return sessions;
     return sessions.filter((session) =>
-      session.title.toLowerCase().includes(normalizedQuery)
+      session.title.toLowerCase().includes(normalizedQuery) ||
+      session.autopilot?.taskName.toLowerCase().includes(normalizedQuery)
     );
   }, [normalizedQuery, sessions]);
 
@@ -38,16 +41,29 @@ export function SessionsPanel({
     [filteredSessions]
   );
 
+  const getIndicatorClassName = (session: WorkspaceSession): string | null => {
+    if (session.status === "busy") return "text-amber-400";
+    if (session.status === "error") return "text-red-400";
+    if (session.autopilot?.hasUnseenResult) return "text-green-400";
+    if (unseenCompletedSessions.has(session.id)) return "text-green-400";
+    return null;
+  };
+
+  const emptyLabel = kind === "tasks" ? "No tasks yet" : "No chats yet";
+  const emptySearchLabel = kind === "tasks" ? "No tasks found" : "No chats found";
+
   if (sessions.length === 0) {
     return (
       <div className="flex flex-1 items-center justify-center px-4">
         <div className="flex flex-col items-center justify-center gap-2 text-center">
           <ChatCircle size={24} weight="bold" className="text-muted-foreground/50" />
-          <p className="text-xs text-muted-foreground">No chats yet</p>
-          <Button size="sm" className="h-7 px-2 text-xs" onClick={onCreateSession}>
-            <Plus size={12} weight="bold" className="mr-1" />
-            New chat
-          </Button>
+          <p className="text-xs text-muted-foreground">{emptyLabel}</p>
+          {kind === "chats" ? (
+            <Button size="sm" className="h-7 px-2 text-xs" onClick={onCreateSession}>
+              <Plus size={12} weight="bold" className="mr-1" />
+              New chat
+            </Button>
+          ) : null}
         </div>
       </div>
     );
@@ -56,12 +72,14 @@ export function SessionsPanel({
   if (filteredSessions.length === 0) {
     return (
       <div className="flex flex-1 flex-col">
-        <div className="px-3 pt-3 pb-2">
-          <Button size="sm" className="w-full" onClick={onCreateSession}><Plus size={14} weight="bold" className="mr-1.5" />New chat</Button>
-        </div>
+        {kind === "chats" ? (
+          <div className="px-3 pb-2 pt-3">
+            <Button size="sm" className="w-full" onClick={onCreateSession}><Plus size={14} weight="bold" className="mr-1.5" />New chat</Button>
+          </div>
+        ) : null}
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
           <ChatCircle size={24} weight="bold" className="text-muted-foreground/50" />
-          <p className="text-xs text-muted-foreground">No chats found</p>
+          <p className="text-xs text-muted-foreground">{emptySearchLabel}</p>
         </div>
       </div>
     );
@@ -75,39 +93,67 @@ export function SessionsPanel({
             {bucket.label}
           </div>
           <div className="space-y-0.5">
-            {bucket.items.map((session) => (
-              <button
-                key={session.id}
-                type="button"
-                onClick={() => onSelectSession(session.id)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors",
-                  "hover:bg-foreground/5",
-                  activeSessionId === session.id
-                    ? "bg-primary/10 text-primary"
-                    : "text-foreground/80"
-                )}
-              >
-                <Circle
-                  size={8}
-                  weight="fill"
+            {bucket.items.map((session) => {
+              const indicatorClassName = getIndicatorClassName(session);
+              const hasIndicator = indicatorClassName !== null;
+              const primaryTitle =
+                kind === "tasks" && session.autopilot
+                  ? session.autopilot.taskName
+                  : session.title;
+              const secondaryLabel =
+                kind === "tasks" && session.autopilot && session.title !== session.autopilot.taskName
+                  ? session.title
+                  : session.autopilot && kind !== "tasks"
+                    ? session.autopilot.taskName
+                    : null;
+
+              return (
+                <button
+                  key={session.id}
+                  type="button"
+                  onClick={() => onSelectSession(session.id)}
                   className={cn(
-                    "shrink-0",
-                    session.status === "busy"
-                      ? "text-amber-400"
-                      : session.status === "error"
-                        ? "text-red-400"
-                        : unseenCompletedSessions.has(session.id)
-                          ? "text-green-400"
-                          : "text-muted-foreground/40"
+                    "group/session flex w-full items-center gap-0 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors",
+                    "hover:bg-foreground/5",
+                    activeSessionId === session.id
+                      ? "bg-primary/10 text-primary"
+                      : "text-foreground/80"
                   )}
-                />
-                <span className="flex-1 truncate font-medium">{session.title}</span>
-                <span className="shrink-0 text-[11px] text-muted-foreground/60">
-                  {session.updatedAt}
-                </span>
-              </button>
-            ))}
+                >
+                  <span
+                    aria-hidden
+                    className={cn(
+                      "overflow-hidden transition-[width,margin,opacity] duration-200 ease-out",
+                      hasIndicator ? "mr-2 w-2 opacity-100" : "mr-0 w-0 opacity-0"
+                    )}
+                  >
+                    <Circle
+                      size={8}
+                      weight="fill"
+                      className={cn("shrink-0", indicatorClassName ?? "text-transparent")}
+                    />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2">
+                      <span className="truncate font-medium">{primaryTitle}</span>
+                      {session.autopilot && kind !== "tasks" ? (
+                        <span className="shrink-0 rounded-full border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-primary">
+                          Auto
+                        </span>
+                      ) : null}
+                    </span>
+                    {secondaryLabel ? (
+                      <span className="block truncate text-[11px] text-muted-foreground/70">
+                        {secondaryLabel}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="max-w-0 shrink-0 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground/60 opacity-0 transition-all duration-200 group-hover/session:max-w-24 group-hover/session:opacity-100">
+                    {session.updatedAt}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
       ))}

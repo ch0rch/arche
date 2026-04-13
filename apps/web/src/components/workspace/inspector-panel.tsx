@@ -6,7 +6,6 @@ import {
   ArrowLineRight,
   CaretLeft,
   CaretRight,
-  DownloadSimple,
   File,
   GitDiff,
   X,
@@ -40,6 +39,7 @@ type WorkspaceFile = {
 type InspectorPanelProps = {
   slug: string;
   activeTab: "preview" | "review";
+  workspaceAgentEnabled?: boolean;
   onTabChange: (tab: "preview" | "review") => void;
   rightCollapsed: boolean;
   onToggleRight: () => void;
@@ -53,7 +53,7 @@ type InspectorPanelProps = {
   isLoadingDiffs?: boolean;
   diffsError?: string | null;
   onOpenFile: (path: string) => void;
-  onDownloadFile?: (path: string) => void;
+  internalLinkPaths?: string[];
   onReloadFile?: (path: string) => Promise<void>;
   onSaveFile?: (
     path: string,
@@ -63,6 +63,7 @@ type InspectorPanelProps = {
   onDiscardFileChanges?: (path: string) => Promise<{ ok: true } | { ok: false; error: string }>;
   onPublish?: () => void;
   onResolveConflict?: (path: string, content: string) => void;
+  hideCollapseButton?: boolean;
 };
 
 // --- Minified (collapsed) panel ---
@@ -98,19 +99,19 @@ function MinifiedInspectorPanel({
 
         <div className="my-2 h-px w-6 bg-border/40" />
 
-        {/* Working context */}
+        {/* Files */}
         <Tooltip>
           <TooltipTrigger asChild>
             <button
               type="button"
               onClick={() => { onToggleRight(); onTabChange("preview"); }}
               className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-foreground/5 hover:text-foreground"
-              aria-label="Working context"
+              aria-label="Files"
             >
               <File size={16} weight="bold" />
             </button>
           </TooltipTrigger>
-          <TooltipContent side="left">Working context</TooltipContent>
+          <TooltipContent side="left">Files</TooltipContent>
         </Tooltip>
 
         {/* Review with badge */}
@@ -142,6 +143,7 @@ function MinifiedInspectorPanel({
 export function InspectorPanel({
   slug,
   activeTab,
+  workspaceAgentEnabled = true,
   onTabChange,
   rightCollapsed,
   onToggleRight,
@@ -154,12 +156,13 @@ export function InspectorPanel({
   isLoadingDiffs,
   diffsError,
   onOpenFile,
-  onDownloadFile,
+  internalLinkPaths,
   onReloadFile,
   onSaveFile,
   onDiscardFileChanges,
   onPublish,
-  onResolveConflict
+  onResolveConflict,
+  hideCollapseButton = false,
 }: InspectorPanelProps) {
   // Minified state
   if (rightCollapsed) {
@@ -177,6 +180,7 @@ export function InspectorPanel({
     <ExpandedInspectorPanel
       slug={slug}
       activeTab={activeTab}
+      workspaceAgentEnabled={workspaceAgentEnabled}
       onTabChange={onTabChange}
       onToggleRight={onToggleRight}
       pendingDiffsForBadge={pendingDiffsForBadge}
@@ -188,12 +192,13 @@ export function InspectorPanel({
       isLoadingDiffs={isLoadingDiffs}
       diffsError={diffsError}
       onOpenFile={onOpenFile}
-      onDownloadFile={onDownloadFile}
+      internalLinkPaths={internalLinkPaths}
       onReloadFile={onReloadFile}
       onSaveFile={onSaveFile}
       onDiscardFileChanges={onDiscardFileChanges}
       onPublish={onPublish}
       onResolveConflict={onResolveConflict}
+      hideCollapseButton={hideCollapseButton}
     />
   );
 }
@@ -201,6 +206,7 @@ export function InspectorPanel({
 function ExpandedInspectorPanel({
   slug,
   activeTab,
+  workspaceAgentEnabled = true,
   onTabChange,
   onToggleRight,
   openFiles,
@@ -211,12 +217,13 @@ function ExpandedInspectorPanel({
   isLoadingDiffs,
   diffsError,
   onOpenFile,
-  onDownloadFile,
+  internalLinkPaths = [],
   onReloadFile,
   onSaveFile,
   onDiscardFileChanges,
   onPublish,
-  onResolveConflict
+  onResolveConflict,
+  hideCollapseButton = false,
 }: Omit<InspectorPanelProps, "rightCollapsed" | "onOpenReview">) {
   const pendingDiffs = diffs.length;
   const activeFile = openFiles.find((f) => f.path === activeFilePath) ?? null;
@@ -261,6 +268,7 @@ function ExpandedInspectorPanel({
   const activeDraft = activeFile
     ? getDraft(activeFile.path, activeFile.content)
     : null;
+  const canEditMarkdown = workspaceAgentEnabled && Boolean(onSaveFile);
   const activeSaveState: SaveState = activeFile
     ? getSaveState(activeFile.path)
     : "idle";
@@ -300,17 +308,76 @@ function ExpandedInspectorPanel({
 
   const isReviewActive = activeTab === "review";
 
-  const handleToggleReview = useCallback(() => {
-    onTabChange(isReviewActive ? "preview" : "review");
-  }, [isReviewActive, onTabChange]);
-
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="flex h-full flex-col overflow-hidden bg-foreground/[0.03] py-2 pr-2 text-card-foreground">
-      {/* Single top bar: file tabs (left) + action buttons (right) */}
-      <div className="flex min-h-11 shrink-0 items-center">
-        {/* File tabs — scrollable, take available space */}
-        {activeTab === "preview" && openFiles.length > 0 ? (
+      <div className="flex h-full flex-col pr-0 text-card-foreground">
+      {/* Floating header — outside the main container */}
+      <div className="flex shrink-0 items-center gap-2 pb-3">
+        {workspaceAgentEnabled ? (
+          <div className="flex flex-1 justify-start">
+            <div className="inline-flex h-8 items-center rounded-lg bg-foreground/[0.06] p-0.5">
+              {/* Files segment */}
+              <button
+                type="button"
+                onClick={() => onTabChange("preview")}
+                className={cn(
+                  "relative flex h-7 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-all",
+                  !isReviewActive
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                aria-pressed={!isReviewActive}
+              >
+                <File size={13} weight={!isReviewActive ? "fill" : "bold"} />
+                Files
+              </button>
+
+              {/* Review segment */}
+              <button
+                type="button"
+                onClick={() => onTabChange("review")}
+                className={cn(
+                  "relative flex h-7 items-center gap-1.5 rounded-md px-3 text-xs font-medium transition-all",
+                  isReviewActive
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                aria-pressed={isReviewActive}
+              >
+                <GitDiff size={13} weight={isReviewActive ? "fill" : "bold"} />
+                Review
+                {pendingDiffs > 0 && !isReviewActive ? (
+                  <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                    {pendingDiffs > 99 ? "99+" : pendingDiffs}
+                  </span>
+                ) : null}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="min-w-0 flex-1 pl-2">
+            <p className="text-sm font-medium text-foreground">Files</p>
+          </div>
+        )}
+
+        {/* Collapse panel */}
+        {!hideCollapseButton && (
+          <button
+            type="button"
+            onClick={onToggleRight}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
+            aria-label="Collapse panel"
+          >
+            <ArrowLineRight size={14} weight="bold" />
+          </button>
+        )}
+      </div>
+
+      {/* Main container */}
+      <div className="flex flex-1 min-h-0 flex-col overflow-hidden rounded-xl border border-border/40 bg-foreground/[0.03]">
+      {/* File tabs row — only in Files mode with open files */}
+      {activeTab === "preview" && openFiles.length > 0 && (
+        <div className="flex min-h-9 shrink-0 items-center pt-2">
           <div className="flex min-w-0 flex-1 items-center">
             {canScrollLeft && (
               <Button
@@ -318,7 +385,7 @@ function ExpandedInspectorPanel({
                 variant="ghost"
                 className="h-7 w-7 shrink-0"
                 onClick={() => scrollTabs("left")}
-                aria-label="Scroll izquierda"
+                aria-label="Scroll left"
               >
                 <CaretLeft size={12} weight="bold" />
               </Button>
@@ -326,7 +393,7 @@ function ExpandedInspectorPanel({
 
             <div
               ref={tabsRef}
-              className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto pl-3 pr-2 py-2 scrollbar-none"
+              className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto pl-3 pr-2 py-1 scrollbar-none"
               style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
             >
               {openFiles.map((file) => (
@@ -336,7 +403,7 @@ function ExpandedInspectorPanel({
                     "group flex shrink-0 items-center gap-1 rounded-lg pl-2.5 pr-1 py-1 text-xs transition-colors",
                     file.path === activeFilePath
                       ? "bg-primary/10 text-primary"
-                      : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground"
+                      : "bg-foreground/[0.04] text-muted-foreground hover:bg-foreground/8 hover:text-foreground"
                   )}
                 >
                   <button
@@ -372,71 +439,22 @@ function ExpandedInspectorPanel({
                 variant="ghost"
                 className="h-7 w-7 shrink-0"
                 onClick={() => scrollTabs("right")}
-                aria-label="Scroll derecha"
+                aria-label="Scroll right"
               >
                 <CaretRight size={12} weight="bold" />
               </Button>
             )}
           </div>
-        ) : (
-          <div className="min-w-0 flex-1 pl-5 pr-3">
-            <p className="text-sm font-medium text-foreground">
-              {isReviewActive ? "Review mode" : "Working context"}
-            </p>
-          </div>
-        )}
 
-        {/* Action buttons — always visible, pinned right */}
-        <div className="flex shrink-0 items-center gap-1.5 pr-1">
-          {!isReviewActive && activeFile && onDownloadFile ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => onDownloadFile(activeFile.path)}
-                  className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-                  aria-label={`Download ${activeFile.title}`}
-                >
-                  <DownloadSimple size={14} weight="bold" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">Download file</TooltipContent>
-            </Tooltip>
-          ) : null}
-
-          {/* Review toggle */}
-          <button
-            type="button"
-            onClick={handleToggleReview}
-            className={cn(
-              "relative flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-colors",
-              isReviewActive
-                ? "bg-primary text-primary-foreground"
-                : "bg-primary/10 text-primary hover:bg-primary/20"
-            )}
-            aria-label={isReviewActive ? "Back to files" : "Review"}
-            aria-pressed={isReviewActive}
-          >
-            <GitDiff size={13} weight={isReviewActive ? "fill" : "bold"} />
-            Review
-            {pendingDiffs > 0 && !isReviewActive ? (
-              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
-                {pendingDiffs > 99 ? "99+" : pendingDiffs}
-              </span>
-            ) : null}
-          </button>
-
-          {/* Collapse panel */}
-          <button
-            type="button"
-            onClick={onToggleRight}
-            className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-foreground/10 hover:text-foreground"
-            aria-label="Collapse panel"
-          >
-            <ArrowLineRight size={14} weight="bold" />
-          </button>
         </div>
-      </div>
+      )}
+
+      {/* Divider between tabs and content */}
+      {activeTab === "preview" && openFiles.length > 0 ? (
+        <div className="px-3 pt-2 pb-1">
+          <div className="h-px bg-border/40" />
+        </div>
+      ) : null}
 
       {/* Content area */}
       <div className="relative flex-1 min-h-0">
@@ -449,8 +467,9 @@ function ExpandedInspectorPanel({
               {/* File content */}
               {activeFile ? (
                 <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none">
-                  {activeFile.kind === "markdown" && activeDraft != null ? (
+                  {activeFile.kind === "markdown" && activeDraft != null && canEditMarkdown ? (
                     <MarkdownEditor
+                      key={activeFile.path}
                       value={activeDraft}
                       onChange={(next) =>
                         handleChange(activeFile.path, next, activeFile.content, activeFile.hash)
@@ -458,6 +477,8 @@ function ExpandedInspectorPanel({
                       saveState={activeSaveState}
                       saveError={activeSaveError}
                       modifiedAt={activeFile.updatedAt}
+                      internalLinkPaths={internalLinkPaths}
+                      onOpenInternalLink={onOpenFile}
                       onReload={onReloadFile ? () => void handleReload(activeFile.path) : undefined}
                     />
                   ) : (
@@ -489,23 +510,26 @@ function ExpandedInspectorPanel({
           )}
         </div>
 
-        <div
-          className={cn(
-            "absolute inset-0 overflow-y-auto scrollbar-none p-5",
-            activeTab !== "review" && "hidden"
-          )}
-        >
-          <ReviewPanel
-            slug={slug}
-            diffs={diffs}
-            isLoading={Boolean(isLoadingDiffs)}
-            error={diffsError ?? undefined}
-            onOpenFile={onOpenFile}
-            onDiscardFileChanges={onDiscardFileChanges}
-            onPublish={onPublish}
-            onResolveConflict={onResolveConflict}
-          />
-        </div>
+        {workspaceAgentEnabled && (
+          <div
+            className={cn(
+              "absolute inset-0 overflow-y-auto scrollbar-none p-5",
+              activeTab !== "review" && "hidden"
+            )}
+          >
+            <ReviewPanel
+              slug={slug}
+              diffs={diffs}
+              isLoading={Boolean(isLoadingDiffs)}
+              error={diffsError ?? undefined}
+              onOpenFile={onOpenFile}
+              onDiscardFileChanges={onDiscardFileChanges}
+              onPublish={onPublish}
+              onResolveConflict={onResolveConflict}
+            />
+          </div>
+        )}
+      </div>
       </div>
       </div>
     </TooltipProvider>

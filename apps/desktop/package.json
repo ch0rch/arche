@@ -1,0 +1,36 @@
+{
+  "name": "@arche/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Arche Desktop — local AI workspace",
+  "author": "Peaberry Studio",
+  "main": "dist/main.js",
+  "scripts": {
+    "prepare:runtime": "bash ../../scripts/prepare-desktop-runtime.sh",
+    "dev": "pnpm prepare:runtime && tsc && electron dist/main.js",
+    "build": "tsc",
+    "test": "pnpm build && node --test tests/create-vault.test.js tests/desktop-encryption-key.test.js tests/desktop-next-dist.test.js tests/runtime-supervisor.test.js tests/runtime-binaries.test.js tests/runtime-network.test.js tests/vault-manifest.test.js tests/vault-registry.test.js tests/vault-lock.test.js tests/vault-layout.test.js tests/vault-launch.test.js",
+    "start": "electron dist/main.js",
+    "pack": "pnpm prepare:runtime && electron-builder --dir --config electron-builder.config.js",
+    "dist": "pnpm prepare:runtime && electron-builder --config electron-builder.config.js",
+    "dist:mac": "pnpm prepare:runtime && electron-builder --mac --config electron-builder.config.js",
+    "dist:linux": "pnpm prepare:runtime && electron-builder --linux --config electron-builder.config.js",
+    "dist:win": "pnpm prepare:runtime && electron-builder --win --config electron-builder.config.js"
+  },
+  "dependencies": {
+    "dugite": "^3.2.1",
+    "electron-is-dev": "^3.0.1"
+  },
+  "devDependencies": {
+    "electron": "^35.1.2",
+    "electron-builder": "^26.0.12",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "dugite",
+      "electron"
+    ]
+  },
+  "packageManager": "pnpm@10.32.1+sha512.a706938f0e89ac1456b6563eab4edf1d1faf3368d1191fc5c59790e96dc918e4456ab2e67d613de1043d2e8c81f87303e6b40d4ffeca9df15ef1ad567348f2be"
+}

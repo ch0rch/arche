@@ -1,7 +1,10 @@
-import { cookies } from 'next/headers'
+import { redirect } from 'next/navigation'
 
 import { TeamPageClient } from '@/components/team/team-page-client'
-import { getSessionFromToken, SESSION_COOKIE_NAME } from '@/lib/auth'
+import { getRuntimeCapabilities } from '@/lib/runtime/capabilities'
+import { getCurrentDesktopVault, getDesktopWorkspaceHref } from '@/lib/runtime/desktop/current-vault'
+import { isDesktop } from '@/lib/runtime/mode'
+import { getSession } from '@/lib/runtime/session'
 
 export default async function TeamPage({
   params
@@ -10,15 +13,24 @@ export default async function TeamPage({
 }) {
   const { slug } = await params
 
-  const cookieStore = await cookies()
-  const token = cookieStore.get(SESSION_COOKIE_NAME)?.value
-  const session = token ? await getSessionFromToken(token) : null
+  if (isDesktop()) {
+    const vault = getCurrentDesktopVault()
+    if (!vault) {
+      redirect('/')
+    }
+
+    redirect(getDesktopWorkspaceHref('local', 'providers'))
+  }
+
+  const session = await getSession()
+  const caps = getRuntimeCapabilities()
 
   return (
     <TeamPageClient
       slug={slug}
       isAdmin={session?.user.role === 'ADMIN'}
       currentUserId={session?.user.id ?? null}
+      canManageUsers={caps.teamManagement}
     />
   )
 }

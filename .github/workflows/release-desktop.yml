@@ -1,0 +1,205 @@
+name: Release Desktop
+
+on:
+  # Temporarily disabled: releases are published locally only.
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: arm64
+          - runner: macos-13
+            arch: x64
+
+    runs-on: ${{ matrix.runner }}
+    environment: desktop-release-signing
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: infra/workspace-image/workspace-agent/go.mod
+
+      - name: Install web dependencies
+        working-directory: apps/web
+        run: pnpm install --frozen-lockfile
+
+      - name: Install desktop dependencies
+        working-directory: apps/desktop
+        env:
+          npm_config_arch: ${{ matrix.arch }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare runtime binaries
+        env:
+          NODE_RUNTIME_PLATFORM: ${{ matrix.arch == 'x64' && 'darwin-x64' || 'darwin-arm64' }}
+          OPENCODE_PLATFORM: ${{ matrix.arch == 'x64' && 'darwin-x64' || 'darwin-arm64' }}
+          WORKSPACE_AGENT_GOOS: darwin
+          WORKSPACE_AGENT_GOARCH: ${{ matrix.arch == 'x64' && 'amd64' || 'arm64' }}
+        run: bash scripts/prepare-desktop-runtime.sh
+
+      - name: Generate Prisma clients
+        working-directory: apps/web
+        run: |
+          pnpm prisma:generate
+          pnpm prisma:generate:desktop
+
+      - name: Build Next.js web app
+        working-directory: apps/web
+        env:
+          ARCHE_RUNTIME_MODE: desktop
+          ARCHE_DESKTOP_PLATFORM: darwin
+          ARCHE_DESKTOP_WEB_HOST: 127.0.0.1
+        run: pnpm build
+
+      - name: Compile Electron TypeScript
+        working-directory: apps/desktop
+        run: pnpm build
+
+      - name: Sync version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: apps/desktop
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e "
+            const pkg = require('./package.json');
+            pkg.version = '$VERSION';
+            require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "Desktop version set to $VERSION"
+
+      - name: Ad-hoc sign runtime binaries
+        working-directory: apps/desktop
+        run: |
+          # All Mach-O binaries bundled as extraResources must be signed
+          # before electron-builder packages them, otherwise macOS rejects
+          # the entire app bundle (error 3840).
+          for bin in bin/node bin/opencode bin/workspace-agent; do
+            if [ -f "$bin" ]; then
+              codesign --force --sign - "$bin"
+              echo "Signed $bin"
+            fi
+          done
+
+      - name: Package DMG
+        working-directory: apps/desktop
+        env:
+          # Secrets are passed via INPUT_* vars and conditionally exported
+          # below. Setting CSC_LINK to an empty string causes electron-builder
+          # to treat it as a file path and fail with "not a file".
+          INPUT_CSC_LINK: ${{ secrets.CSC_LINK }}
+          INPUT_CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          INPUT_APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          INPUT_APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          INPUT_APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          INPUT_APPLE_ID: ${{ secrets.APPLE_ID }}
+          INPUT_APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          INPUT_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          APPLE_API_KEY_FILE=""
+
+          cleanup() {
+            if [ -n "$APPLE_API_KEY_FILE" ] && [ -f "$APPLE_API_KEY_FILE" ]; then
+              rm -f "$APPLE_API_KEY_FILE"
+            fi
+          }
+
+          trap cleanup EXIT
+
+          # When a real signing certificate is provided, use it and prevent
+          # electron-builder from picking up unrelated keychain identities.
+          # Otherwise, let electron-builder fall back to proper ad-hoc signing
+          # so the app can be opened via "Allow Anyway" on macOS.
+          if [ -n "$INPUT_CSC_LINK" ]; then
+            export CSC_LINK="$INPUT_CSC_LINK"
+            export CSC_KEY_PASSWORD="$INPUT_CSC_KEY_PASSWORD"
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+          fi
+
+          # Prefer App Store Connect API keys over Apple ID credentials.
+          if [ -n "$INPUT_APPLE_API_KEY" ]; then
+            if [ -z "$INPUT_APPLE_API_KEY_ID" ] || [ -z "$INPUT_APPLE_API_ISSUER" ]; then
+              echo "::error::APPLE_API_KEY requires APPLE_API_KEY_ID and APPLE_API_ISSUER"
+              exit 1
+            fi
+
+            APPLE_API_KEY_FILE="$(mktemp)"
+            chmod 600 "$APPLE_API_KEY_FILE"
+            printf '%s' "$INPUT_APPLE_API_KEY" > "$APPLE_API_KEY_FILE"
+
+            export APPLE_API_KEY="$APPLE_API_KEY_FILE"
+            export APPLE_API_KEY_ID="$INPUT_APPLE_API_KEY_ID"
+            export APPLE_API_ISSUER="$INPUT_APPLE_API_ISSUER"
+          elif [ -n "$INPUT_APPLE_ID" ]; then
+            export APPLE_ID="$INPUT_APPLE_ID"
+            export APPLE_APP_SPECIFIC_PASSWORD="$INPUT_APPLE_APP_SPECIFIC_PASSWORD"
+            export APPLE_TEAM_ID="$INPUT_APPLE_TEAM_ID"
+          fi
+
+          pnpm exec electron-builder --mac --${{ matrix.arch }} --publish never --config electron-builder.config.js
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-macos-${{ matrix.arch }}
+          path: |
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v') && !cancelled()
+    needs: build-macos
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: desktop-macos-*
+          merge-multiple: true
+
+      - name: Verify release assets exist
+        run: |
+          shopt -s nullglob
+          dmgs=(artifacts/*.dmg)
+          zips=(artifacts/*.zip)
+          arm64_dmgs=(artifacts/*-arm64.dmg)
+          arm64_zips=(artifacts/*-arm64-mac.zip)
+
+          if [[ ${#dmgs[@]} -ne 2 || ${#zips[@]} -ne 2 || ${#arm64_dmgs[@]} -ne 1 || ${#arm64_zips[@]} -ne 1 ]]; then
+            echo "::error::Expected both arm64 and x64 DMG/ZIP assets before publishing"
+            exit 1
+          fi
+
+          echo "Found complete macOS release asset set:"
+          ls -lh artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          draft: false

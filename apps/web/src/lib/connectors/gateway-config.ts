@@ -11,13 +11,8 @@ export function getConnectorGatewayTokenSecret(): string {
     throw new Error('ARCHE_CONNECTOR_GATEWAY_TOKEN_SECRET (or ARCHE_GATEWAY_TOKEN_SECRET) is required in production')
   }
 
+  console.warn('[security] Using insecure development secret for connector gateway token. Set ARCHE_CONNECTOR_GATEWAY_TOKEN_SECRET (or ARCHE_GATEWAY_TOKEN_SECRET) env var.')
   return 'dev-insecure-connector-gateway-secret'
-}
-
-export function getConnectorGatewayTokenTtlSeconds(): number {
-  const raw = process.env.ARCHE_CONNECTOR_GATEWAY_TOKEN_TTL_SECONDS
-  const parsed = raw ? Number(raw) : NaN
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 86400
 }
 
 export function getConnectorGatewayBaseUrl(): string {

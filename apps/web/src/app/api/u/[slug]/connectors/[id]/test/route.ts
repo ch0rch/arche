@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getAuthenticatedUser } from '@/lib/auth'
+
 import { decryptConfig } from '@/lib/connectors/crypto'
 import { getConnectorAuthType, getConnectorOAuthConfig } from '@/lib/connectors/oauth-config'
 import { refreshConnectorOAuthConfigIfNeeded } from '@/lib/connectors/oauth-refresh'
 import type { ConnectorType } from '@/lib/connectors/types'
 import { validateConnectorType } from '@/lib/connectors/validators'
-import { validateSameOrigin } from '@/lib/csrf'
-import { prisma } from '@/lib/prisma'
+import { requireCapability } from '@/lib/runtime/require-capability'
+import { withAuth } from '@/lib/runtime/with-auth'
 import { validateConnectorTestEndpoint } from '@/lib/security/ssrf'
+import { connectorService, userService } from '@/lib/services'
 
 export interface TestConnectionResult {
   ok: boolean
@@ -49,18 +50,24 @@ function getAccessToken(type: ConnectorType, config: Record<string, unknown>): s
 
 function isOAuthPending(type: ConnectorType, config: Record<string, unknown>): boolean {
   if (getConnectorAuthType(config) !== 'oauth') return false
-  if (type !== 'linear' && type !== 'notion') return false
   return !getConnectorOAuthConfig(type, config)?.accessToken
 }
 
-function getMcpServerUrl(type: 'linear' | 'notion', config: Record<string, unknown>): string {
+function getMcpServerUrl(type: 'linear' | 'notion', config: Record<string, unknown>): string
+function getMcpServerUrl(type: 'custom', config: Record<string, unknown>): string | null
+function getMcpServerUrl(type: ConnectorType, config: Record<string, unknown>): string | null {
   const oauth = getConnectorOAuthConfig(type, config)
   if (oauth?.mcpServerUrl) return oauth.mcpServerUrl
 
   if (type === 'linear') {
     return process.env.ARCHE_CONNECTOR_LINEAR_MCP_URL || MCP_SERVER_URLS.linear
   }
-  return process.env.ARCHE_CONNECTOR_NOTION_MCP_URL || MCP_SERVER_URLS.notion
+
+  if (type === 'notion') {
+    return process.env.ARCHE_CONNECTOR_NOTION_MCP_URL || MCP_SERVER_URLS.notion
+  }
+
+  return typeof config.endpoint === 'string' ? config.endpoint : null
 }
 
 function buildMcpInitializeBody() {
@@ -80,7 +87,7 @@ function buildMcpInitializeBody() {
 }
 
 async function testRemoteMcpConnection(input: {
-  label: 'Linear' | 'Notion'
+  label: 'Linear' | 'Notion' | 'Custom'
   url: string
   token: string
 }): Promise<TestConnectionResult> {
@@ -180,6 +187,30 @@ async function testConnection(
       }
 
       case 'custom': {
+        if (isOAuthPending(type, config)) {
+          return {
+            ok: false,
+            tested: false,
+            message: 'Complete OAuth from the dashboard before testing this connector.',
+          }
+        }
+
+        if (getConnectorAuthType(config) === 'oauth') {
+          const token = getAccessToken(type, config)
+          if (!token) return { ok: false, tested: false, message: 'Missing OAuth access token' }
+
+          const mcpUrl = options.customEndpointUrl?.toString() ?? getMcpServerUrl(type, config)
+          if (!mcpUrl) {
+            return { ok: false, tested: false, message: 'Missing endpoint' }
+          }
+
+          return testRemoteMcpConnection({
+            label: 'Custom',
+            url: mcpUrl,
+            token,
+          })
+        }
+
         const endpoint = typeof config.endpoint === 'string' ? config.endpoint : ''
         if (!endpoint) {
           return { ok: false, tested: false, message: 'Missing endpoint' }
@@ -227,95 +258,75 @@ async function testConnection(
  * - 404: User or connector not found
  * - 409: Connector disabled
  */
-export async function POST(
-  request: NextRequest,
-  { params }: { params: Promise<{ slug: string; id: string }> }
-): Promise<NextResponse<TestConnectionResult | { error: string }>> {
-  const session = await getAuthenticatedUser()
-  if (!session) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-  }
+export const POST = withAuth<TestConnectionResult | { error: string }, { slug: string; id: string }>(
+  { csrf: true },
+  async (_request: NextRequest, { slug, params: { id } }) => {
+    const denied = requireCapability('connectors')
+    if (denied) return denied
 
-  const originValidation = validateSameOrigin(request)
-  if (!originValidation.ok) {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
+    const user = await userService.findIdBySlug(slug)
 
-  const { slug, id } = await params
-
-  // Verify authorization
-  if (session.user.slug !== slug && session.user.role !== 'ADMIN') {
-    return NextResponse.json({ error: 'forbidden' }, { status: 403 })
-  }
-
-  // Get user
-  const user = await prisma.user.findUnique({
-    where: { slug },
-    select: { id: true },
-  })
-
-  if (!user) {
-    return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
-  }
-
-  // Get connector while verifying ownership
-  const connector = await prisma.connector.findFirst({
-    where: { id, userId: user.id },
-  })
-
-  if (!connector) {
-    return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
-  }
-
-  // Verify connector is enabled
-  if (!connector.enabled) {
-    return NextResponse.json({ error: 'connector_disabled' }, { status: 409 })
-  }
-
-  // Decrypt config and test connection
-  const refreshedConfig = await refreshConnectorOAuthConfigIfNeeded({
-    id: connector.id,
-    type: connector.type,
-    config: connector.config,
-  })
-
-  let config: Record<string, unknown>
-  try {
-    config = decryptConfig(refreshedConfig ?? connector.config)
-  } catch {
-    return NextResponse.json(
-      { error: 'config_corrupted', message: 'Failed to decrypt connector configuration' },
-      { status: 500 }
-    )
-  }
-
-  if (!validateConnectorType(connector.type)) {
-    return NextResponse.json({ error: 'unsupported_connector_type' }, { status: 400 })
-  }
-
-  let customEndpointUrl: URL | undefined
-  if (connector.type === 'custom') {
-    const endpoint = typeof config.endpoint === 'string' ? config.endpoint : ''
-    if (endpoint) {
-      const endpointValidation = await validateConnectorTestEndpoint(endpoint)
-      if (!endpointValidation.ok) {
-        return NextResponse.json({ error: endpointValidation.error }, { status: 400 })
-      }
-      customEndpointUrl = endpointValidation.url
+    if (!user) {
+      return NextResponse.json({ error: 'user_not_found' }, { status: 404 })
     }
-  }
 
-  const result = await testConnection(connector.type, config, { customEndpointUrl })
+    const connector = await connectorService.findByIdAndUserId(id, user.id)
 
-  if (result.ok && getConnectorAuthType(config) === 'oauth') {
-    const message = result.message ?? 'Connection verified.'
-    return NextResponse.json({
-      ...result,
-      message:
-        `${message} Restart the workspace to apply the updated connector credentials. ` +
-        'If it is still unavailable in chat, enable this connector in Agent capabilities.',
+    if (!connector) {
+      return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
+    }
+
+    if (!connector.enabled) {
+      return NextResponse.json({ error: 'connector_disabled' }, { status: 409 })
+    }
+
+    const refreshedConfig = await refreshConnectorOAuthConfigIfNeeded({
+      id: connector.id,
+      type: connector.type,
+      config: connector.config,
     })
-  }
 
-  return NextResponse.json(result)
-}
+    let config: Record<string, unknown>
+    try {
+      config = decryptConfig(refreshedConfig ?? connector.config)
+    } catch {
+      return NextResponse.json(
+        { error: 'config_corrupted', message: 'Failed to decrypt connector configuration' },
+        { status: 500 }
+      )
+    }
+
+    if (!validateConnectorType(connector.type)) {
+      return NextResponse.json({ error: 'unsupported_connector_type' }, { status: 400 })
+    }
+
+    let customEndpointUrl: URL | undefined
+    if (connector.type === 'custom') {
+      const endpoint = getConnectorAuthType(config) === 'oauth'
+        ? getMcpServerUrl(connector.type, config) ?? ''
+        : (typeof config.endpoint === 'string' ? config.endpoint : '')
+
+      if (endpoint) {
+        const endpointValidation = await validateConnectorTestEndpoint(endpoint)
+        if (!endpointValidation.ok) {
+          return NextResponse.json({ error: endpointValidation.error }, { status: 400 })
+        }
+        customEndpointUrl = endpointValidation.url
+      }
+    }
+
+    const result = await testConnection(connector.type, config, { customEndpointUrl })
+
+    if (result.ok && getConnectorAuthType(config) === 'oauth') {
+      const message = result.message ?? 'Connection verified.'
+      return NextResponse.json({
+        ...result,
+        message:
+          `${message} Restart the workspace to apply the updated connector credentials. ` +
+          'If it is still unavailable in chat, enable this connector in Agent capabilities.',
+      })
+    }
+
+    return NextResponse.json(result)
+  },
+)

@@ -1,12 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('next/headers', () => ({
-  cookies: vi.fn(),
-}))
-
-vi.mock('@/lib/auth', () => ({
-  SESSION_COOKIE_NAME: 'arche_session',
-  getSessionFromToken: vi.fn(),
+vi.mock('@/lib/runtime/session', () => ({
+  getSession: vi.fn(),
 }))
 
 vi.mock('@/lib/opencode/client', () => ({
@@ -25,14 +20,12 @@ vi.mock('@/lib/providers/store', () => ({
   getActiveCredentialForUser: vi.fn(),
 }))
 
-import { cookies } from 'next/headers'
-import { getSessionFromToken } from '@/lib/auth'
+import { getSession } from '@/lib/runtime/session'
 import { createInstanceClient } from '@/lib/opencode/client'
 import { getActiveCredentialForUser } from '@/lib/providers/store'
 import { listModelsAction } from '../opencode'
 
-const mockCookies = vi.mocked(cookies)
-const mockGetSessionFromToken = vi.mocked(getSessionFromToken)
+const mockGetSession = vi.mocked(getSession)
 const mockCreateInstanceClient = vi.mocked(createInstanceClient)
 const mockGetActiveCredentialForUser = vi.mocked(getActiveCredentialForUser)
 
@@ -43,37 +36,37 @@ const providersResponse = {
         id: 'openai',
         name: 'OpenAI',
         models: {
-          'gpt-5.2': { name: 'GPT-5.2' },
+          'gpt-5.2': { name: 'GPT-5.2', cost: { input: 1, output: 2 } },
         },
       },
       {
         id: 'opencode',
         name: 'OpenCode Zen',
         models: {
-          'scene-free': { name: 'Scene Free' },
+          'scene-free': { name: 'Scene Free', cost: { input: 0, output: 0 } },
+          'scene-paid': { name: 'Scene Paid', cost: { input: 1, output: 1 } },
         },
       },
     ],
     default: {
       openai: 'gpt-5.2',
-      opencode: 'scene-free',
+      opencode: 'scene-paid',
     },
   },
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  mockCookies.mockResolvedValue({
-    get: vi.fn(() => ({ name: 'arche_session', value: 'token-123' })),
-  } as never)
 
-  mockGetSessionFromToken.mockResolvedValue({
+  mockGetSession.mockResolvedValue({
     user: {
       id: 'user-1',
+      email: 'alice@test.com',
       slug: 'alice',
       role: 'USER',
     },
-  } as never)
+    sessionId: 'sess-1',
+  })
 
   mockCreateInstanceClient.mockResolvedValue({
     config: {
@@ -97,6 +90,7 @@ describe('listModelsAction', () => {
     expect(result.models).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ providerId: 'openai', modelId: 'gpt-5.2' }),
+        expect.objectContaining({ providerId: 'opencode', modelId: 'scene-paid' }),
       ]),
     )
   })
@@ -122,6 +116,86 @@ describe('listModelsAction', () => {
       expect.arrayContaining([
         expect.objectContaining({ providerId: 'openai', modelId: 'gpt-5.2' }),
         expect.objectContaining({ providerId: 'opencode', modelId: 'scene-free' }),
+      ]),
+    )
+
+    expect(result.models).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ providerId: 'opencode', modelId: 'scene-paid' }),
+      ]),
+    )
+  })
+
+  it('keeps paid OpenCode Zen models when an OpenCode credential is configured', async () => {
+    mockGetActiveCredentialForUser.mockImplementation(async ({ providerId }) => {
+      if (providerId === 'opencode') {
+        return {
+          id: 'cred-opencode',
+          type: 'api',
+          secret: 'encrypted',
+          version: 1,
+        }
+      }
+
+      return null
+    })
+
+    const result = await listModelsAction('alice')
+
+    expect(result.ok).toBe(true)
+    expect(result.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ providerId: 'opencode', modelId: 'scene-free' }),
+        expect.objectContaining({ providerId: 'opencode', modelId: 'scene-paid' }),
+      ]),
+    )
+  })
+
+  it('normalizes fireworks runtime provider ids to the canonical provider id', async () => {
+    mockCreateInstanceClient.mockResolvedValue({
+      config: {
+        providers: vi.fn().mockResolvedValue({
+          data: {
+            providers: [
+              {
+                id: 'fireworks-ai',
+                name: 'Fireworks AI',
+                models: {
+                  'accounts/fireworks/models/glm-5': { name: 'GLM-5' },
+                },
+              },
+            ],
+            default: {
+              'fireworks-ai': 'accounts/fireworks/models/glm-5',
+            },
+          },
+        }),
+      },
+    } as never)
+
+    mockGetActiveCredentialForUser.mockImplementation(async ({ providerId }) => {
+      if (providerId === 'fireworks') {
+        return {
+          id: 'cred-fireworks',
+          type: 'api',
+          secret: 'encrypted',
+          version: 1,
+        }
+      }
+
+      return null
+    })
+
+    const result = await listModelsAction('alice')
+
+    expect(result.ok).toBe(true)
+    expect(result.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          providerId: 'fireworks',
+          modelId: 'accounts/fireworks/models/glm-5',
+          isDefault: true,
+        }),
       ]),
     )
   })

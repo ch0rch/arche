@@ -1,8 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { decryptProviderSecret } from '@/lib/providers/crypto'
+import { getCanonicalProviderId } from '@/lib/providers/catalog'
 import { getActiveCredentialForUser } from '@/lib/providers/store'
 import { verifyGatewayToken } from '@/lib/providers/tokens'
-import { PROVIDERS, type ProviderId } from '@/lib/providers/types'
+import type { ProviderId } from '@/lib/providers/types'
+import { checkRateLimit } from '@/lib/rate-limit'
+import { getRuntimeCapabilities } from '@/lib/runtime/capabilities'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -10,6 +13,7 @@ export const dynamic = 'force-dynamic'
 const PROVIDER_BASE_URL: Record<ProviderId, string> = {
   openai: 'https://api.openai.com/v1',
   anthropic: 'https://api.anthropic.com/v1',
+  fireworks: 'https://api.fireworks.ai/inference/v1',
   openrouter: 'https://openrouter.ai/api/v1',
   opencode: 'https://opencode.ai/zen/v1',
 }
@@ -38,16 +42,26 @@ const HOP_BY_HOP_HEADERS = [
   'upgrade',
 ]
 
-function isProviderId(value: string): value is ProviderId {
-  return PROVIDERS.includes(value as ProviderId)
-}
-
 function extractGatewayToken(providerId: ProviderId, headers: Headers): string | null {
-  if (providerId === 'openai' || providerId === 'openrouter' || providerId === 'opencode') {
+  if (providerId === 'openai' || providerId === 'fireworks' || providerId === 'openrouter') {
     const header = headers.get('authorization')
     if (!header) return null
     const match = header.match(/^Bearer\s+(.+)$/i)
     return match?.[1]?.trim() || null
+  }
+
+  if (providerId === 'opencode') {
+    const authHeader = headers.get('authorization')
+    if (authHeader) {
+      const match = authHeader.match(/^Bearer\s+(.+)$/i)
+      const bearerToken = match?.[1]?.trim() || null
+      if (bearerToken) return bearerToken
+    }
+
+    // OpenCode may send gateway credentials via x-api-key for some provider
+    // formats (e.g. messages). Accept both to keep web/desktop behavior aligned.
+    const apiKey = headers.get('x-api-key')
+    return apiKey?.trim() || null
   }
 
   const apiKey = headers.get('x-api-key')
@@ -113,6 +127,50 @@ function normalizeOpenAiResponsesPayload(payload: unknown): unknown {
   }
 
   return normalizedBody ?? payload
+}
+
+function stripObjectKeys(payload: unknown, keysToStrip: ReadonlySet<string>): unknown {
+  if (Array.isArray(payload)) {
+    let changed = false
+    const next = payload.map((value) => {
+      const normalized = stripObjectKeys(value, keysToStrip)
+      if (normalized !== value) {
+        changed = true
+      }
+      return normalized
+    })
+
+    return changed ? next : payload
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    return payload
+  }
+
+  const record = payload as Record<string, unknown>
+  let changed = false
+  const nextEntries: Array<[string, unknown]> = []
+
+  for (const [key, value] of Object.entries(record)) {
+    if (keysToStrip.has(key)) {
+      changed = true
+      continue
+    }
+
+    const normalized = stripObjectKeys(value, keysToStrip)
+    if (normalized !== value) {
+      changed = true
+    }
+    nextEntries.push([key, normalized])
+  }
+
+  return changed ? Object.fromEntries(nextEntries) : payload
+}
+
+function normalizeFireworksPayload(payload: unknown): unknown {
+  // Fireworks rejects OpenCode metadata fields like `display_name` that are
+  // not part of the OpenAI-compatible request schema.
+  return stripObjectKeys(payload, new Set(['display_name']))
 }
 
 function isRetryableFetchError(error: unknown): boolean {
@@ -183,69 +241,94 @@ async function handleProxy(
 ) {
   const { provider, path } = await params
   const pathSegments = Array.isArray(path) ? [...path] : path ? [path] : []
+  const providerId = getCanonicalProviderId(provider)
 
-  if (!isProviderId(provider)) {
+  if (!providerId) {
     return NextResponse.json({ error: 'invalid_provider' }, { status: 400 })
   }
 
-  const token = extractGatewayToken(provider, request.headers)
-  if (!token) {
+  const caps = getRuntimeCapabilities()
+  const token = extractGatewayToken(providerId, request.headers)
+  const allowAnonymousOpencode = providerId === 'opencode' && !caps.auth
+
+  if (!token && !allowAnonymousOpencode) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
 
   let payload: ReturnType<typeof verifyGatewayToken> | null = null
   let apiKey: string | null = null
+  let allowExpiredGatewayTokenOpencodeFallback = false
 
-  try {
-    payload = verifyGatewayToken(token)
-  } catch {
-    if (provider !== 'opencode') {
-      return NextResponse.json({ error: 'invalid_token' }, { status: 401 })
+  if (token) {
+    try {
+      payload = verifyGatewayToken(token)
+    } catch (error) {
+      if (providerId !== 'opencode') {
+        return NextResponse.json({ error: 'invalid_token' }, { status: 401 })
+      }
+
+      if (error instanceof Error && error.message === 'token_expired') {
+        allowExpiredGatewayTokenOpencodeFallback = true
+      } else {
+        // When no Arche-managed credential is configured, OpenCode Zen may be
+        // authenticated natively in the workspace. In that case, forward the
+        // workspace token as-is.
+        apiKey = token
+      }
     }
-
-    // When no Arche-managed credential is configured, OpenCode Zen may be
-    // authenticated natively in the workspace. In that case, forward the
-    // workspace token as-is.
-    apiKey = token
   }
 
   if (payload) {
-    if (payload.providerId !== provider) {
+    const rateLimitKey = `provider-gw:${payload.userId}:${providerId}`
+    const limit = checkRateLimit(rateLimitKey, 100, 60 * 1000)
+    if (!limit.allowed) {
+      return NextResponse.json(
+        { error: 'rate_limited', retryAfter: Math.ceil((limit.resetAt - Date.now()) / 1000) },
+        { status: 429 }
+      )
+    }
+
+    if (payload.providerId !== providerId) {
       return NextResponse.json({ error: 'provider_mismatch' }, { status: 403 })
     }
 
     const credential = await getActiveCredentialForUser({
       userId: payload.userId,
-      providerId: provider,
+      providerId,
     })
 
     if (!credential) {
-      return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
-    }
+      if (providerId !== 'opencode') {
+        return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+      }
+    } else {
+      if (credential.type !== 'api') {
+        return NextResponse.json({ error: 'unsupported_credential' }, { status: 501 })
+      }
 
-    if (credential.type !== 'api') {
-      return NextResponse.json({ error: 'unsupported_credential' }, { status: 501 })
-    }
+      let secret: ReturnType<typeof decryptProviderSecret>
+      try {
+        secret = decryptProviderSecret(credential.secret)
+      } catch {
+        return NextResponse.json({ error: 'invalid_credentials' }, { status: 500 })
+      }
 
-    let secret: ReturnType<typeof decryptProviderSecret>
-    try {
-      secret = decryptProviderSecret(credential.secret)
-    } catch {
-      return NextResponse.json({ error: 'invalid_credentials' }, { status: 500 })
-    }
+      if (!('apiKey' in secret) || typeof secret.apiKey !== 'string' || !secret.apiKey.trim()) {
+        return NextResponse.json({ error: 'unsupported_credential' }, { status: 501 })
+      }
 
-    if (!('apiKey' in secret) || typeof secret.apiKey !== 'string' || !secret.apiKey.trim()) {
-      return NextResponse.json({ error: 'unsupported_credential' }, { status: 501 })
+      apiKey = secret.apiKey.trim()
     }
-
-    apiKey = secret.apiKey.trim()
   }
 
-  if (!apiKey) {
+  const allowTokenAuthenticatedOpencodeWithoutCredential =
+    providerId === 'opencode' && (Boolean(payload) || allowExpiredGatewayTokenOpencodeFallback)
+
+  if (!apiKey && !allowAnonymousOpencode && !allowTokenAuthenticatedOpencodeWithoutCredential) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   }
 
-  const upstreamUrl = buildUpstreamUrl(PROVIDER_BASE_URL[provider], pathSegments, new URL(request.url))
+  const upstreamUrl = buildUpstreamUrl(PROVIDER_BASE_URL[providerId], pathSegments, new URL(request.url))
 
   const headers = new Headers(request.headers)
   stripHopByHopHeaders(headers)
@@ -258,9 +341,21 @@ async function handleProxy(
   // downstream clients to attempt decoding a second time.
   headers.set('accept-encoding', 'identity')
 
-  if (provider === 'openai' || provider === 'openrouter' || provider === 'opencode') {
-    headers.set('authorization', `Bearer ${apiKey}`)
+  if (
+    providerId === 'openai' ||
+    providerId === 'fireworks' ||
+    providerId === 'openrouter' ||
+    providerId === 'opencode'
+  ) {
+    if (!apiKey) {
+      headers.delete('authorization')
+    } else {
+      headers.set('authorization', `Bearer ${apiKey}`)
+    }
   } else {
+    if (!apiKey) {
+      return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
+    }
     headers.set('x-api-key', apiKey)
     if (!headers.has('anthropic-version')) {
       headers.set('anthropic-version', '2023-06-01')
@@ -275,16 +370,19 @@ async function handleProxy(
 
   const contentType = headers.get('content-type') ?? ''
   const isOpenAiResponsesRequest =
-    provider === 'openai' &&
+    providerId === 'openai' &&
     request.method === 'POST' &&
     pathSegments[0] === 'responses' &&
     contentType.includes('application/json')
+  const isFireworksJsonRequest = providerId === 'fireworks' && contentType.includes('application/json')
 
   if (hasBody) {
-    if (isOpenAiResponsesRequest) {
+    if (isOpenAiResponsesRequest || isFireworksJsonRequest) {
       try {
         const parsedBody = await request.clone().json()
-        const normalizedBody = normalizeOpenAiResponsesPayload(parsedBody)
+        const normalizedBody = isOpenAiResponsesRequest
+          ? normalizeOpenAiResponsesPayload(parsedBody)
+          : normalizeFireworksPayload(parsedBody)
         init.body = JSON.stringify(normalizedBody)
       } catch {
         init.body = await request.arrayBuffer()
@@ -302,7 +400,7 @@ async function handleProxy(
     upstreamResponse = await fetchWithRetry(upstreamUrl, init, maxAttempts)
   } catch (error) {
     console.error('[providers/gateway] upstream fetch failed', {
-      provider,
+      provider: providerId,
       path: pathSegments.join('/'),
       code: getFetchErrorCode(error),
       message: error instanceof Error ? error.message : 'unknown_error',
