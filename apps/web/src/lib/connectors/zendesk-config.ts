@@ -21,7 +21,7 @@ function parseZendeskConnectorFields(config: Record<string, unknown>): ParsedZen
     ...(email ? [] : ['email']),
     ...(apiToken ? [] : ['apiToken']),
   ]
-  if (missing.length > 0) {
+  if (!subdomainInput || !email || !apiToken) {
     return { ok: false, missing }
   }
 

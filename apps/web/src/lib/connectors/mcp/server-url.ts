@@ -8,6 +8,7 @@ const MCP_SERVER_URLS = {
 
 export function getConnectorMcpServerUrl(type: 'linear' | 'notion', config: Record<string, unknown>): string
 export function getConnectorMcpServerUrl(type: 'custom', config: Record<string, unknown>): string | null
+export function getConnectorMcpServerUrl(type: ConnectorType, config: Record<string, unknown>): string | null
 export function getConnectorMcpServerUrl(type: ConnectorType, config: Record<string, unknown>): string | null {
   const oauth = getConnectorOAuthConfig(type, config)
   if (oauth?.mcpServerUrl) {
