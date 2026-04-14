@@ -737,6 +737,10 @@ export const POST = withAuth(
 
                         if (state?.status === 'pending' || state?.status === 'running') {
                           emitStatus('tool-calling', toolName, state.title)
+                          // A running tool call may spawn a subagent that works in its own
+                          // session — the main session goes silent while it runs. Extend the
+                          // timeout so we don't declare stream_timeout during that silence.
+                          relevantEventTimeoutMs = Math.max(relevantEventTimeoutMs, AGENT_DELEGATION_TIMEOUT_MS)
                         } else if (state?.status === 'error') {
                           emitStatus('error', toolName, state.error)
                         } else {
