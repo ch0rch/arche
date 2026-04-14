@@ -120,29 +120,49 @@ export async function createInstanceClient(slug: string): Promise<OpencodeClient
   return client
 }
 
+export type InstanceHealthCheckResult =
+  | { ok: true }
+  | { ok: false; reason: 'unauthorized' | 'unreachable' | 'unhealthy' }
+
 /**
  * Check if an OpenCode instance is healthy using explicit credentials.
+ * Returns a detailed result so callers can distinguish password mismatches
+ * (401) from transient unavailability (network errors, unhealthy response).
  */
-export async function isInstanceHealthyWithPassword(slug: string, password: string): Promise<boolean> {
+export async function checkInstanceHealth(
+  slug: string,
+  password: string,
+): Promise<InstanceHealthCheckResult> {
   const baseUrl = getInstanceUrl(slug)
   const authHeader = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
 
   try {
     const response = await fetch(`${baseUrl}/global/health`, {
-      headers: {
-        Authorization: authHeader,
-        Accept: 'application/json',
-      },
+      headers: { Authorization: authHeader, Accept: 'application/json' },
       cache: 'no-store',
     })
 
-    if (!response.ok) return false
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, reason: 'unauthorized' }
+    }
+
+    if (!response.ok) {
+      return { ok: false, reason: 'unhealthy' }
+    }
 
     const data = await response.json().catch(() => null)
-    return data?.healthy === true
+    return data?.healthy === true ? { ok: true } : { ok: false, reason: 'unhealthy' }
   } catch {
-    return false
+    return { ok: false, reason: 'unreachable' }
   }
+}
+
+/**
+ * Check if an OpenCode instance is healthy using explicit credentials.
+ */
+export async function isInstanceHealthyWithPassword(slug: string, password: string): Promise<boolean> {
+  const result = await checkInstanceHealth(slug, password)
+  return result.ok
 }
 
 /**

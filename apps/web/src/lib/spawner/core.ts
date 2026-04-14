@@ -1,5 +1,5 @@
 import { auditService, instanceService, providerService } from '@/lib/services'
-import { getInstanceUrl, isInstanceHealthyWithPassword } from '@/lib/opencode/client'
+import { checkInstanceHealth, getInstanceUrl, isInstanceHealthyWithPassword } from '@/lib/opencode/client'
 import { syncProviderAccessForInstance } from '@/lib/opencode/providers'
 import * as docker from './docker'
 import { decryptPassword, generatePassword, encryptPassword } from './crypto'
@@ -169,13 +169,23 @@ export async function getInstanceStatus(slug: string) {
     // Verify OpenCode is actually responding
     try {
       const password = decryptPassword(instance.serverPassword)
-      const isHealthy = await isInstanceHealthyWithPassword(slug, password)
+      const health = await checkInstanceHealth(slug, password)
 
-      if (isHealthy) {
+      if (health.ok) {
         if (instance.status !== 'running') {
           await instanceService.correctToRunning(slug)
         }
         return { ...instance, status: 'running' as const }
+      }
+
+      // 401/403 means the container is running with a different password than
+      // what the DB has — force a clean restart so they re-sync on next startup.
+      if (health.reason === 'unauthorized') {
+        console.warn('[spawner] Password mismatch detected for', slug, '— forcing container restart')
+        await docker.stopContainer(instance.containerId).catch(() => {})
+        await docker.removeContainer(instance.containerId).catch(() => {})
+        await instanceService.setStopped(slug)
+        return { ...instance, status: 'stopped' as const, containerId: null }
       }
 
       if (instance.status === 'running') {
