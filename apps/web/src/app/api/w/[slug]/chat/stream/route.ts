@@ -1,6 +1,3 @@
-import { join } from 'path'
-import { pathToFileURL } from 'url'
-
 import { NextRequest, NextResponse } from 'next/server'
 
 import { getIdleFinalizationOutcome, getSilentStreamOutcome } from '@/app/api/w/[slug]/chat/stream/watchdog'
@@ -8,7 +5,6 @@ import { createUpstreamSessionStatusReader } from '@/app/api/w/[slug]/chat/strea
 import { extractPdfText, isPdfMime } from '@/lib/attachments/pdf-text-extractor'
 import { getInstanceUrl } from '@/lib/opencode/client'
 import { normalizeProviderId, resolveRuntimeProviderId } from '@/lib/providers/catalog'
-import { DESKTOP_WORKSPACE_DIR_NAME } from '@/lib/runtime/desktop/vault-layout-constants'
 import { isDesktop } from '@/lib/runtime/mode'
 import { withAuth } from '@/lib/runtime/with-auth'
 import { instanceService } from '@/lib/services'
@@ -129,23 +125,6 @@ async function readWorkspaceImageAttachment(
   if (!decoded || decoded.length === 0) return null
   if (decoded.length > MAX_IMAGE_BYTES_FOR_INLINE) return null
   return decoded
-}
-
-function toWorkspaceFileUrl(path: string): string {
-  const normalized = normalizeAttachmentPath(path)
-
-  if (isDesktop()) {
-    const vaultRoot = process.env.ARCHE_DATA_DIR?.trim()
-    if (vaultRoot) {
-      return pathToFileURL(join(vaultRoot, DESKTOP_WORKSPACE_DIR_NAME, ...normalized.split('/'))).toString()
-    }
-  }
-
-  const encodedPath = normalized
-    .split('/')
-    .map((segment) => encodeURIComponent(segment))
-    .join('/')
-  return `file:///workspace/${encodedPath}`
 }
 
 function toAttachmentPromptPath(path: string): string {
@@ -449,25 +428,11 @@ export const POST = withAuth(
                     filename: fileName,
                     url: `data:${mime};base64,${base64}`,
                   })
-                } else {
-                  promptParts.push({
-                    type: 'file',
-                    mime,
-                    filename: fileName,
-                    url: toWorkspaceFileUrl(attachmentPath),
-                  })
                 }
 
                 attachmentPathsForHint.push(attachmentPath)
                 continue
               }
-
-              promptParts.push({
-                type: 'file',
-                mime,
-                filename: fileName,
-                url: toWorkspaceFileUrl(attachmentPath),
-              })
 
               attachmentPathsForHint.push(attachmentPath)
             }
