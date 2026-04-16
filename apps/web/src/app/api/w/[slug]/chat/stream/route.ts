@@ -127,6 +127,19 @@ async function readWorkspaceImageAttachment(
   return decoded
 }
 
+function toWorkspaceFileUrl(path: string): string | null {
+  if (isDesktop()) {
+    return null
+  }
+
+  const encodedPath = normalizeAttachmentPath(path)
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+
+  return `file:///workspace/${encodedPath}`
+}
+
 function toAttachmentPromptPath(path: string): string {
   const normalized = normalizeAttachmentPath(path)
   return isDesktop() ? normalized : `/workspace/${normalized}`
@@ -419,6 +432,7 @@ export const POST = withAuth(
                   { baseUrl: workspaceAgentUrl, authHeader },
                   attachmentPath,
                 )
+                const workspaceFileUrl = toWorkspaceFileUrl(attachmentPath)
 
                 if (imageBytes) {
                   const base64 = imageBytes.toString('base64')
@@ -428,10 +442,27 @@ export const POST = withAuth(
                     filename: fileName,
                     url: `data:${mime};base64,${base64}`,
                   })
+                } else if (workspaceFileUrl) {
+                  promptParts.push({
+                    type: 'file',
+                    mime,
+                    filename: fileName,
+                    url: workspaceFileUrl,
+                  })
                 }
 
                 attachmentPathsForHint.push(attachmentPath)
                 continue
+              }
+
+              const workspaceFileUrl = toWorkspaceFileUrl(attachmentPath)
+              if (workspaceFileUrl) {
+                promptParts.push({
+                  type: 'file',
+                  mime,
+                  filename: fileName,
+                  url: workspaceFileUrl,
+                })
               }
 
               attachmentPathsForHint.push(attachmentPath)

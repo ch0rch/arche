@@ -361,7 +361,7 @@ describe('chat stream attachments forwarding', () => {
     })
   })
 
-  it('routes unsupported octet-stream attachments through the hint only', async () => {
+  it('uses canonical workspace file URLs for unsupported attachments in web mode', async () => {
     let promptBody: Record<string, unknown> | null = null
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -409,13 +409,18 @@ describe('chat stream attachments forwarding', () => {
     await res.text()
 
     const promptParts = (promptBody?.parts ?? []) as Array<Record<string, unknown>>
-    expect(promptParts).toHaveLength(2)
+    expect(promptParts).toHaveLength(3)
     expect(promptParts[1]).toEqual({
+      type: 'file',
+      mime: 'text/plain',
+      filename: 'blob.unknown',
+      url: 'file:///workspace/.arche/attachments/blob.unknown',
+    })
+    expect(promptParts[2]).toEqual({
       type: 'text',
       text:
         'Attached workspace files:\n- /workspace/.arche/attachments/blob.unknown\nIf direct file parsing is unavailable, inspect these paths with available tools.',
     })
-    expect(JSON.stringify(promptBody)).not.toContain('file://')
   })
 
   it('routes spreadsheet attachments to spreadsheet tools hints', async () => {
@@ -558,7 +563,7 @@ describe('chat stream attachments forwarding', () => {
     })
   })
 
-  it('omits the file part and relies on the workspace-relative hint when image read fails', async () => {
+  it('falls back to a canonical workspace file URL when image read fails in web mode', async () => {
     let promptBody: Record<string, unknown> | null = null
 
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -614,16 +619,19 @@ describe('chat stream attachments forwarding', () => {
 
     expect(promptBody).not.toBeNull()
     const promptParts = (promptBody?.parts ?? []) as Array<Record<string, unknown>>
-    expect(promptParts).toHaveLength(2)
+    expect(promptParts).toHaveLength(3)
     expect(promptParts[0]).toEqual({ type: 'text', text: 'Describe this' })
     expect(promptParts[1]).toEqual({
+      type: 'file',
+      mime: 'image/jpeg',
+      filename: 'photo.jpg',
+      url: 'file:///workspace/.arche/attachments/photo.jpg',
+    })
+    expect(promptParts[2]).toEqual({
       type: 'text',
       text:
         'Attached workspace files:\n- /workspace/.arche/attachments/photo.jpg\nIf direct file parsing is unavailable, inspect these paths with available tools.',
     })
-    for (const part of promptParts) {
-      expect(JSON.stringify(part)).not.toContain('file://')
-    }
   })
 
   it('never leaks absolute vault paths in desktop mode when image read fails', async () => {
