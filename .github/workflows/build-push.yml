@@ -85,6 +85,8 @@ jobs:
           file: apps/web/Containerfile
           push: true
           platforms: linux/${{ matrix.arch }}
+          provenance: false
+          sbom: false
           build-args: |
             GIT_SHA=${{ steps.tags.outputs.SHA_TAG }}
           tags: |

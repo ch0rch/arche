@@ -95,6 +95,8 @@ jobs:
           file: infra/workspace-image/Containerfile
           push: true
           platforms: linux/${{ matrix.arch }}
+          provenance: false
+          sbom: false
           build-args: |
             OPENCODE_VERSION=${{ steps.opencode.outputs.OPENCODE_VERSION }}
           tags: |
