@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { stubBrowserStorage } from "@/__tests__/storage";
 import { WorkspaceShell } from "@/components/workspace/workspace-shell";
+import { setWorkspaceStartPrompt } from "@/lib/workspace-start-prompt";
 
 const { ensureInstanceRunningActionMock } = vi.hoisted(() => ({
   ensureInstanceRunningActionMock: vi.fn().mockResolvedValue({ status: "running" }),
 }));
 
 const createSessionMock = vi.fn().mockResolvedValue(undefined);
+const sendMessageMock = vi.fn().mockResolvedValue(true);
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -63,7 +65,7 @@ vi.mock("@/hooks/use-workspace", () => ({
     ],
     fileTree: [],
     isStartingNewSession: false,
-    sendMessage: vi.fn(),
+    sendMessage: sendMessageMock,
     abortSession: vi.fn(),
     isSending: false,
     models: [],
@@ -111,10 +113,22 @@ vi.mock("@/components/workspace/inspector-panel", () => ({
   ),
 }));
 
+type MockLeftPanelProps = {
+  leftCollapsed: boolean;
+  onToggleLeft: () => void;
+  onSelectAgent: (agent: { id: string; displayName: string; isPrimary: boolean }) => void;
+  singleSectionMode?: boolean;
+};
+
 vi.mock("@/components/workspace/left-panel", () => ({
-  LeftPanel: ({ leftCollapsed, onToggleLeft, onSelectAgent }: { leftCollapsed: boolean; onToggleLeft: () => void; onSelectAgent: (agent: { id: string; displayName: string; isPrimary: boolean }) => void }) => (
+  LeftPanel: ({ leftCollapsed, onToggleLeft, onSelectAgent, singleSectionMode }: MockLeftPanelProps) => (
     <div>
-      <button type="button" data-collapsed={String(leftCollapsed)} onClick={onToggleLeft}>
+      <button
+        type="button"
+        data-collapsed={String(leftCollapsed)}
+        data-single-section-mode={String(singleSectionMode)}
+        onClick={onToggleLeft}
+      >
         Left Panel
       </button>
       <button
@@ -177,6 +191,8 @@ describe("WorkspaceShell", () => {
     stubBrowserStorage();
     setViewportWidth(1440);
     createSessionMock.mockClear();
+    sendMessageMock.mockClear();
+    sendMessageMock.mockResolvedValue(true);
     ensureInstanceRunningActionMock.mockReset();
     ensureInstanceRunningActionMock.mockResolvedValue({ status: "running" });
     window.localStorage.clear();
@@ -237,6 +253,22 @@ describe("WorkspaceShell", () => {
     });
   });
 
+  it("auto-starts a dashboard prompt with selected context paths", async () => {
+    setWorkspaceStartPrompt(window.sessionStorage, "alice", {
+      text: "Review the plan",
+      contextPaths: ["docs/plan.md"],
+    });
+
+    render(<WorkspaceShell slug="alice" />);
+
+    await waitFor(() => {
+      expect(sendMessageMock).toHaveBeenCalledWith("Review the plan", undefined, {
+        forceNewSession: true,
+        contextPaths: ["docs/plan.md"],
+      });
+    });
+  });
+
   it("inserts the expert id when selecting an expert from the left panel", async () => {
     render(<WorkspaceShell slug="alice" />);
 
@@ -258,6 +290,7 @@ describe("WorkspaceShell", () => {
 
     const leftPanelButton = await screen.findByRole("button", { name: "Left Panel" });
     expect(leftPanelButton.dataset.collapsed).toBe("false");
+    expect(leftPanelButton.dataset.singleSectionMode).toBe("false");
 
     window.dispatchEvent(
       new KeyboardEvent("keydown", {
@@ -437,6 +470,8 @@ describe("WorkspaceShell", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: "Left Panel" })).toBeTruthy();
     });
+
+    expect(screen.getByRole("button", { name: "Left Panel" }).dataset.singleSectionMode).toBe("true");
 
     fireEvent.click(screen.getByRole("button", { name: "Show chat" }));
 
