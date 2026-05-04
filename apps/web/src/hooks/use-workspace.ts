@@ -424,8 +424,10 @@ export type UseWorkspaceReturn = {
   isLoadingMoreSessions: boolean;
   hasMoreSessions: boolean;
   unseenCompletedSessions: ReadonlySet<string>;
+  refreshSessions: () => Promise<void>;
+  // selectSession accepts null to deselect the active session entirely.
   loadMoreSessions: () => Promise<void>;
-  selectSession: (id: string) => void;
+  selectSession: (id: string | null) => void;
   markAutopilotRunSeen: (runId: string) => Promise<void>;
   createSession: (title?: string) => Promise<WorkspaceSession | null>;
   deleteSession: (id: string) => Promise<boolean>;
@@ -460,7 +462,6 @@ export type UseWorkspaceReturn = {
   selectedModel: AvailableModel | null;
   hasManualModelSelection: boolean;
   setSelectedModel: (model: AvailableModel | null) => void;
-  activeAgentName: string | null;
 
   // Agents
   agentCatalog: AgentCatalogItem[];
@@ -600,12 +601,6 @@ export function useWorkspace({
   const currentSessionSelection =
     sessionSelectionState[getSessionSelectionKey(activeSessionId)] ??
     createDefaultSessionSelectionState(primaryAgentId);
-  const activeCatalogAgent = currentSessionSelection.activeAgentId
-    ? findAgentInCatalog(agentCatalog, currentSessionSelection.activeAgentId)
-    : undefined;
-  const activeAgentName = currentSessionSelection.activeAgentId
-    ? activeCatalogAgent?.displayName ?? null
-    : null;
   const agentDefaultModel = (() => {
     const primaryModel = parseModelString(primaryAgent?.model);
     if (!primaryModel) return null;
@@ -1090,9 +1085,12 @@ export function useWorkspace({
   }, [setSessionStreamStatusTo]);
 
   const selectSession = useCallback(
-    (id: string) => {
+    (id: string | null) => {
       setActiveSessionId(id);
       activeSessionIdRef.current = id;
+
+      if (id === null) return;
+
       void ensureSessionFamilyLoaded(id);
 
       // Clear "unseen completed" flag when the user visits this session
@@ -2430,6 +2428,7 @@ export function useWorkspace({
     isLoadingMoreSessions,
     hasMoreSessions,
     unseenCompletedSessions,
+    refreshSessions: loadSessions,
     loadMoreSessions,
     selectSession,
     markAutopilotRunSeen,
@@ -2452,7 +2451,6 @@ export function useWorkspace({
     selectedModel,
     hasManualModelSelection,
     setSelectedModel: updateSelectedModel,
-    activeAgentName,
     agentCatalog,
   };
 }
