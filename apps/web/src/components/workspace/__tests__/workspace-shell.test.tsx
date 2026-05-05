@@ -284,6 +284,7 @@ describe("WorkspaceShell", () => {
     writeFileMock.mockResolvedValue({ ok: true, hash: "hash-updated" });
     ensureInstanceRunningActionMock.mockReset();
     ensureInstanceRunningActionMock.mockResolvedValue({ status: "running" });
+    window.history.replaceState(null, "", "/w/alice");
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
 
@@ -466,8 +467,7 @@ describe("WorkspaceShell", () => {
     });
 
     expect(await screen.findByText("Settings")).toBeTruthy();
-    expect(await screen.findByText("1/2 working")).toBeTruthy();
-    expect(await screen.findByText("1 active")).toBeTruthy();
+    expect(await screen.findAllByText("1 active")).toHaveLength(2);
     expect(screen.getByText("Appearance")).toBeTruthy();
   });
 
@@ -867,6 +867,31 @@ describe("WorkspaceShell", () => {
     expect(await screen.findByText("Run an autopilot task")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Manage autopilot tasks" }));
     expect(routerPushMock).toHaveBeenCalledWith("/u/alice/autopilot");
+  });
+
+  it("keeps a recent local mode when stale server mode props arrive late", async () => {
+    window.history.replaceState(null, "", "/w/alice?mode=knowledge&path=docs/plan.md");
+    const { rerender } = render(<WorkspaceShell slug="alice" initialWorkspaceMode="knowledge" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Tasks" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Tasks" }).getAttribute("aria-pressed")).toBe("true");
+    });
+
+    const params = new URLSearchParams(window.location.search);
+    expect(params.get("mode")).toBe("tasks");
+    expect(params.get("path")).toBe("docs/plan.md");
+
+    rerender(<WorkspaceShell slug="alice" initialWorkspaceMode="tasks" />);
+    rerender(<WorkspaceShell slug="alice" initialWorkspaceMode="knowledge" />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole("button", { name: "Tasks" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Knowledge" }).getAttribute("aria-pressed")).toBe("false");
   });
 
   it("uses the collapsed knowledge rail to switch tree and graph views", async () => {
