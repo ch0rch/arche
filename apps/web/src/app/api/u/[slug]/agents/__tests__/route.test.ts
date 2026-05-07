@@ -61,6 +61,7 @@ vi.mock('@/lib/auth', () => ({
 // Import SUT (after mocks)
 // ---------------------------------------------------------------------------
 
+import { PATCH as PATCH_DEFAULT_MODEL } from '../default-model/route'
 import { GET, POST } from '../route'
 
 // ---------------------------------------------------------------------------
@@ -129,6 +130,28 @@ function makePostRequestRaw(
 ) {
   return new NextRequest(url, {
     method: 'POST',
+    body: rawBody,
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: 'http://localhost',
+    },
+  })
+}
+
+function makePatchDefaultModelRequest(body: unknown) {
+  return new NextRequest('http://localhost/api/u/alice/agents/default-model', {
+    method: 'PATCH',
+    body: JSON.stringify(body),
+    headers: {
+      'Content-Type': 'application/json',
+      Origin: 'http://localhost',
+    },
+  })
+}
+
+function makePatchDefaultModelRequestRaw(rawBody: string) {
+  return new NextRequest('http://localhost/api/u/alice/agents/default-model', {
+    method: 'PATCH',
     body: rawBody,
     headers: {
       'Content-Type': 'application/json',
@@ -254,6 +277,38 @@ describe('GET /api/u/[slug]/agents', () => {
     expect(body.agents[0].isPrimary).toBe(true)
     expect(body.agents[1].id).toBe('alpha')
     expect(body.agents[2].id).toBe('zeta')
+  })
+
+  it('returns default and resolved models', async () => {
+    mockReadCommonWorkspaceConfig.mockResolvedValue({
+      ok: true,
+      content: JSON.stringify({
+        default_agent: 'assistant',
+        default_model: 'openai/gpt-5.5',
+        agent: {
+          assistant: { display_name: 'Assistant', mode: 'primary' },
+          override: { display_name: 'Override', mode: 'subagent', model: 'anthropic/claude-sonnet-4' },
+        },
+      }),
+      hash: 'hash-default',
+    })
+
+    const response = await GET(makeGetRequest(), routeParams)
+    const body = await response.json()
+
+    expect(body.defaultModel).toBe('openai/gpt-5.5')
+    expect(body.agents[0]).toMatchObject({
+      id: 'assistant',
+      defaultModel: 'openai/gpt-5.5',
+      resolvedModel: 'openai/gpt-5.5',
+      usesDefaultModel: true,
+    })
+    expect(body.agents[1]).toMatchObject({
+      id: 'override',
+      model: 'anthropic/claude-sonnet-4',
+      resolvedModel: 'anthropic/claude-sonnet-4',
+      usesDefaultModel: false,
+    })
   })
 
   it('returns 401 when session is null', async () => {
@@ -391,6 +446,21 @@ describe('POST /api/u/[slug]/agents', () => {
       makePostRequest({
         id: 'models',
         displayName: 'Models Agent',
+        capabilities: { tools: [], skillIds: [], mcpConnectorIds: [] },
+      }),
+      routeParams,
+    )
+    expect(response.status).toBe(400)
+
+    const body = await response.json()
+    expect(body.error).toBe('invalid_id')
+  })
+
+  it('rejects reserved ID "default-model"', async () => {
+    const response = await POST(
+      makePostRequest({
+        id: 'default-model',
+        displayName: 'Default Model Agent',
         capabilities: { tools: [], skillIds: [], mcpConnectorIds: [] },
       }),
       routeParams,
@@ -590,5 +660,179 @@ describe('POST /api/u/[slug]/agents', () => {
 
     const body = await response.json()
     expect(body.agent.isPrimary).toBe(true)
+  })
+})
+
+describe('PATCH /api/u/[slug]/agents/default-model', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    setupDefaultMocks()
+  })
+
+  it('requires admin role', async () => {
+    mockGetSession.mockResolvedValue(regularSession())
+
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: 'openai/gpt-5.5', expectedHash: 'hash-1' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(403)
+  })
+
+  it('saves default model with hash conflict detection', async () => {
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: 'openai/gpt-5.5', expectedHash: 'hash-1' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.defaultModel).toBe('openai/gpt-5.5')
+    expect(body.hash).toBe('hash-2')
+
+    expect(mockWriteCommonWorkspaceConfig).toHaveBeenCalledOnce()
+    const [content, expectedHash] = mockWriteCommonWorkspaceConfig.mock.calls[0]
+    expect(JSON.parse(content).default_model).toBe('openai/gpt-5.5')
+    expect(expectedHash).toBe('hash-1')
+    expect(mockAuditEvent).toHaveBeenCalledWith({
+      actorUserId: 'u-admin',
+      action: 'agent.default_model.updated',
+      metadata: { slug: 'alice', defaultModel: 'openai/gpt-5.5' },
+    })
+  })
+
+  it('bootstraps default model when config does not exist', async () => {
+    mockReadCommonWorkspaceConfig.mockResolvedValue({ ok: false, error: 'not_found' })
+
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: 'openai/gpt-5.5' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.defaultModel).toBe('openai/gpt-5.5')
+
+    const [content, expectedHash] = mockWriteCommonWorkspaceConfig.mock.calls[0]
+    expect(JSON.parse(content).default_model).toBe('openai/gpt-5.5')
+    expect(expectedHash).toBeUndefined()
+  })
+
+  it('returns 409 on hash conflict', async () => {
+    mockWriteCommonWorkspaceConfig.mockResolvedValue({ ok: false, error: 'conflict' })
+
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: 'openai/gpt-5.5', expectedHash: 'stale-hash' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(409)
+    const body = await response.json()
+    expect(body.error).toBe('conflict')
+  })
+
+  it('clears default model', async () => {
+    mockReadCommonWorkspaceConfig.mockResolvedValue({
+      ok: true,
+      content: JSON.stringify({ ...TEST_CONFIG, default_model: 'openai/gpt-5.5' }),
+      hash: 'hash-1',
+    })
+
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: null, expectedHash: 'hash-1' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(200)
+    const [content] = mockWriteCommonWorkspaceConfig.mock.calls[0]
+    expect(JSON.parse(content).default_model).toBeUndefined()
+  })
+
+  it('validates request body', async () => {
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: 123, expectedHash: 'hash-1' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(400)
+    const body = await response.json()
+    expect(body.error).toBe('invalid_default_model')
+  })
+
+  it('returns 400 for invalid JSON', async () => {
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequestRaw('not valid json{{{'),
+      routeParams,
+    )
+
+    expect(response.status).toBe(400)
+    const body = await response.json()
+    expect(body.error).toBe('invalid_json')
+  })
+
+  it('returns 400 for invalid body shape', async () => {
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest([]),
+      routeParams,
+    )
+
+    expect(response.status).toBe(400)
+    const body = await response.json()
+    expect(body.error).toBe('invalid_body')
+  })
+
+  it('requires expected hash when config exists', async () => {
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: 'openai/gpt-5.5' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(400)
+    const body = await response.json()
+    expect(body.error).toBe('invalid_expected_hash')
+  })
+
+  it('returns 503 when config repo is unavailable', async () => {
+    mockReadCommonWorkspaceConfig.mockResolvedValue({ ok: false, error: 'kb_unavailable' })
+
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: 'openai/gpt-5.5', expectedHash: 'hash-1' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(503)
+    const body = await response.json()
+    expect(body.error).toBe('kb_unavailable')
+  })
+
+  it('returns 400 when updated config is invalid', async () => {
+    mockReadCommonWorkspaceConfig.mockResolvedValue({
+      ok: true,
+      content: JSON.stringify({ default_agent: 'assistant', agent: { other: {} } }),
+      hash: 'hash-1',
+    })
+
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: 'openai/gpt-5.5', expectedHash: 'hash-1' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(500)
+    const body = await response.json()
+    expect(body.error).toBe('default_agent_not_found')
+  })
+
+  it('returns 500 when write fails without a specific error', async () => {
+    mockWriteCommonWorkspaceConfig.mockResolvedValue({ ok: false })
+
+    const response = await PATCH_DEFAULT_MODEL(
+      makePatchDefaultModelRequest({ defaultModel: 'openai/gpt-5.5', expectedHash: 'hash-1' }),
+      routeParams,
+    )
+
+    expect(response.status).toBe(500)
+    const body = await response.json()
+    expect(body.error).toBe('write_failed')
   })
 })

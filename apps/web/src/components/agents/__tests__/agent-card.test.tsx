@@ -28,7 +28,7 @@ describe('AgentCard', () => {
     expect(screen.getByText('Researcher')).not.toBeNull()
     expect(screen.getByText('Finds context')).not.toBeNull()
     expect(screen.getByText('Primary')).not.toBeNull()
-    expect(screen.getByText('openai/gpt-5.5')).not.toBeNull()
+    expect(screen.getByText('openai/gpt-5.5 · override')).not.toBeNull()
 
     fireEvent.click(screen.getByLabelText('Edit agent'))
     expect(onEdit).toHaveBeenCalledTimes(1)
