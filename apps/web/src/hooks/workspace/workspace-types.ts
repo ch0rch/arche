@@ -18,6 +18,7 @@ export type AgentCatalogItem = {
   id: string;
   displayName: string;
   model?: string;
+  resolvedModel?: string;
   isPrimary: boolean;
 };
 

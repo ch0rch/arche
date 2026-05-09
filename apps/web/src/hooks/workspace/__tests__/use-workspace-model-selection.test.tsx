@@ -112,6 +112,52 @@ describe("useWorkspaceModelSelection", () => {
     expect(result.current.agentDefaultModel).toBe(previousDefault);
   });
 
+  it("uses the resolved primary agent model when it inherits the common default", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input) === "/api/u/alice/providers") {
+          return {
+            ok: true,
+            json: async () => ({ providers: [{ providerId: "openai", status: "enabled" }] }),
+          };
+        }
+
+        if (String(input) === "/api/u/alice/agents") {
+          return {
+            ok: true,
+            json: async () => ({
+              agents: [
+                {
+                  id: "assistant",
+                  displayName: "Assistant",
+                  resolvedModel: "openai/gpt-5.4",
+                  isPrimary: true,
+                },
+              ],
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected fetch: ${String(input)}`);
+      })
+    );
+
+    const { result } = renderHook(() =>
+      useWorkspaceModelSelection({ slug: "alice", getActiveSessionId: () => "s1" })
+    );
+
+    await act(async () => {
+      await result.current.loadModels();
+      await result.current.loadAgentCatalog();
+    });
+
+    await waitFor(() => {
+      expect(result.current.models[0]?.modelId).toBe("gpt-5.2");
+      expect(result.current.agentDefaultModel?.modelId).toBe("gpt-5.4");
+    });
+  });
+
   it("syncs runtime model and active agent from hydrated messages", async () => {
     const { result } = renderHook(() =>
       useWorkspaceModelSelection({ slug: "alice", getActiveSessionId: () => "s1" })
