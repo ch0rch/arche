@@ -112,15 +112,13 @@ export function FilePreviewPanel({
         </button>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-none">
+      <div data-testid="file-preview-scroller" className="flex-1 min-h-0 overflow-y-auto scrollbar-none">
         {isLoading && !content ? (
           <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
             Loading…
           </div>
         ) : isMarkdown ? (
-          <div className="px-6 pb-6 [&_.markdown-content]:pt-0">
-            <MarkdownPreview content={content} />
-          </div>
+          <MarkdownPreview content={content} />
         ) : (
           <pre className="whitespace-pre-wrap break-words px-6 pb-6 pt-1 font-mono text-xs text-muted-foreground">
             {content}
