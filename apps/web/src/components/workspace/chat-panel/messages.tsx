@@ -22,6 +22,7 @@ import {
 } from "@/components/workspace/chat-panel/message-part-renderer";
 import type { SessionTabInfo } from "@/components/workspace/chat-panel/types";
 import { workspaceMarkdownComponents } from "@/components/workspace/markdown-components";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import type { MessagePart, PermissionResponse } from "@/lib/opencode/types";
 import { cn } from "@/lib/utils";
 import type { ChatMessage } from "@/types/workspace";
@@ -92,27 +93,6 @@ const CHAT_ERROR_MESSAGES: Record<string, { title: string; description?: string 
     description: "Sign in again and retry your message.",
   },
 };
-
-async function copyTextToClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 function isSameMinute(ts1?: number, ts2?: number): boolean {
   if (!ts1 || !ts2) return false;
