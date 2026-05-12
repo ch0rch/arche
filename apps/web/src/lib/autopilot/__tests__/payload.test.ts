@@ -264,4 +264,66 @@ describe('validateAutopilotTaskPayload', () => {
       },
     })
   })
+
+  it('accepts Slack notification targets when enabled', async () => {
+    const { validateAutopilotTaskPayload } = await import('../payload')
+    const result = await validateAutopilotTaskPayload(
+      {
+        enabled: true,
+        slackNotificationConfig: {
+          enabled: true,
+          includeSessionLink: true,
+          targets: [
+            { type: 'dm', userId: 'user-1' },
+            { type: 'channel', channelId: 'C123' },
+          ],
+        },
+      },
+      'update',
+    )
+
+    expect(result).toEqual({
+      ok: true,
+      value: {
+        enabled: true,
+        slackNotificationConfig: {
+          enabled: true,
+          includeSessionLink: true,
+          targets: [
+            { type: 'dm', userId: 'user-1' },
+            { type: 'channel', channelId: 'C123' },
+          ],
+        },
+      },
+    })
+  })
+
+  it('requires at least one Slack notification target when enabled', async () => {
+    const { validateAutopilotTaskPayload } = await import('../payload')
+    const result = await validateAutopilotTaskPayload(
+      {
+        enabled: true,
+        slackNotificationConfig: {
+          enabled: true,
+          includeSessionLink: true,
+          targets: [],
+        },
+      },
+      'update',
+    )
+
+    expect(result).toEqual({ ok: false, error: 'slack_notification_targets_required', status: 400 })
+  })
+
+  it('accepts null Slack notification config to clear existing settings', async () => {
+    const { validateAutopilotTaskPayload } = await import('../payload')
+    const result = await validateAutopilotTaskPayload(
+      {
+        slackNotificationConfig: null,
+      },
+      'update',
+    )
+
+    expect(result).toEqual({ ok: true, value: { slackNotificationConfig: null } })
+  })
 })

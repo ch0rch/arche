@@ -168,6 +168,23 @@ describe('autopilotService', () => {
       expect(result).toBeNull()
       expect(mockPrisma.autopilotTask.findFirst).not.toHaveBeenCalled()
     })
+
+    it('clears Slack notification config when explicitly set to null', async () => {
+      const updated = { id: 'task-1', slackNotificationConfig: null }
+      mockPrisma.autopilotTask.updateMany.mockResolvedValue({ count: 1 })
+      mockPrisma.autopilotTask.findFirst.mockResolvedValue(updated)
+
+      const { updateTaskByIdAndUserId } = await import('../autopilot')
+      const result = await updateTaskByIdAndUserId('task-1', 'user-1', {
+        slackNotificationConfig: null,
+      })
+
+      expect(result).toEqual(updated)
+      expect(mockPrisma.autopilotTask.updateMany).toHaveBeenCalledWith({
+        where: { id: 'task-1', userId: 'user-1' },
+        data: { slackNotificationConfig: expect.anything() },
+      })
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -421,6 +438,35 @@ describe('autopilotService', () => {
 
       const findCall = mockPrisma.autopilotTask.findFirst.mock.calls[0][0]
       expect(findCall.where).not.toHaveProperty('userId')
+    })
+
+    it('can explicitly use the per-user concurrency policy for immediate claims', async () => {
+      const task = { id: 'task-1', leaseOwner: null, leaseExpiresAt: null }
+      mockPrisma.autopilotTask.findFirst.mockResolvedValue(task)
+      mockPrisma.autopilotTask.updateMany.mockResolvedValue({ count: 1 })
+
+      const { claimTaskForImmediateRun } = await import('../autopilot')
+      await claimTaskForImmediateRun({
+        concurrencyPolicy: 'per_user',
+        id: 'task-1',
+        leaseMs: 60_000,
+        leaseOwner: 'worker-1',
+        now,
+      })
+
+      expect(mockPrisma.autopilotTask.findFirst).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            user: {
+              autopilotTasks: {
+                none: {
+                  leaseExpiresAt: { gt: now },
+                },
+              },
+            },
+          }),
+        }),
+      )
     })
   })
 

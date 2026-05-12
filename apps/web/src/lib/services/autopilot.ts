@@ -1,5 +1,7 @@
-import { AutopilotRunStatus, AutopilotRunTrigger } from '@prisma/client'
+import { AutopilotRunStatus, Prisma } from '@prisma/client'
+import type { AutopilotRunTrigger } from '@prisma/client'
 
+import type { AutopilotSlackNotificationConfig } from '@/lib/autopilot/types'
 import { prisma } from '@/lib/prisma'
 
 export type AutopilotTaskRecord = {
@@ -17,6 +19,7 @@ export type AutopilotTaskRecord = {
   leaseExpiresAt: Date | null
   retryAttempt: number
   retryScheduledFor: Date | null
+  slackNotificationConfig?: Prisma.JsonValue | null
   createdAt: Date
   updatedAt: Date
 }
@@ -50,6 +53,8 @@ export type AutopilotClaimedTask = AutopilotTaskRecord & {
   scheduledFor: Date
 }
 
+export type AutopilotClaimConcurrencyPolicy = 'per_user' | 'task_only'
+
 type LeaseScope = {
   leaseExpiresAt: null
 } | {
@@ -81,6 +86,28 @@ const TASK_DETAIL_INCLUDE = {
   },
 }
 
+function slackNotificationConfigToJson(
+  config: AutopilotSlackNotificationConfig,
+): Prisma.InputJsonObject {
+  return {
+    enabled: config.enabled,
+    includeSessionLink: config.includeSessionLink,
+    targets: config.targets.map((target) => {
+      if (target.type === 'dm') {
+        return {
+          type: 'dm',
+          userId: target.userId,
+        }
+      }
+
+      return {
+        type: 'channel',
+        channelId: target.channelId,
+      }
+    }),
+  }
+}
+
 function availableLease(now: Date): LeaseScope[] {
   return [
     { leaseExpiresAt: null },
@@ -99,6 +126,16 @@ function noActiveUserLease(now: Date) {
         },
       },
     },
+  }
+}
+
+function claimAvailabilityWhere(
+  now: Date,
+  concurrencyPolicy: AutopilotClaimConcurrencyPolicy,
+): Prisma.AutopilotTaskWhereInput {
+  return {
+    OR: availableLease(now),
+    ...(concurrencyPolicy === 'per_user' ? noActiveUserLease(now) : {}),
   }
 }
 
@@ -130,6 +167,7 @@ export async function createTask(data: {
   timezone: string
   enabled: boolean
   nextRunAt: Date
+  slackNotificationConfig?: AutopilotSlackNotificationConfig | null
 }): Promise<AutopilotTaskRecord> {
   return prisma.autopilotTask.create({
     data: {
@@ -141,6 +179,9 @@ export async function createTask(data: {
       timezone: data.timezone,
       enabled: data.enabled,
       nextRunAt: data.nextRunAt,
+      ...(data.slackNotificationConfig
+        ? { slackNotificationConfig: slackNotificationConfigToJson(data.slackNotificationConfig) }
+        : {}),
     },
   })
 }
@@ -156,11 +197,20 @@ export async function updateTaskByIdAndUserId(
     timezone?: string
     enabled?: boolean
     nextRunAt?: Date
+    slackNotificationConfig?: AutopilotSlackNotificationConfig | null
   },
 ): Promise<AutopilotTaskRecord | null> {
+  const { slackNotificationConfig, ...taskData } = data
+  const updateData: Prisma.AutopilotTaskUpdateManyMutationInput = { ...taskData }
+  if ('slackNotificationConfig' in data) {
+    updateData.slackNotificationConfig = slackNotificationConfig
+      ? slackNotificationConfigToJson(slackNotificationConfig)
+      : Prisma.DbNull
+  }
+
   const result = await prisma.autopilotTask.updateMany({
     where: { id, userId },
-    data,
+    data: updateData,
   })
   if (result.count === 0) return null
   return prisma.autopilotTask.findFirst({ where: { id, userId } })
@@ -181,8 +231,7 @@ export async function claimNextDueTask(params: {
       where: {
         enabled: true,
         nextRunAt: { lte: params.now },
-        OR: availableLease(params.now),
-        ...noActiveUserLease(params.now),
+        ...claimAvailabilityWhere(params.now, 'per_user'),
       },
       orderBy: [
         { nextRunAt: 'asc' },
@@ -205,8 +254,7 @@ export async function claimNextDueTask(params: {
         id: task.id,
         enabled: true,
         nextRunAt: task.nextRunAt,
-        OR: availableLease(params.now),
-        ...noActiveUserLease(params.now),
+        ...claimAvailabilityWhere(params.now, 'per_user'),
       },
       data: {
         leaseOwner: params.leaseOwner,
@@ -242,12 +290,14 @@ export async function claimTaskForImmediateRun(params: {
   leaseOwner: string
   now: Date
   userId?: string
+  concurrencyPolicy?: AutopilotClaimConcurrencyPolicy
 }): Promise<AutopilotClaimedTask | null> {
+  const concurrencyPolicy = params.concurrencyPolicy ?? 'task_only'
   const task = await prisma.autopilotTask.findFirst({
     where: {
       id: params.id,
       ...(params.userId ? { userId: params.userId } : {}),
-      OR: availableLease(params.now),
+      ...claimAvailabilityWhere(params.now, concurrencyPolicy),
     },
   })
 
@@ -260,7 +310,7 @@ export async function claimTaskForImmediateRun(params: {
     where: {
       id: task.id,
       ...(params.userId ? { userId: params.userId } : {}),
-      OR: availableLease(params.now),
+      ...claimAvailabilityWhere(params.now, concurrencyPolicy),
     },
     data: {
       leaseOwner: params.leaseOwner,

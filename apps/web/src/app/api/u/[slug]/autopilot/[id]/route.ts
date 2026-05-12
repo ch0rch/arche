@@ -4,24 +4,19 @@ import { NextResponse } from 'next/server'
 import { auditEvent } from '@/lib/auth'
 import { getNextAutopilotRunAt, validateAutopilotCronExpression } from '@/lib/autopilot/cron'
 import { validateAutopilotTaskPayload } from '@/lib/autopilot/payload'
+import {
+  resolveAutopilotWorkspaceUserId,
+  validateAutopilotSlackNotificationAccess,
+} from '@/lib/autopilot/route-auth'
 import { serializeAutopilotTaskDetail } from '@/lib/autopilot/serializers'
-import type { AutopilotTaskDetail } from '@/lib/autopilot/types'
+import type { AutopilotSlackNotificationConfig, AutopilotTaskDetail } from '@/lib/autopilot/types'
 import { requireCapability } from '@/lib/runtime/require-capability'
 import { withAuth } from '@/lib/runtime/with-auth'
-import { autopilotService, userService } from '@/lib/services'
+import { autopilotService } from '@/lib/services'
 
 type AutopilotTaskRouteParams = {
   id: string
   slug: string
-}
-
-async function resolveUserIdForSlug(slug: string, contextUser: { id: string; slug: string }) {
-  if (contextUser.slug === slug) {
-    return contextUser.id
-  }
-
-  const owner = await userService.findIdBySlug(slug)
-  return owner?.id ?? null
 }
 
 export const GET = withAuth<{ task: AutopilotTaskDetail } | { error: string }, AutopilotTaskRouteParams>(
@@ -30,7 +25,7 @@ export const GET = withAuth<{ task: AutopilotTaskDetail } | { error: string }, A
     const denied = requireCapability('autopilot')
     if (denied) return denied
 
-    const userId = await resolveUserIdForSlug(slug, user)
+    const userId = await resolveAutopilotWorkspaceUserId(slug, user)
     if (!userId) {
       return NextResponse.json({ error: 'not_found' }, { status: 404 })
     }
@@ -50,7 +45,7 @@ export const PATCH = withAuth<{ task: AutopilotTaskDetail } | { error: string },
     const denied = requireCapability('autopilot')
     if (denied) return denied
 
-    const userId = await resolveUserIdForSlug(slug, user)
+    const userId = await resolveAutopilotWorkspaceUserId(slug, user)
     if (!userId) {
       return NextResponse.json({ error: 'not_found' }, { status: 404 })
     }
@@ -96,17 +91,42 @@ export const PATCH = withAuth<{ task: AutopilotTaskDetail } | { error: string },
     const nextRunAt = nextEnabled && (enabledChanged || scheduleChanged)
       ? getNextAutopilotRunAt(nextCronExpression, nextTimezone, new Date())
       : undefined
+    const updateData: {
+      name?: string
+      prompt?: string
+      targetAgentId?: string | null
+      cronExpression?: string
+      timezone?: string
+      enabled?: boolean
+      nextRunAt?: Date
+      slackNotificationConfig?: AutopilotSlackNotificationConfig | null
+    } = {
+      name: payload.value.name,
+      prompt: payload.value.prompt,
+      targetAgentId: payload.value.targetAgentId,
+      cronExpression: payload.value.cronExpression,
+      timezone: payload.value.timezone,
+      enabled: payload.value.enabled,
+      nextRunAt,
+    }
+    if ('slackNotificationConfig' in payload.value) {
+      updateData.slackNotificationConfig = payload.value.slackNotificationConfig ?? null
+    }
+
+    const slackNotificationAccess = await validateAutopilotSlackNotificationAccess(
+      payload.value.slackNotificationConfig,
+      user,
+      userId,
+    )
+    if (!slackNotificationAccess.ok) {
+      return NextResponse.json(
+        { error: slackNotificationAccess.error },
+        { status: slackNotificationAccess.status },
+      )
+    }
 
     try {
-      const updated = await autopilotService.updateTaskByIdAndUserId(id, userId, {
-        name: payload.value.name,
-        prompt: payload.value.prompt,
-        targetAgentId: payload.value.targetAgentId,
-        cronExpression: payload.value.cronExpression,
-        timezone: payload.value.timezone,
-        enabled: payload.value.enabled,
-        nextRunAt,
-      })
+      const updated = await autopilotService.updateTaskByIdAndUserId(id, userId, updateData)
 
       if (!updated) {
         return NextResponse.json({ error: 'not_found' }, { status: 404 })
@@ -146,7 +166,7 @@ export const DELETE = withAuth<{ ok: true } | { error: string }, AutopilotTaskRo
     const denied = requireCapability('autopilot')
     if (denied) return denied
 
-    const userId = await resolveUserIdForSlug(slug, user)
+    const userId = await resolveAutopilotWorkspaceUserId(slug, user)
     if (!userId) {
       return NextResponse.json({ error: 'not_found' }, { status: 404 })
     }
