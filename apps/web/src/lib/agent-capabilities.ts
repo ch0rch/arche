@@ -1,4 +1,9 @@
-import type { ConnectorType } from '@/lib/connectors/types'
+import {
+  CONNECTOR_TYPES,
+  isSingleInstanceConnectorType,
+  type ConnectorType,
+} from '@/lib/connectors/types'
+import { isRecord } from '@/lib/records'
 import { SKILL_NAME_PATTERN } from '@/lib/skills/types'
 
 export const OPENCODE_AGENT_TOOLS = [
@@ -16,6 +21,8 @@ export const OPENCODE_AGENT_TOOLS = [
   'lsp',
   'todoread',
   'todowrite',
+  'document_inspect',
+  'presentation_inspect',
   'spreadsheet_inspect',
   'spreadsheet_sample',
   'spreadsheet_query',
@@ -42,6 +49,8 @@ export const OPENCODE_AGENT_TOOL_OPTIONS: Array<{
   { id: 'lsp', label: 'Language server queries' },
   { id: 'todoread', label: 'Read todo list' },
   { id: 'todowrite', label: 'Update todo list' },
+  { id: 'document_inspect', label: 'Inspect documents' },
+  { id: 'presentation_inspect', label: 'Inspect presentations' },
   { id: 'spreadsheet_inspect', label: 'Inspect spreadsheets' },
   { id: 'spreadsheet_sample', label: 'Sample spreadsheet rows' },
   { id: 'spreadsheet_query', label: 'Query spreadsheet data' },
@@ -57,22 +66,42 @@ export type AgentCapabilities = {
 export type ConnectorCapabilityRecord = {
   id: string
   type: ConnectorType
-  enabled: boolean
 }
 
+const SINGLE_INSTANCE_AGENT_CONNECTOR_CAPABILITY_IDS = {
+  linear: 'globallinear',
+  'meta-ads': 'globalmetaads',
+  notion: 'globalnotion',
+  zendesk: 'globalzendesk',
+  ahrefs: 'globalahrefs',
+  umami: 'globalumami',
+  google_gmail: 'globalgooglegmail',
+  google_drive: 'globalgoogledrive',
+  google_calendar: 'globalgooglecalendar',
+  google_chat: 'globalgooglechat',
+  google_people: 'globalgooglepeople',
+} as const satisfies Record<Exclude<ConnectorType, 'custom'>, string>
+
 const TOOL_SET = new Set<string>(OPENCODE_AGENT_TOOLS)
-export const MCP_TOOL_PATTERN = /^arche_(linear|notion|custom)_([a-z0-9]+)_\*$/
+const CONNECTOR_TYPE_PATTERN = CONNECTOR_TYPES.join('|')
+export const MCP_TOOL_PATTERN = new RegExp(`^arche_(${CONNECTOR_TYPE_PATTERN})_([a-z0-9]+)_\\*$`)
 
 function buildMcpServerKey(type: ConnectorType, id: string): string {
   return `arche_${type}_${id}`
 }
 
-function uniqueSorted(values: string[]): string[] {
-  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b))
+export function getConnectorCapabilityId(type: ConnectorType, id: string): string {
+  if (type === 'custom') {
+    return id
+  }
+
+  return isSingleInstanceConnectorType(type)
+    ? SINGLE_INSTANCE_AGENT_CONNECTOR_CAPABILITY_IDS[type]
+    : id
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+function uniqueSorted(values: string[]): string[] {
+  return Array.from(new Set(values)).sort((a, b) => a.localeCompare(b))
 }
 
 function isPermissionValue(value: unknown): value is 'allow' | 'ask' | 'deny' {
@@ -170,7 +199,7 @@ export function buildAgentToolsConfigFromCapabilities(
   const connectorById = new Map(connectors.map((connector) => [connector.id, connector]))
   for (const connectorId of capabilities.mcpConnectorIds) {
     const connector = connectorById.get(connectorId)
-    if (!connector || !connector.enabled) continue
+    if (!connector) continue
     const serverKey = buildMcpServerKey(connector.type, connector.id)
     toolConfig[`${serverKey}_*`] = true
   }
@@ -196,7 +225,8 @@ export function extractAgentCapabilitiesFromTools(
     .flatMap(([toolId]) => {
       const match = toolId.match(MCP_TOOL_PATTERN)
       if (!match) return []
-      return [match[2]]
+      const [, type, connectorId] = match
+      return [getConnectorCapabilityId(type as ConnectorType, connectorId)]
     })
 
   let skillIds: string[] = []

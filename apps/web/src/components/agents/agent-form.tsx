@@ -8,13 +8,14 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { notifyWorkspaceConfigChanged } from '@/lib/runtime/config-status-events'
-import { cn } from '@/lib/utils'
 import {
   OPENCODE_AGENT_TOOL_OPTIONS,
   type AgentCapabilities,
   type OpenCodeAgentToolId,
 } from '@/lib/agent-capabilities'
+import type { AgentConnectorCapabilityOption } from '@/lib/agent-connector-capabilities'
+import { notifyWorkspaceConfigChanged } from '@/lib/runtime/config-status-events'
+import { cn } from '@/lib/utils'
 
 type AgentFormProps = {
   agentId?: string
@@ -30,13 +31,6 @@ type AgentFormProps = {
 type ModelOption = {
   id: string
   label: string
-}
-
-type ConnectorListItem = {
-  id: string
-  type: string
-  name: string
-  enabled: boolean
 }
 
 type SkillListItem = {
@@ -58,13 +52,15 @@ export function AgentForm({
   const [displayName, setDisplayName] = useState('')
   const [description, setDescription] = useState('')
   const [model, setModel] = useState('')
+  const [defaultModel, setDefaultModel] = useState<string | undefined>()
+  const [usesDefaultModel, setUsesDefaultModel] = useState(true)
   const [temperature, setTemperature] = useState('')
   const [prompt, setPrompt] = useState('')
   const [isPrimary, setIsPrimary] = useState(false)
   const [enabledTools, setEnabledTools] = useState<OpenCodeAgentToolId[]>([])
   const [enabledMcpConnectorIds, setEnabledMcpConnectorIds] = useState<string[]>([])
   const [enabledSkillIds, setEnabledSkillIds] = useState<string[]>([])
-  const [connectors, setConnectors] = useState<ConnectorListItem[]>([])
+  const [connectors, setConnectors] = useState<AgentConnectorCapabilityOption[]>([])
   const [skills, setSkills] = useState<SkillListItem[]>([])
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([])
   const [hash, setHash] = useState<string | undefined>()
@@ -82,7 +78,7 @@ export function AgentForm({
     async function loadFormOptions() {
       const [modelsResponse, connectorsResponse, skillsResponse] = await Promise.all([
         fetch(`/api/u/${slug}/agents/models`, { cache: 'no-store' }).catch(() => null),
-        fetch(`/api/u/${slug}/connectors`, { cache: 'no-store' }).catch(() => null),
+        fetch(`/api/u/${slug}/agents/connectors`, { cache: 'no-store' }).catch(() => null),
         fetch(`/api/u/${slug}/skills`, { cache: 'no-store' }).catch(() => null),
       ])
 
@@ -97,13 +93,13 @@ export function AgentForm({
 
       if (connectorsResponse?.ok) {
         const data = (await connectorsResponse.json().catch(() => null)) as
-          | { connectors?: ConnectorListItem[] }
+          | { connectors?: AgentConnectorCapabilityOption[] }
           | null
-        const enabledConnectorList = (data?.connectors ?? []).filter((connector) => connector.enabled)
-        setConnectors(enabledConnectorList)
+        const availableConnectors = data?.connectors ?? []
+        setConnectors(availableConnectors)
         setEnabledMcpConnectorIds((current) =>
           current.filter((connectorId) =>
-            enabledConnectorList.some((connector) => connector.id === connectorId)
+            availableConnectors.some((connector) => connector.id === connectorId)
           )
         )
       }
@@ -137,9 +133,12 @@ export function AgentForm({
                   id: string
                   displayName?: string
                   description?: string
+                  defaultModel?: string
                   model?: string
+                  resolvedModel?: string
                   temperature?: number
                   prompt?: string
+                  usesDefaultModel?: boolean
                   isPrimary: boolean
                   capabilities?: AgentCapabilities
                 }
@@ -156,7 +155,9 @@ export function AgentForm({
           setId(data.agent.id)
           setDisplayName(data.agent.displayName ?? data.agent.id)
           setDescription(data.agent.description ?? '')
-          setModel(data.agent.model ?? '')
+          setDefaultModel(data.agent.defaultModel)
+          setUsesDefaultModel(data.agent.usesDefaultModel ?? !data.agent.model)
+          setModel(data.agent.model ?? data.agent.resolvedModel ?? data.agent.defaultModel ?? '')
           setTemperature(typeof data.agent.temperature === 'number' ? String(data.agent.temperature) : '')
           setPrompt(data.agent.prompt ?? '')
           setIsPrimary(data.agent.isPrimary)
@@ -173,9 +174,16 @@ export function AgentForm({
     if (mode === 'create') {
       fetch(`/api/u/${slug}/agents`, { cache: 'no-store' })
         .then(async (response) => {
-          const data = (await response.json().catch(() => null)) as { hash?: string } | null
+          const data = (await response.json().catch(() => null)) as {
+            defaultModel?: string
+            hash?: string
+          } | null
           if (response.ok && data?.hash) {
             setHash(data.hash)
+          }
+          if (response.ok) {
+            setDefaultModel(data?.defaultModel)
+            setModel(data?.defaultModel ?? '')
           }
         })
         .catch(() => {})
@@ -259,6 +267,13 @@ export function AgentForm({
     )
   }
 
+  const handleUsesDefaultModelChange = (checked: boolean) => {
+    setUsesDefaultModel(checked)
+    if (!checked && !model.trim() && defaultModel) {
+      setModel(defaultModel)
+    }
+  }
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (isSaving) return
@@ -283,7 +298,7 @@ export function AgentForm({
         const payload = {
           displayName: displayName.trim(),
           description: description.trim() || undefined,
-          model: model.trim() || undefined,
+          model: usesDefaultModel ? null : model.trim() || null,
           temperature: temperature.trim() ? Number(temperature) : undefined,
           prompt,
           isPrimary,
@@ -316,7 +331,7 @@ export function AgentForm({
       const payload = {
         displayName: displayName.trim() ? displayName.trim() : null,
         description: description.trim() ? description.trim() : null,
-        model: model.trim() ? model.trim() : null,
+        model: usesDefaultModel ? null : model.trim() || null,
         temperature: temperature.trim() ? Number(temperature) : null,
         prompt,
         expectedHash: hash,
@@ -397,14 +412,31 @@ export function AgentForm({
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-2">
-          <Label htmlFor="agent-model">Default model</Label>
+          <div className="flex items-center justify-between gap-3">
+            <Label htmlFor="agent-model">Model override</Label>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={usesDefaultModel}
+                onChange={(event) => handleUsesDefaultModelChange(event.target.checked)}
+                className={checkboxClassName}
+              />
+              Use workspace default model
+            </label>
+          </div>
           <Input
             id="agent-model"
             list="agent-models"
             value={model}
             onChange={(event) => setModel(event.target.value)}
             placeholder="Select or type a model"
+            disabled={usesDefaultModel}
           />
+          {usesDefaultModel ? (
+            <p className="text-xs text-muted-foreground">
+              {defaultModel ? `Using ${defaultModel}` : 'No workspace default model is configured.'}
+            </p>
+          ) : null}
           <datalist id="agent-models">
             {modelOptions.map((option) => (
               <option key={option.id} value={option.id}>
@@ -510,18 +542,21 @@ export function AgentForm({
                   </button>
                 </TooltipTrigger>
                 <TooltipContent side="right" className="max-w-[240px] text-xs leading-relaxed">
-                  MCP connectors let the agent interact with external services like Linear, Notion, or custom APIs. Manage connectors from the Connectors page.
+                  Built-in MCP connectors apply globally by type. Custom connectors are granted per configured connector across all workspaces, including service users.
                 </TooltipContent>
               </Tooltip>
             </div>
             {connectors.length === 0 ? (
               <div className="flex items-center gap-2 rounded-lg border border-dashed border-border/60 px-3 py-2.5 text-sm text-muted-foreground/70">
-                No enabled connectors available.
+                No connectors available.
               </div>
             ) : (
               <div className="grid gap-2 md:grid-cols-2">
                 {connectors.map((connector) => {
                   const checked = enabledMcpConnectorIds.includes(connector.id)
+                  const metadata = connector.scope === 'type'
+                    ? 'All workspaces with this connector type'
+                    : `${connector.ownerSlug ?? 'Unknown workspace'}${connector.ownerKind === 'SERVICE' ? ' service workspace' : ''}${connector.enabled ? '' : ' · disabled'}`
                   return (
                     <label
                       key={connector.id}
@@ -538,8 +573,12 @@ export function AgentForm({
                         onChange={() => toggleMcpConnector(connector.id)}
                         className={checkboxClassName}
                       />
-                      <span className="font-medium">{connector.name}</span>
-                      <span className="text-xs text-muted-foreground">{connector.type}</span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-medium">{connector.name}</span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {connector.type} · {metadata}
+                        </span>
+                      </span>
                     </label>
                   )
                 })}

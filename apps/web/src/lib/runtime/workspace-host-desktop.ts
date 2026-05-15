@@ -2,8 +2,10 @@ import { spawn, type ChildProcess } from 'child_process'
 import { writeFileSync } from 'fs'
 import { join } from 'path'
 
+import { isE2eFakeRuntimeEnabled } from '@/lib/e2e/runtime'
 import { syncProviderAccessForInstance } from '@/lib/opencode/providers'
 import { getKbContentRoot } from '@/lib/runtime/paths'
+import { desktopWorkspaceHostE2e } from '@/lib/runtime/workspace-host-desktop-e2e'
 import {
   checkOpenCodeHealthy,
   waitForHttpReady,
@@ -340,7 +342,7 @@ export async function reconcileDesktopInstances(): Promise<void> {
 // WorkspaceHost implementation
 // ---------------------------------------------------------------------------
 
-export const desktopWorkspaceHost: WorkspaceHost = {
+const desktopWorkspaceHostReal: WorkspaceHost = {
   async start(
     slug: string,
     userId: string,
@@ -395,6 +397,7 @@ export const desktopWorkspaceHost: WorkspaceHost = {
           OPENCODE_SERVER_PASSWORD: password,
           OPENCODE_SERVER_USERNAME: DEFAULT_USERNAME,
           ...(opencodeConfigDir ? { OPENCODE_CONFIG_DIR: opencodeConfigDir } : {}),
+          WORKSPACE_DIR: workspaceDir,
           HOME: archeDataDir,
           XDG_DATA_HOME: join(archeDataDir, '.local', 'share'),
           XDG_STATE_HOME: join(archeDataDir, '.local', 'state'),
@@ -606,3 +609,7 @@ export const desktopWorkspaceHost: WorkspaceHost = {
     }
   },
 }
+
+export const desktopWorkspaceHost: WorkspaceHost = isE2eFakeRuntimeEnabled()
+  ? desktopWorkspaceHostE2e
+  : desktopWorkspaceHostReal

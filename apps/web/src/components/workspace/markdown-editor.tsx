@@ -5,12 +5,7 @@ import { type MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, us
 import {
   ArrowClockwise,
   ArrowCounterClockwise,
-  Columns,
-  ColumnsPlusRight,
-  Minus,
   PencilSimple,
-  Rows,
-  RowsPlusBottom,
   Table as TableIcon,
 } from "@phosphor-icons/react";
 import Placeholder from "@tiptap/extension-placeholder";
@@ -33,6 +28,7 @@ import {
   type MarkdownFrontmatterProperty,
 } from "@/components/workspace/markdown-frontmatter";
 import { MarkdownFrontmatterPanel } from "@/components/workspace/markdown-frontmatter-panel";
+import { MarkdownTableControls } from "@/components/workspace/markdown-table-controls";
 import { getInternalLinkHoverPosition } from "@/components/workspace/internal-link-hover-position";
 import { ObsidianLinkDecorations } from "@/components/workspace/obsidian-link-decorations";
 import {
@@ -508,22 +504,14 @@ export function MarkdownEditor({
         : editor?.isActive("heading", { level: 3 })
           ? "H3"
           : "H";
-  const isInTable = editor?.isActive("table") ?? false;
+  const editorScrollRef = useRef<HTMLDivElement>(null);
 
   return (
     <div className="flex h-full flex-col">
-      <MarkdownFrontmatterPanel
-        editable
-        frontmatter={frontmatter}
-        onPropertiesChange={handlePropertiesChange}
-        onRawChange={handleRawFrontmatterChange}
-      />
-
-      <div className="mx-4 pt-2 pb-4">
-        <div className="h-px bg-border/40" />
-      </div>
-
-      <div className="mx-4 mb-1 flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-foreground/[0.02] px-3 py-1.5">
+      <div
+        data-testid="markdown-editor-toolbar"
+        className="flex shrink-0 items-center justify-between gap-3 border-b border-border/30 px-4 py-2"
+      >
         <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto scrollbar-none"  style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -646,60 +634,6 @@ export function MarkdownEditor({
           >
             <TableIcon size={14} weight="bold" />
           </Button>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => editor?.chain().focus().addRowAfter().run()}
-            disabled={!isInTable}
-            aria-label="Add row"
-            title="Add row"
-          >
-            <RowsPlusBottom size={14} weight="bold" />
-          </Button>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => editor?.chain().focus().addColumnAfter().run()}
-            disabled={!isInTable}
-            aria-label="Add column"
-            title="Add column"
-          >
-            <ColumnsPlusRight size={14} weight="bold" />
-          </Button>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => editor?.chain().focus().deleteRow().run()}
-            disabled={!isInTable}
-            aria-label="Delete row"
-            title="Delete row"
-          >
-            <span className="flex items-center gap-0.5">
-              <Rows size={12} weight="bold" />
-              <Minus size={10} weight="bold" />
-            </span>
-          </Button>
-          <Button
-            type="button"
-            size="icon"
-            variant="ghost"
-            className="h-7 w-7"
-            onClick={() => editor?.chain().focus().deleteColumn().run()}
-            disabled={!isInTable}
-            aria-label="Delete column"
-            title="Delete column"
-          >
-            <span className="flex items-center gap-0.5">
-              <Columns size={12} weight="bold" />
-              <Minus size={10} weight="bold" />
-            </span>
-          </Button>
           <div className="mx-1 h-4 w-px bg-border/40" />
           <Button
             type="button"
@@ -756,11 +690,26 @@ export function MarkdownEditor({
       </div>
 
       <div
-        className="workspace-tiptap relative flex-1 overflow-y-auto px-6 pt-2 pb-5 scrollbar-none"
+        ref={editorScrollRef}
+        className="workspace-tiptap relative flex-1 overflow-y-auto pb-5 scrollbar-none"
         onMouseLeave={scheduleHoveredLinkHide}
         onMouseMove={handleWorkspaceMouseMove}
       >
-        <EditorContent editor={editor} />
+        <MarkdownFrontmatterPanel
+          editable
+          frontmatter={frontmatter}
+          onPropertiesChange={handlePropertiesChange}
+          onRawChange={handleRawFrontmatterChange}
+        />
+
+        <div className="mx-4 pt-2 pb-4">
+          <div className="h-px bg-border/40" />
+        </div>
+
+        <div className="px-6">
+          <EditorContent editor={editor} />
+        </div>
+        <MarkdownTableControls containerRef={editorScrollRef} editor={editor} />
         {hoveredLink ? (
           <div
             className="absolute z-20 flex max-w-72 flex-col gap-2 rounded-md border border-border/50 bg-background/95 p-2 shadow-lg backdrop-blur-sm"

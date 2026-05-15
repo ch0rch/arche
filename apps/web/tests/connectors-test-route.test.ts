@@ -119,6 +119,89 @@ describe('POST /api/u/[slug]/connectors/[id]/test SSRF hardening', () => {
   })
 })
 
+describe('POST /api/u/[slug]/connectors/[id]/test Zendesk checks', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.resetModules()
+
+    mockGetAuthenticatedUser.mockResolvedValue(session('alice'))
+    mockValidateSameOrigin.mockReturnValue({ ok: true })
+    mockUserFindUnique.mockResolvedValue({ id: 'user-1' })
+    mockConnectorFindFirst.mockResolvedValue({
+      id: 'conn-zendesk-1',
+      userId: 'user-1',
+      type: 'zendesk',
+      enabled: true,
+      config: 'encrypted-config',
+    })
+    mockRefreshConnectorOAuthConfigIfNeeded.mockResolvedValue(null)
+    mockDecryptConfig.mockReturnValue({
+      subdomain: 'acme',
+      email: 'agent@example.com',
+      apiToken: 'token-123',
+    })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('tests Zendesk credentials against the users/me endpoint', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ user: { id: 1, email: 'agent@example.com' } }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      )
+    )
+
+    const { status, body } = await callTestRoute('alice', 'conn-zendesk-1')
+
+    expect(status).toBe(200)
+    expect(body).toEqual({
+      ok: true,
+      tested: true,
+      message: 'Zendesk connection verified.',
+    })
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      new URL('https://acme.zendesk.com/api/v2/users/me.json'),
+      expect.objectContaining({
+        method: 'GET',
+      })
+    )
+
+    const [, requestInit] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [URL, RequestInit]
+    const headers = requestInit.headers as Headers
+    expect(headers.get('Authorization')).toBe(
+      `Basic ${Buffer.from('agent@example.com/token:token-123').toString('base64')}`
+    )
+  })
+
+  it('returns Zendesk API failures to the client', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: 'Too Many Requests', description: 'Slow down' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '30' },
+        })
+      )
+    )
+
+    const { status, body } = await callTestRoute('alice', 'conn-zendesk-1')
+
+    expect(status).toBe(200)
+    expect(body).toEqual({
+      ok: false,
+      tested: true,
+      message: 'Zendesk request failed (429): Slow down',
+    })
+  })
+})
+
 describe('POST /api/u/[slug]/connectors/[id]/test OAuth MCP checks', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -251,6 +334,51 @@ describe('POST /api/u/[slug]/connectors/[id]/test OAuth MCP checks', () => {
       'https://custom.example.com/mcp',
       expect.objectContaining({
         method: 'POST',
+      })
+    )
+  })
+
+  it('tests Meta Ads OAuth using the Graph API ad accounts endpoint', async () => {
+    mockConnectorFindFirst.mockResolvedValueOnce({
+      id: 'conn-meta-1',
+      userId: 'user-1',
+      type: 'meta-ads',
+      enabled: true,
+      config: 'encrypted-config',
+    })
+    mockDecryptConfig.mockReturnValueOnce({
+      authType: 'oauth',
+      appId: 'meta-app-id',
+      appSecret: 'meta-app-secret',
+      selectedAdAccountIds: ['act_123'],
+      oauth: {
+        provider: 'meta-ads',
+        accessToken: 'meta-oauth-token',
+        clientId: 'meta-app-id',
+      },
+    })
+
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ id: 'act_123', account_id: '123', name: 'Main account' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { status, body } = await callTestRoute('alice', 'conn-meta-1')
+
+    expect(status).toBe(200)
+    expect(body).toEqual({
+      ok: true,
+      tested: true,
+      message:
+        'Meta Ads connection verified. Accessible ad accounts: 1. Restart the workspace to apply the updated connector credentials. If it is still unavailable in chat, enable this connector in Agent capabilities.',
+    })
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/me/adaccounts'),
+      expect.objectContaining({
+        method: 'GET',
       })
     )
   })

@@ -17,6 +17,7 @@ SKIP_VALIDATION=0
 TAG_CREATED=0
 TAG_PUSHED=0
 NODE_VERSION_FILE="$ROOT_DIR/.node-version"
+REPAIR_STANDALONE_SCRIPT="$ROOT_DIR/scripts/repair-next-standalone-pnpm-symlinks.mjs"
 
 usage() {
   cat <<'EOF'
@@ -305,6 +306,15 @@ prepare_runtime_binaries_for_arch() {
 sync_web_dependencies_for_arch() {
   local arch="$1"
 
+  printf '==> Refreshing web dependencies for %s\n' "$arch"
+  (
+    cd "$WEB_DIR"
+    PATH="$DESKTOP_DIR/bin:$PATH" \
+      npm_config_arch="$arch" \
+      npm_config_target_arch="$arch" \
+      pnpm install --frozen-lockfile
+  )
+
   printf '==> Refreshing web native dependencies for %s\n' "$arch"
   (
     cd "$WEB_DIR"
@@ -327,6 +337,11 @@ build_web_for_arch() {
       ARCHE_DESKTOP_WEB_HOST='127.0.0.1' \
       pnpm build
   )
+}
+
+repair_web_standalone_symlinks() {
+  printf '==> Repairing standalone pnpm symlinks\n'
+  node "$REPAIR_STANDALONE_SCRIPT" "$WEB_DIR/.next/standalone"
 }
 
 sync_desktop_dependencies_for_arch() {
@@ -365,6 +380,7 @@ build_arch() {
   prepare_runtime_binaries_for_arch "$arch" "$runtime_platform" "$goarch"
   sync_web_dependencies_for_arch "$arch"
   build_web_for_arch "$arch"
+  repair_web_standalone_symlinks
   sync_desktop_dependencies_for_arch "$arch"
 
   sign_runtime_binaries

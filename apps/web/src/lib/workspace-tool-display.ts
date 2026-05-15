@@ -1,12 +1,22 @@
-import type { ConnectorType } from '@/lib/connectors/types'
+import { CONNECTOR_TYPES, type ConnectorType } from '@/lib/connectors/types'
 
 const CONNECTOR_TYPE_LABELS: Record<ConnectorType, string> = {
   linear: 'Linear',
   notion: 'Notion',
+  zendesk: 'Zendesk',
+  ahrefs: 'Ahrefs',
+  umami: 'Umami',
+  'meta-ads': 'Meta Ads',
   custom: 'Custom Connector',
+  google_gmail: 'Gmail',
+  google_drive: 'Google Drive',
+  google_calendar: 'Google Calendar',
+  google_chat: 'Google Chat',
+  google_people: 'People API',
 }
 
-const CONNECTOR_TOOL_NAME_PATTERN = /^arche_(linear|notion|custom)_([^_]+)_(.+)$/
+const CONNECTOR_TYPE_PATTERN = CONNECTOR_TYPES.join('|')
+const CONNECTOR_TOOL_NAME_PATTERN = new RegExp(`^arche_(${CONNECTOR_TYPE_PATTERN})_([^_]+)_(.+)$`)
 
 export type WorkspaceToolDisplay = {
   isConnectorTool: boolean

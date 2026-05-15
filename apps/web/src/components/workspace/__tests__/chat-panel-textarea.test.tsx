@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ChatPanel } from "@/components/workspace/chat-panel";
 import { WorkspaceThemeProvider } from "@/contexts/workspace-theme-context";
+import {
+  MAX_ATTACHMENT_UPLOAD_BYTES,
+  MAX_ATTACHMENT_UPLOAD_MEGABYTES,
+} from "@/lib/workspace-attachments";
 
 vi.mock("next/image", () => ({
   default: () => null,
@@ -82,6 +86,7 @@ function createClipboardImageData(file: File) {
 
 afterEach(() => {
   cleanup();
+  delete (window as Window & { arche?: unknown }).arche;
   vi.unstubAllGlobals();
 });
 
@@ -225,31 +230,28 @@ describe("ChatPanel textarea", () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       if (init?.method === "POST") {
         const requestBody = init.body;
-        if (!(requestBody instanceof FormData)) {
-          throw new Error("Expected upload request body to be FormData");
+        if (!(requestBody instanceof File)) {
+          throw new Error("Expected upload request body to be a File");
         }
 
-        const files = requestBody.getAll("files");
-        expect(files).toHaveLength(1);
-
-        const uploadedFile = files[0];
-        if (!(uploadedFile instanceof File)) {
-          throw new Error("Expected uploaded file in FormData");
-        }
-
-        expect(uploadedFile.type).toBe("image/png");
-        expect(uploadedFile.name).toBe("clipboard-image.png");
+        expect(requestBody.type).toBe("image/png");
+        expect(requestBody.name).toBe("clipboard-image.png");
+        expect(String(_input)).toBe(
+          "/api/w/alice/attachments?filename=clipboard-image.png"
+        );
 
         attachmentStore.push(uploadedAttachment);
 
         return {
           ok: true,
-          json: async () => ({ uploaded: [uploadedAttachment], failed: [] }),
+          status: 201,
+          json: async () => ({ attachment: uploadedAttachment }),
         };
       }
 
       return {
         ok: true,
+        status: 200,
         json: async () => ({ attachments: attachmentStore }),
       };
     });
@@ -291,6 +293,239 @@ describe("ChatPanel textarea", () => {
           },
         ],
         contextPaths: [],
+      }
+    );
+  });
+
+  it("shows a clear error when a pasted image exceeds the upload limit", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderChatPanel();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+    const initialFetchCount = fetchMock.mock.calls.length;
+
+    const oversizedFile = new File(["image"], "too-large.png", { type: "image/png" });
+    Object.defineProperty(oversizedFile, "size", {
+      value: MAX_ATTACHMENT_UPLOAD_BYTES + 1,
+    });
+
+    fireEvent.paste(getTextarea(), {
+      clipboardData: createClipboardImageData(oversizedFile),
+    });
+
+    expect(
+      await screen.findByText(
+        `You can't upload files larger than ${MAX_ATTACHMENT_UPLOAD_MEGABYTES} MB.`
+      )
+    ).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledTimes(initialFetchCount);
+  });
+
+  it("shows a desktop-only reveal attachments action in the manage dialog", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const revealAttachmentsDirectory = vi.fn().mockResolvedValue({ ok: true });
+    (window as Window & { arche?: unknown }).arche = {
+      isDesktop: true,
+      platform: "darwin",
+      desktop: {
+        revealAttachmentsDirectory,
+      },
+    };
+
+    renderChatPanel();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Attach files" }));
+    await screen.findByText("Upload file");
+    fireEvent.click(screen.getByText("Manage attachments"));
+
+    const revealButton = await screen.findByRole("button", { name: "Reveal in Finder" });
+    fireEvent.click(revealButton);
+
+    await waitFor(() => {
+      expect(revealAttachmentsDirectory).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("filters, selects, renames, and deletes managed attachments", async () => {
+    let attachments: MockAttachment[] = [
+      {
+        id: ".arche/attachments/alpha.pdf",
+        path: ".arche/attachments/alpha.pdf",
+        name: "alpha.pdf",
+        mime: "application/pdf",
+        size: 1200,
+        uploadedAt: 10,
+      },
+      {
+        id: ".arche/attachments/brief.txt",
+        path: ".arche/attachments/brief.txt",
+        name: "brief.txt",
+        mime: "text/plain",
+        size: 300,
+        uploadedAt: 20,
+      },
+    ];
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === "/api/w/alice/attachments" && !init?.method) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ attachments }),
+        };
+      }
+
+      if (String(input) === "/api/w/alice/attachments" && init?.method === "PATCH") {
+        const updated = {
+          ...attachments[0],
+          id: ".arche/attachments/renamed.pdf",
+          path: ".arche/attachments/renamed.pdf",
+          name: "renamed.pdf",
+        };
+        attachments = [updated, attachments[1]];
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ attachment: updated }),
+        };
+      }
+
+      if (String(input) === "/api/w/alice/attachments" && init?.method === "DELETE") {
+        const body = JSON.parse(String(init.body));
+        attachments = attachments.filter((attachment) => attachment.path !== body.path);
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ ok: true }),
+        };
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ connectors: [] }),
+      };
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(window, "prompt").mockReturnValue("renamed.pdf");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderChatPanel();
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Attach files" }));
+    fireEvent.click(await screen.findByText("Manage attachments"));
+
+    expect(await screen.findByText("alpha.pdf")).toBeTruthy();
+
+    fireEvent.change(screen.getByPlaceholderText("Search attachments..."), {
+      target: { value: "brief" },
+    });
+    expect(screen.queryByText("alpha.pdf")).toBeNull();
+    expect(screen.getByText("brief.txt")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select brief.txt" }));
+    expect(screen.getByText("1 file selected")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Attach 1 file" }));
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: /Attach files/ }));
+    fireEvent.click(await screen.findByText("Manage attachments"));
+    fireEvent.change(screen.getByPlaceholderText("Search attachments..."), {
+      target: { value: "" },
+    });
+
+    fireEvent.click(screen.getAllByTitle("Rename")[0]);
+    expect(await screen.findByText("renamed.pdf")).toBeTruthy();
+
+    fireEvent.change(screen.getByPlaceholderText("Search attachments..."), {
+      target: { value: "renamed" },
+    });
+    fireEvent.click(screen.getAllByTitle("Delete")[0]);
+    await waitFor(() => {
+      expect(screen.queryByText("renamed.pdf")).toBeNull();
+    });
+  });
+
+  it("sends selected context paths, experts, and skills", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ attachments: [], connectors: [] }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const onSendMessage = vi.fn().mockResolvedValue(true);
+    renderChatPanel(onSendMessage, {
+      agents: [
+        { id: "assistant", displayName: "Assistant", isPrimary: true },
+        { id: "ads-scripts", displayName: "Ads Scripts", isPrimary: false },
+      ],
+      contextFilePaths: ["docs/a.md", "notes/b.md"],
+      openFilePaths: ["docs/a.md"],
+      skills: [
+        {
+          name: "pdf-processing",
+          description: "Process PDFs",
+          assignedAgentIds: [],
+          hasResources: false,
+          resourcePaths: [],
+        },
+      ],
+    });
+
+    const attachButton = screen.getByRole("button", { name: "Attach files" });
+    fireEvent.pointerDown(attachButton);
+    fireEvent.click(await screen.findByText("docs/a.md"));
+    fireEvent.click(screen.getByText("Clear selection"));
+    fireEvent.click(screen.getByText("docs/a.md"));
+    fireEvent.pointerDown(attachButton);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("menu", { name: "Attach files" })).toBeNull();
+    });
+
+    const expertsButton = screen.getByRole("button", { name: "Experts" });
+    fireEvent.pointerDown(expertsButton);
+    fireEvent.click(await screen.findByText("Ads Scripts"));
+    fireEvent.pointerDown(expertsButton);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("menu", { name: /Experts/ })).toBeNull();
+    });
+
+    const skillsButton = screen.getByRole("button", { name: "Skills" });
+    fireEvent.pointerDown(skillsButton);
+    fireEvent.click(await screen.findByText("pdf-processing"));
+    fireEvent.pointerDown(skillsButton);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("menu", { name: /Skills/ })).toBeNull();
+    });
+
+    fireEvent.change(getTextarea(), { target: { value: "Use the selected context" } });
+    fireEvent.click(getSendButton());
+
+    await waitFor(() => {
+      expect(onSendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    expect(onSendMessage).toHaveBeenCalledWith(
+      "@ads-scripts /pdf-processing\n\nUse the selected context",
+      undefined,
+      {
+        attachments: [],
+        contextPaths: ["docs/a.md"],
       }
     );
   });
@@ -427,61 +662,6 @@ describe("ChatPanel textarea", () => {
     expect(popover.style.position).toBe("fixed");
   });
 
-  it("inserts a pending expert mention at the current cursor position", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ attachments: [] }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    const onPendingInsertConsumed = vi.fn();
-    const onSendMessage = vi.fn().mockResolvedValue(true);
-
-    const { rerender } = render(
-      <WorkspaceThemeProvider storageScope="alice">
-        <ChatPanel
-          slug="alice"
-          sessions={[{ id: "s1", title: "Chat", status: "idle", updatedAt: "now", agent: "OpenCode" }]}
-          messages={[]}
-          activeSessionId="s1"
-          openFilePaths={[]}
-          onCloseSession={vi.fn()}
-          onOpenFile={vi.fn()}
-          onSendMessage={onSendMessage}
-          onPendingInsertConsumed={onPendingInsertConsumed}
-        />
-      </WorkspaceThemeProvider>
-    );
-
-    const textarea = getTextarea();
-    fireEvent.change(textarea, { target: { value: "Plan: campaign" } });
-    textarea.setSelectionRange("Plan: ".length, "Plan: ".length);
-    fireEvent.select(textarea);
-
-    rerender(
-      <WorkspaceThemeProvider storageScope="alice">
-        <ChatPanel
-          slug="alice"
-          sessions={[{ id: "s1", title: "Chat", status: "idle", updatedAt: "now", agent: "OpenCode" }]}
-          messages={[]}
-          activeSessionId="s1"
-          openFilePaths={[]}
-          onCloseSession={vi.fn()}
-          onOpenFile={vi.fn()}
-          onSendMessage={onSendMessage}
-          pendingInsert="@ads-scripts "
-          onPendingInsertConsumed={onPendingInsertConsumed}
-        />
-      </WorkspaceThemeProvider>
-    );
-
-    await waitFor(() => {
-      expect(textarea.value).toBe("Plan: @ads-scripts campaign");
-    });
-
-    expect(onPendingInsertConsumed).toHaveBeenCalledTimes(1);
-  });
-
   it("disables send while a pasted image upload is in progress", async () => {
     const attachmentStore: MockAttachment[] = [];
     const uploadedAttachment: MockAttachment = {
@@ -496,13 +676,15 @@ describe("ChatPanel textarea", () => {
     let resolveUpload: (() => void) | null = null;
     const uploadResponse = new Promise<{
       ok: boolean;
-      json: () => Promise<{ uploaded: MockAttachment[]; failed: [] }>;
+      status: number;
+      json: () => Promise<{ attachment: MockAttachment }>;
     }>((resolve) => {
       resolveUpload = () => {
         attachmentStore.push(uploadedAttachment);
         resolve({
           ok: true,
-          json: async () => ({ uploaded: [uploadedAttachment], failed: [] }),
+          status: 201,
+          json: async () => ({ attachment: uploadedAttachment }),
         });
       };
     });
@@ -514,6 +696,7 @@ describe("ChatPanel textarea", () => {
 
       return {
         ok: true,
+        status: 200,
         json: async () => ({ attachments: attachmentStore }),
       };
     });
@@ -545,6 +728,96 @@ describe("ChatPanel textarea", () => {
     await waitFor(() => {
       expect(sendButton.disabled).toBe(false);
     });
+  });
+
+  it("uploads multiple files sequentially and reports partial failures", async () => {
+    const attachmentStore: MockAttachment[] = [];
+    const firstAttachment: MockAttachment = {
+      id: ".arche/attachments/first.png",
+      path: ".arche/attachments/first.png",
+      name: "first.png",
+      mime: "image/png",
+      size: 5,
+      uploadedAt: 10,
+    };
+
+    const uploadOrder: string[] = [];
+    let resolveFirstUpload: (() => void) | null = null;
+
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        const body = init.body;
+        if (!(body instanceof File)) {
+          throw new Error("Expected upload request body to be a File");
+        }
+
+        uploadOrder.push(body.name);
+
+        if (body.name === "first.png") {
+          return await new Promise<{
+            ok: boolean;
+            status: number;
+            json: () => Promise<{ attachment: MockAttachment }>;
+          }>((resolve) => {
+            resolveFirstUpload = () => {
+              attachmentStore.push(firstAttachment);
+              resolve({
+                ok: true,
+                status: 201,
+                json: async () => ({ attachment: firstAttachment }),
+              });
+            };
+          });
+        }
+
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: "upload_failed" }),
+        };
+      }
+
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ attachments: attachmentStore }),
+      };
+    });
+
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderChatPanel();
+
+    const input = document.querySelector('input[type="file"]');
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error("Expected attachment file input");
+    }
+
+    fireEvent.change(input, {
+      target: {
+        files: [
+          new File(["first"], "first.png", { type: "image/png" }),
+          new File(["second"], "second.png", { type: "image/png" }),
+        ],
+      },
+    });
+
+    await waitFor(() => {
+      expect(uploadOrder).toEqual(["first.png"]);
+    });
+
+    if (!resolveFirstUpload) {
+      throw new Error("Expected first upload resolver");
+    }
+    resolveFirstUpload();
+
+    await waitFor(() => {
+      expect(uploadOrder).toEqual(["first.png", "second.png"]);
+    });
+
+    expect(await screen.findByText("Some files couldn't be uploaded.")).toBeTruthy();
+    expect(await screen.findByText("second.png: Couldn't upload the selected file.")).toBeTruthy();
+    expect(await screen.findByText("first.png")).toBeTruthy();
   });
 
   it("does not send a model override when only the agent default is selected", async () => {

@@ -58,7 +58,7 @@ describe("ChatPanel interactions", () => {
     vi.restoreAllMocks();
   });
 
-  it("renames the active session inline from the session menu", async () => {
+  it("renames the active session inline by clicking the title", async () => {
     const renameSessionSpy = vi.fn(async (id: string, title: string) => {
       return { id, title };
     });
@@ -93,8 +93,7 @@ describe("ChatPanel interactions", () => {
 
     render(<Harness />);
 
-    openSessionMenu();
-    fireEvent.click(await screen.findByRole("menuitem", { name: /rename session/i }));
+    fireEvent.click(screen.getByRole("button", { name: /rename session planning/i }));
 
     const input = screen.getByRole("textbox", { name: /session title/i });
 
@@ -113,6 +112,58 @@ describe("ChatPanel interactions", () => {
     await waitFor(() => {
       expect(screen.getByText("Release plan")).toBeTruthy();
     });
+  });
+
+  it("withholds session mutation actions in read-only mode", async () => {
+    const onCloseSession = vi.fn();
+    const onRenameSession = vi.fn(async () => true);
+
+    renderChatPanel({
+      isReadOnly: true,
+      onCloseSession,
+      onRenameSession,
+    });
+
+    expect(screen.queryByRole("button", { name: /rename session planning/i })).toBeNull();
+
+    openSessionMenu();
+    expect(await screen.findByRole("menuitem", { name: /export to md/i })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /delete session/i })).toBeNull();
+  });
+
+  it("disables permission responses in read-only mode", () => {
+    const onAnswerPermission = vi.fn().mockResolvedValue(true);
+    const messages: ChatMessage[] = [
+      {
+        id: "m1",
+        sessionId: "s1",
+        role: "assistant",
+        content: "",
+        timestamp: "now",
+        parts: [
+          {
+            type: "permission",
+            id: "permission:perm-1",
+            permissionId: "perm-1",
+            sessionId: "s1",
+            title: "Run shell command",
+            state: "pending",
+          },
+        ],
+      },
+    ];
+
+    renderChatPanel({
+      isReadOnly: true,
+      messages,
+      onAnswerPermission,
+    });
+
+    const allowButton = screen.getByRole("button", { name: "Allow" }) as HTMLButtonElement;
+
+    expect(allowButton.disabled).toBe(true);
+    fireEvent.click(allowButton);
+    expect(onAnswerPermission).not.toHaveBeenCalled();
   });
 
   it("exports the active conversation to markdown", async () => {

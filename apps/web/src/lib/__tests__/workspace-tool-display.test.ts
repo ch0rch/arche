@@ -13,6 +13,18 @@ describe('workspace-tool-display', () => {
       connectorId: 'conn123',
       commandName: 'list_teams',
     })
+
+    expect(parseConnectorToolName('arche_zendesk_conn456_search_tickets')).toEqual({
+      connectorType: 'zendesk',
+      connectorId: 'conn456',
+      commandName: 'search_tickets',
+    })
+
+    expect(parseConnectorToolName('arche_umami_conn789_get_website_stats')).toEqual({
+      connectorType: 'umami',
+      connectorId: 'conn789',
+      commandName: 'get_website_stats',
+    })
   })
 
   it('formats connector commands into readable labels', () => {

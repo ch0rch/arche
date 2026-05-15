@@ -7,7 +7,10 @@ import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 
 import type { CreateVaultArgs, DesktopApiResult, DesktopVaultSummary } from './desktop-bridge-types'
+import { ensureDesktopConnectorOAuthStateSecret } from './desktop-connector-oauth-secret'
 import { ensureDesktopEncryptionKey } from './desktop-encryption-key'
+import { buildDesktopLaunchEnv } from './desktop-launch-env'
+import { createDesktopSmokeTestHarness } from './desktop-smoke-test'
 import { createDesktopVault } from './create-vault'
 import { getDesktopNextDistDirName } from './desktop-next-dist'
 import {
@@ -16,6 +19,7 @@ import {
   getRuntimeBinaryEnv,
 } from './runtime-binaries'
 import { findAvailablePort } from './runtime-network'
+import { startRuntimeWithPortRetries } from './runtime-start'
 import { probeHttpServerReady, RuntimeSupervisor } from './runtime-supervisor'
 import { buildLaunchArgs, resolveLaunchContext, type DesktopLaunchContext } from './vault-launch'
 import {
@@ -24,6 +28,7 @@ import {
   getDesktopRuntimeDataDir,
   getDesktopSecretsDir,
   getDesktopUserDataDir,
+  getDesktopWorkspaceAttachmentsDir,
   getDesktopWorkspaceDir,
 } from './vault-layout'
 import { LOCAL_DESKTOP_USER_SLUG } from './vault-layout-constants'
@@ -38,10 +43,16 @@ import {
 import { createVaultManifest, tryReadVault, type DesktopVault } from './vault-manifest'
 
 const DEFAULT_DESKTOP_WEB_PORT = 3000
+const DESKTOP_RUNTIME_READY_PATH = '/api/internal/desktop/runtime'
+const MAX_NEXT_START_ATTEMPTS = 4
+const NEXT_READY_TIMEOUT_MS = 30_000
+const NEXT_RETRY_READY_TIMEOUT_MS = 20_000
 const LOOPBACK_HOST = '127.0.0.1'
 const DESKTOP_TOKEN_HEADER = 'x-arche-desktop-token'
 const DESKTOP_GIT_AUTHOR_NAME = 'Arche Workspace'
 const DESKTOP_GIT_AUTHOR_EMAIL = 'workspace@arche.local'
+
+const smokeTest = createDesktopSmokeTestHarness({ app, dialog })
 
 let mainWindow: BrowserWindow | null = null
 let nextSupervisor: RuntimeSupervisor | null = null
@@ -65,8 +76,25 @@ function getPort(): number {
   return nextPort
 }
 
-function getNextUrl(): string {
-  return `http://${LOOPBACK_HOST}:${getPort()}`
+function getNextUrl(port = getPort()): string {
+  return `http://${LOOPBACK_HOST}:${port}`
+}
+
+function getDesktopRuntimeReadyUrl(port = getPort()): string {
+  return `${getNextUrl(port)}${DESKTOP_RUNTIME_READY_PATH}`
+}
+
+function isDesktopRuntimeReadyResponse(response: Response, bodyText: string): boolean {
+  if (!response.ok) {
+    return false
+  }
+
+  try {
+    const payload = JSON.parse(bodyText) as Record<string, unknown>
+    return payload.app === 'arche' && payload.runtime === 'desktop' && payload.status === 'ok'
+  } catch {
+    return false
+  }
 }
 
 function getWebAppDir(): string {
@@ -167,6 +195,7 @@ function setDesktopEnv(): void {
     process.env.ARCHE_DESKTOP_VAULT_NAME = currentVault.name
     process.env.ARCHE_DESKTOP_VAULT_PATH = currentVault.path
     ensureDesktopEncryptionKey({ dataDir: currentVault.path })
+    ensureDesktopConnectorOAuthStateSecret({ dataDir: currentVault.path })
   } else {
     delete process.env.ARCHE_DATA_DIR
     delete process.env.ARCHE_OPENCODE_DATA_DIR
@@ -275,31 +304,63 @@ function verifyPackagedRuntimeBinaries(): string[] {
 }
 
 async function startNextServer(): Promise<void> {
-  if (!nextSupervisor) {
-    nextSupervisor = createNextSupervisor()
-  }
+  await startRuntimeWithPortRetries({
+    preferredPort: DEFAULT_DESKTOP_WEB_PORT,
+    maxAttempts: MAX_NEXT_START_ATTEMPTS,
+    acquirePort: async (preferredPort, excludedPorts) => {
+      await initializeDesktopWebPort(preferredPort, excludedPorts)
+      return getPort()
+    },
+    start: async (port, attempt) => {
+      const readyTimeoutMs =
+        attempt === MAX_NEXT_START_ATTEMPTS ? NEXT_READY_TIMEOUT_MS : NEXT_RETRY_READY_TIMEOUT_MS
+      process.stdout.write(
+        `[desktop-runtime] starting_next_start attempt=${String(attempt)}/${String(MAX_NEXT_START_ATTEMPTS)} port=${String(port)} ready_timeout_ms=${String(readyTimeoutMs)}\n`,
+      )
+      nextSupervisor = createNextSupervisor(port, readyTimeoutMs)
 
-  await nextSupervisor.start()
+      try {
+        await nextSupervisor.start()
+      } catch (error) {
+        nextSupervisor = null
+        throw error
+      }
+    },
+    onRetry: ({ attempt, previousPort, error }) => {
+      const nextReadyTimeoutMs =
+        attempt === MAX_NEXT_START_ATTEMPTS ? NEXT_READY_TIMEOUT_MS : NEXT_RETRY_READY_TIMEOUT_MS
+      process.stdout.write(
+        `[desktop-runtime] retrying_next_start attempt=${String(attempt)}/${String(MAX_NEXT_START_ATTEMPTS)} previous_port=${String(previousPort)} next_ready_timeout_ms=${String(nextReadyTimeoutMs)} error=${error instanceof Error ? error.message : String(error)}\n`,
+      )
+    },
+  })
 }
 
-function createNextSupervisor(): RuntimeSupervisor {
+function createNextSupervisor(port: number, readyTimeoutMs: number): RuntimeSupervisor {
   return new RuntimeSupervisor({
     componentName: 'next',
     command: app.isPackaged ? getPackagedNodeBinaryPath(getRuntimeBinaryOptions()) : 'pnpm',
     args: app.isPackaged
       ? ['server.js']
-      : ['exec', 'next', 'dev', '-H', LOOPBACK_HOST, '-p', String(getPort())],
+      : ['exec', 'next', 'dev', '-H', LOOPBACK_HOST, '-p', String(port)],
     cwd: getWebAppDir(),
     env: {
       ...getDesktopRuntimeEnv(),
       ARCHE_RUNTIME_MODE: 'desktop',
       ARCHE_DESKTOP_NEXT_DIST_DIR: getDesktopNextDistDirNameForCurrentProcess(),
-      ARCHE_DESKTOP_WEB_PORT: String(getPort()),
-      ARCHE_CONNECTOR_GATEWAY_BASE_URL: `http://${LOOPBACK_HOST}:${getPort()}/api/internal/mcp/connectors`,
-      PORT: String(getPort()),
+      ARCHE_DESKTOP_WEB_PORT: String(port),
+      ARCHE_CONNECTOR_GATEWAY_BASE_URL: `http://${LOOPBACK_HOST}:${String(port)}/api/internal/mcp/connectors`,
+      PORT: String(port),
       HOSTNAME: LOOPBACK_HOST,
     },
-    probeReadiness: () => probeHttpServerReady(getNextUrl()),
+    readyTimeoutMs,
+    probeReadiness: () =>
+      probeHttpServerReady(getDesktopRuntimeReadyUrl(port), {
+        headers: {
+          [DESKTOP_TOKEN_HEADER]: desktopApiToken,
+        },
+        validateResponse: isDesktopRuntimeReadyResponse,
+      }),
     restartOnCrash: true,
     maxRestarts: 3,
     log: (event) => {
@@ -308,8 +369,11 @@ function createNextSupervisor(): RuntimeSupervisor {
   })
 }
 
-async function initializeDesktopWebPort(): Promise<void> {
-  nextPort = await findAvailablePort(DEFAULT_DESKTOP_WEB_PORT, LOOPBACK_HOST)
+async function initializeDesktopWebPort(
+  preferredPort: number,
+  excludedPorts: number[] = [],
+): Promise<void> {
+  nextPort = await findAvailablePort(preferredPort, LOOPBACK_HOST, excludedPorts)
   process.env.ARCHE_DESKTOP_WEB_PORT = String(nextPort)
 }
 
@@ -325,15 +389,18 @@ function installTokenHeaderInjection(): void {
 }
 
 function createWindow(): void {
+  const isLauncher = currentVault === null
+
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
-    minWidth: 800,
-    minHeight: 600,
+    width: isLauncher ? 680 : 1280,
+    height: isLauncher ? 680 : 800,
+    minWidth: isLauncher ? 560 : 800,
+    minHeight: isLauncher ? 560 : 600,
     title: getCurrentVaultTitle(),
     backgroundColor: '#f7f4ef',
+    show: smokeTest.shouldShowWindow(),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : undefined,
-    trafficLightPosition: process.platform === 'darwin' ? { x: 12, y: 12 } : undefined,
+    trafficLightPosition: process.platform === 'darwin' ? { x: 14, y: 19 } : undefined,
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -341,6 +408,8 @@ function createWindow(): void {
       sandbox: true,
     },
   })
+
+  smokeTest.installWindowHooks(mainWindow)
 
   void mainWindow.loadURL(getNextUrl())
 
@@ -409,6 +478,7 @@ function launchElectronProcess(nextContext: DesktopLaunchContext): DesktopApiRes
     const args = buildLaunchArgs(process.argv.slice(1), nextContext)
     const child = spawnChildProcess(process.execPath, args, {
       detached: true,
+      env: buildDesktopLaunchEnv(process.env),
       stdio: 'ignore',
     })
     child.unref()
@@ -473,6 +543,24 @@ function quitLauncherProcess(): DesktopApiResult {
   return { ok: true }
 }
 
+async function revealAttachmentsDirectory(): Promise<DesktopApiResult> {
+  if (!currentVault) {
+    return { ok: false, error: 'vault_not_open' }
+  }
+
+  const attachmentsDir = getDesktopWorkspaceAttachmentsDir(currentVault.path)
+  if (!existsSync(attachmentsDir)) {
+    mkdirSync(attachmentsDir, { recursive: true })
+  }
+
+  const error = await shell.openPath(attachmentsDir)
+  if (error) {
+    return { ok: false, error: 'reveal_attachments_failed' }
+  }
+
+  return { ok: true }
+}
+
 async function pickDirectory(options: {
   title: string
   defaultPath?: string | null
@@ -530,6 +618,7 @@ function registerDesktopIpcHandlers(): void {
   ipcMain.handle('desktop:open-vault', async (_event, vaultPath: string) => launchVaultProcess(vaultPath))
   ipcMain.handle('desktop:open-vault-launcher', async () => openVaultLauncherProcess())
   ipcMain.handle('desktop:quit-launcher-process', async () => quitLauncherProcess())
+  ipcMain.handle('desktop:reveal-attachments-directory', async () => revealAttachmentsDirectory())
 }
 
 function resolveStartupVault(): DesktopVault | null {
@@ -537,12 +626,16 @@ function resolveStartupVault(): DesktopVault | null {
   const registry = readVaultRegistry(metadataDir)
   launchContext = resolveLaunchContext(process.argv.slice(1), registry.lastOpenedVaultPath)
 
+  smokeTest.reportLaunchContext(launchContext)
+
   if (launchContext.mode === 'launcher') {
     return null
   }
 
   const vault = tryReadVault(launchContext.vaultPath)
   if (!vault) {
+    smokeTest.reportInvalidVault(launchContext.vaultPath)
+
     if (registry.lastOpenedVaultPath === launchContext.vaultPath) {
       clearLastOpenedVault(metadataDir, launchContext.vaultPath)
     }
@@ -560,10 +653,12 @@ app.whenReady().then(async () => {
   if (currentVault) {
     vaultLock = acquireVaultLock(currentVault.path)
     if (!vaultLock) {
-      dialog.showErrorBox(
+      if (smokeTest.handleStartupFailure(
         'Arche',
         `The vault "${currentVault.name}" is already open in another Arche process.`,
-      )
+      )) {
+        return
+      }
       currentVault = null
       launchContext = { mode: 'launcher', vaultPath: null }
     }
@@ -573,7 +668,9 @@ app.whenReady().then(async () => {
     setDesktopEnv()
   } catch (error) {
     console.error('Failed to initialize desktop environment:', error)
-    dialog.showErrorBox('Arche', 'Failed to initialize desktop security configuration.')
+    if (smokeTest.handleStartupFailure('Arche', 'Failed to initialize desktop security configuration.')) {
+      return
+    }
     app.quit()
     return
   }
@@ -585,21 +682,24 @@ app.whenReady().then(async () => {
       await ensureVaultDataDirectories(currentVault)
     } catch (error) {
       console.error('Failed to initialize vault data directories:', error)
-      dialog.showErrorBox('Arche', 'Failed to initialize the selected vault.')
+      if (smokeTest.handleStartupFailure('Arche', 'Failed to initialize the selected vault.')) {
+        return
+      }
       app.quit()
       return
     }
   }
 
   resetDesktopDevNextArtifacts()
-  await initializeDesktopWebPort()
 
   const missingRuntimeBinaries = verifyPackagedRuntimeBinaries()
   if (missingRuntimeBinaries.length > 0) {
-    dialog.showErrorBox(
+    if (smokeTest.handleStartupFailure(
       'Arche',
       `Missing packaged runtime resources: ${missingRuntimeBinaries.join(', ')}.`,
-    )
+    )) {
+      return
+    }
     app.quit()
     return
   }
@@ -608,7 +708,9 @@ app.whenReady().then(async () => {
     await startNextServer()
   } catch (error) {
     console.error('Failed to start Next.js server:', error)
-    dialog.showErrorBox('Arche', 'Failed to start the local desktop runtime.')
+    if (smokeTest.handleStartupFailure('Arche', 'Failed to start the local desktop runtime.')) {
+      return
+    }
     app.quit()
     return
   }

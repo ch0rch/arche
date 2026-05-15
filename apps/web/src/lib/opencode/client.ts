@@ -5,65 +5,68 @@
  * The web app acts as a proxy/BFF, authenticating and forwarding requests.
  */
 
-import { createOpencodeClient, type OpencodeClient } from '@opencode-ai/sdk/v2/client'
+import type { OpencodeClient } from '@opencode-ai/sdk/v2/client'
 
-import { instanceService } from '@/lib/services'
-import { decryptPassword } from '@/lib/spawner/crypto'
-import { getRuntimeCapabilities } from '@/lib/runtime/capabilities'
+import { createConfiguredOpencodeClient } from '@/lib/opencode/client-factory'
+import {
+  getInstanceUrl as resolveInstanceUrl,
+  resolveInstanceConnection,
+} from '@/lib/opencode/connection-resolver'
 
-const DEFAULT_OPENCODE_PORT = 4096
-const DESKTOP_LOOPBACK_HOST = '127.0.0.1'
-const DESKTOP_OPENCODE_PORT_ENV = 'ARCHE_DESKTOP_OPENCODE_PORT'
+export { getInstanceBasicAuth, getInstanceUrl } from '@/lib/opencode/connection-resolver'
 
-function getDesktopOpencodePort(): number {
-  const raw = process.env[DESKTOP_OPENCODE_PORT_ENV]
-  const parsed = raw ? Number(raw) : Number.NaN
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_OPENCODE_PORT
-}
+export type InstanceHealthResult =
+  | { ok: true }
+  | { ok: false; detail: string; message?: string }
 
-/**
- * Get the internal network URL for an OpenCode instance.
- * Container names follow the pattern: opencode-{slug}
- * In desktop mode, use the IPv4 loopback address instead of container hostname.
- */
-export function getInstanceUrl(slug: string): string {
-  const caps = getRuntimeCapabilities()
-  const host = caps.containers ? `opencode-${slug}` : DESKTOP_LOOPBACK_HOST
-  const port = caps.containers ? DEFAULT_OPENCODE_PORT : getDesktopOpencodePort()
-  return `http://${host}:${port}`
-}
-
-/**
- * Get credentials for authenticating with an OpenCode instance.
- */
-async function getInstanceCredentials(slug: string): Promise<{ username: string; password: string } | null> {
-  const instance = await instanceService.findCredentialsBySlug(slug)
-  
-  if (!instance || !instance.serverPassword || instance.status !== 'running') {
-    return null
+function getErrorMessage(error: unknown): string | undefined {
+  if (error instanceof Error) {
+    return error.message
   }
-  
-  try {
-    const password = decryptPassword(instance.serverPassword)
-    return {
-      username: 'opencode',
-      password
+
+  return typeof error === 'string' ? error : undefined
+}
+
+function getErrorCode(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') {
+    return undefined
+  }
+
+  const record = error as { cause?: unknown; code?: unknown }
+  if (typeof record.code === 'string') {
+    return record.code
+  }
+
+  if (record.cause && typeof record.cause === 'object') {
+    const cause = record.cause as { code?: unknown }
+    if (typeof cause.code === 'string') {
+      return cause.code
     }
-  } catch {
-    console.error(`[opencode/client] Failed to decrypt password for ${slug}`)
-    return null
   }
+
+  return undefined
 }
 
-export async function getInstanceBasicAuth(
-  slug: string,
-): Promise<{ baseUrl: string; authHeader: string } | null> {
-  const credentials = await getInstanceCredentials(slug)
-  if (!credentials) return null
+function describeFetchError(error: unknown): { detail: string; message?: string } {
+  const code = getErrorCode(error)
+  const message = getErrorMessage(error)
+  if (code === 'ENOTFOUND') {
+    return { detail: 'dns_resolution_error', message }
+  }
 
-  const baseUrl = getInstanceUrl(slug)
-  const authHeader = `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64')}`
-  return { baseUrl, authHeader }
+  if (code === 'ECONNREFUSED') {
+    return { detail: 'connection_refused', message }
+  }
+
+  if (code === 'ETIMEDOUT' || code === 'UND_ERR_CONNECT_TIMEOUT') {
+    return { detail: 'connect_timeout', message }
+  }
+
+  return { detail: code ?? 'fetch_failed', message }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
 /**
@@ -71,53 +74,12 @@ export async function getInstanceBasicAuth(
  * Returns null if the instance is not running or credentials are unavailable.
  */
 export async function createInstanceClient(slug: string): Promise<OpencodeClient | null> {
-  const credentials = await getInstanceCredentials(slug)
-  if (!credentials) {
-    console.log(`[opencode/client] No credentials for ${slug}`)
+  const connection = await resolveInstanceConnection(slug)
+  if (!connection) {
     return null
   }
-  
-  const baseUrl = getInstanceUrl(slug)
-  console.log(`[opencode/client] Creating client for ${slug} at ${baseUrl}`)
-  
-  const authHeader = `Basic ${Buffer.from(`${credentials.username}:${credentials.password}`).toString('base64')}`
-  
-  const client = createOpencodeClient({
-    baseUrl,
-    fetch: async (input, init) => {
-      // The SDK may pass a fully-formed Request object as `input` with
-      // method, headers and body already set (and `init` undefined).
-      // We must preserve all of those while injecting the auth header.
-      const isRequest = input instanceof Request
-      const method = init?.method ?? (isRequest ? input.method : 'GET')
-      const mergedHeaders = new Headers(isRequest ? input.headers : undefined)
-      if (init?.headers) {
-        const extra = new Headers(init.headers)
-        extra.forEach((value, key) => mergedHeaders.set(key, value))
-      }
-      mergedHeaders.set('Authorization', authHeader)
 
-      const url = typeof input === 'string' ? input : input instanceof Request ? input.url : input.toString()
-      console.log(`[opencode/client] ${method} ${url}`)
-      try {
-        const response = await fetch(url, {
-          ...init,
-          method,
-          headers: mergedHeaders,
-          body: init?.body ?? (isRequest ? input.body : undefined),
-          // @ts-expect-error -- Node/undici duplex hint for streaming bodies
-          duplex: (init?.body ?? (isRequest ? input.body : undefined)) ? 'half' : undefined,
-        })
-        console.log(`[opencode/client] Response: ${response.status}`)
-        return response
-      } catch (err) {
-        console.error(`[opencode/client] Fetch error:`, err)
-        throw err
-      }
-    }
-  })
-  
-  return client
+  return createConfiguredOpencodeClient(connection)
 }
 
 export type InstanceHealthCheckResult =
@@ -127,13 +89,14 @@ export type InstanceHealthCheckResult =
 /**
  * Check if an OpenCode instance is healthy using explicit credentials.
  * Returns a detailed result so callers can distinguish password mismatches
- * (401) from transient unavailability (network errors, unhealthy response).
+ * (http_status_401), transient unavailability (network errors), and unhealthy responses.
  */
-export async function checkInstanceHealth(
+export async function isInstanceHealthyWithPassword(
   slug: string,
   password: string,
-): Promise<InstanceHealthCheckResult> {
-  const baseUrl = getInstanceUrl(slug)
+  overrideBaseUrl?: string,
+): Promise<InstanceHealthResult> {
+  const baseUrl = resolveInstanceUrl(slug, overrideBaseUrl)
   const authHeader = `Basic ${Buffer.from(`opencode:${password}`).toString('base64')}`
 
   try {
@@ -142,27 +105,29 @@ export async function checkInstanceHealth(
       cache: 'no-store',
     })
 
-    if (response.status === 401 || response.status === 403) {
-      return { ok: false, reason: 'unauthorized' }
-    }
-
     if (!response.ok) {
-      return { ok: false, reason: 'unhealthy' }
+      return {
+        ok: false,
+        detail: `http_status_${response.status}`,
+        ...(response.statusText ? { message: response.statusText } : {}),
+      }
     }
 
-    const data = await response.json().catch(() => null)
-    return data?.healthy === true ? { ok: true } : { ok: false, reason: 'unhealthy' }
-  } catch {
-    return { ok: false, reason: 'unreachable' }
-  }
-}
+    let data: unknown
+    try {
+      data = await response.json()
+    } catch (error) {
+      return { ok: false, detail: 'invalid_json', message: getErrorMessage(error) }
+    }
 
-/**
- * Check if an OpenCode instance is healthy using explicit credentials.
- */
-export async function isInstanceHealthyWithPassword(slug: string, password: string): Promise<boolean> {
-  const result = await checkInstanceHealth(slug, password)
-  return result.ok
+    if (isRecord(data) && data.healthy === true) {
+      return { ok: true }
+    }
+
+    return { ok: false, detail: 'unhealthy_response', message: JSON.stringify(data) }
+  } catch (error) {
+    return { ok: false, ...describeFetchError(error) }
+  }
 }
 
 /**

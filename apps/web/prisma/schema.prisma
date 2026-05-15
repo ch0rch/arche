@@ -12,6 +12,11 @@ enum UserRole {
   ADMIN
 }
 
+enum UserKind {
+  HUMAN
+  SERVICE
+}
+
 enum ProviderCredentialStatus {
   enabled
   disabled
@@ -29,11 +34,19 @@ enum AutopilotRunTrigger {
   manual
 }
 
+enum SlackPendingDecisionStatus {
+  pending
+  continued
+  started_new
+  expired
+}
+
 model User {
   id           String      @id @default(cuid())
   email        String      @unique
   slug         String      @unique
   role         UserRole    @default(USER)
+  kind         UserKind    @default(HUMAN)
   passwordHash String      @map("password_hash")
   totpEnabled    Boolean     @default(false) @map("totp_enabled")
   totpSecret     String?     @map("totp_secret")
@@ -49,8 +62,116 @@ model User {
   connectors         Connector[]
   providerCredentials ProviderCredential[]
   autopilotTasks      AutopilotTask[]
+  slackThreadBindings SlackThreadBinding[]
+  slackUserLinks      SlackUserLink[]
+  slackDmSessionBindings SlackDmSessionBinding[]
 
   @@map("users")
+}
+
+model ExternalIntegration {
+  key       String   @id @map("key")
+  config    String   // AES-256-GCM encrypted JSON
+  state     Json?    @default("{}")
+  version   Int      @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("external_integrations")
+}
+
+model SlackThreadBinding {
+  id               String   @id @default(cuid())
+  channelId        String   @map("channel_id")
+  threadTs         String   @map("thread_ts")
+  openCodeSessionId String  @map("opencode_session_id")
+  executionUserId  String   @map("execution_user_id")
+  executionUser    User     @relation(fields: [executionUserId], references: [id], onDelete: Cascade)
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@unique([channelId, threadTs])
+  @@index([executionUserId])
+  @@map("slack_thread_bindings")
+}
+
+model SlackEventReceipt {
+  id         String   @id @default(cuid())
+  eventId    String   @unique @map("event_id")
+  type       String
+  receivedAt DateTime @default(now()) @map("received_at")
+
+  @@index([receivedAt])
+  @@map("slack_event_receipts")
+}
+
+model SlackUserLink {
+  id          String   @id @default(cuid())
+  userId      String   @map("user_id")
+  slackTeamId String   @map("slack_team_id")
+  slackUserId String   @map("slack_user_id")
+  slackEmail  String?  @map("slack_email")
+  displayName String?  @map("display_name")
+  lastSeenAt  DateTime @map("last_seen_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([slackTeamId, slackUserId])
+  @@index([userId])
+  @@map("slack_user_links")
+}
+
+model SlackDmSessionBinding {
+  id                String   @id @default(cuid())
+  slackTeamId       String   @map("slack_team_id")
+  slackUserId       String   @map("slack_user_id")
+  channelId         String   @map("channel_id")
+  executionUserId   String   @map("execution_user_id")
+  openCodeSessionId String   @unique @map("opencode_session_id")
+  startedAt         DateTime @default(now()) @map("started_at")
+  lastMessageAt     DateTime @default(now()) @map("last_message_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  executionUser     User     @relation(fields: [executionUserId], references: [id], onDelete: Cascade)
+
+  @@index([slackTeamId, slackUserId, lastMessageAt])
+  @@index([executionUserId])
+  @@map("slack_dm_session_bindings")
+}
+
+model SlackPendingDmDecision {
+  id                         String                       @id @default(cuid())
+  sourceEventId              String                       @unique @map("source_event_id")
+  slackTeamId                String                       @map("slack_team_id")
+  slackUserId                String                       @map("slack_user_id")
+  channelId                  String                       @map("channel_id")
+  sourceTs                   String                       @map("source_ts")
+  messageText                String                       @map("message_text")
+  previousDmSessionBindingId String?                      @map("previous_dm_session_binding_id")
+  expiresAt                  DateTime                     @map("expires_at")
+  status                     SlackPendingDecisionStatus   @default(pending)
+  createdAt                  DateTime                     @default(now()) @map("created_at")
+  updatedAt                  DateTime                     @updatedAt @map("updated_at")
+
+  @@index([expiresAt])
+  @@map("slack_pending_dm_decisions")
+}
+
+model SlackNotificationChannel {
+  id          String   @id @default(cuid())
+  slackTeamId String   @map("slack_team_id")
+  channelId   String   @map("channel_id")
+  name        String
+  isPrivate   Boolean  @default(false) @map("is_private")
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([slackTeamId, channelId])
+  @@map("slack_notification_channels")
 }
 
 enum InstanceStatus {
@@ -74,6 +195,8 @@ model Instance {
   containerId     String?        @map("container_id")
   serverPassword  String         @map("server_password")
   appliedConfigSha String?       @map("applied_config_sha")
+  providerSyncHash String?       @map("provider_sync_hash")
+  providerSyncedAt DateTime?     @map("provider_synced_at")
 
   user            User           @relation(fields: [slug], references: [slug])
 
@@ -115,6 +238,39 @@ model AuditEvent {
   @@map("audit_events")
 }
 
+model MessageRun {
+  id         String   @id
+  slug       String
+  sessionId  String   @map("opencode_session_id")
+  source     String
+  status     String   @default("running")
+  error      String?
+  startedAt  DateTime @default(now()) @map("started_at")
+  finishedAt DateTime? @map("finished_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  lock       MessageRunLock?
+
+  @@index([slug, sessionId, status])
+  @@index([startedAt])
+  @@map("message_runs")
+}
+
+model MessageRunLock {
+  slug      String
+  sessionId String   @map("opencode_session_id")
+  runId     String   @unique @map("run_id")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  run       MessageRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@id([slug, sessionId])
+  @@index([runId])
+  @@map("message_run_locks")
+}
+
 model AutopilotTask {
   id             String         @id @default(cuid())
   userId         String         @map("user_id")
@@ -126,21 +282,26 @@ model AutopilotTask {
   prompt         String
   targetAgentId  String?        @map("target_agent_id")
   enabled        Boolean        @default(true)
+  slackNotificationConfig Json? @map("slack_notification_config")
 
   nextRunAt      DateTime       @map("next_run_at")
   lastRunAt      DateTime?      @map("last_run_at")
   leaseOwner     String?        @map("lease_owner")
   leaseExpiresAt DateTime?      @map("lease_expires_at")
+  retryAttempt   Int            @default(0) @map("retry_attempt")
+  retryScheduledFor DateTime?   @map("retry_scheduled_for")
 
   createdAt      DateTime       @default(now()) @map("created_at")
   updatedAt      DateTime       @updatedAt @map("updated_at")
+  deletedAt      DateTime?      @map("deleted_at")
 
   runs           AutopilotRun[]
 
-  @@unique([userId, name])
   @@index([userId])
   @@index([enabled, nextRunAt])
   @@index([leaseExpiresAt])
+  @@index([userId, leaseExpiresAt])
+  @@index([retryScheduledFor])
   @@map("autopilot_tasks")
 }
 
@@ -152,6 +313,7 @@ model AutopilotRun {
   status          AutopilotRunStatus
   trigger         AutopilotRunTrigger
   scheduledFor    DateTime           @map("scheduled_for")
+  attempt         Int                @default(1)
   startedAt       DateTime           @default(now()) @map("started_at")
   finishedAt      DateTime?          @map("finished_at")
   error           String?
@@ -173,7 +335,7 @@ model Connector {
   userId    String   @map("user_id")
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  type      String   // "linear" | "notion" | "slack" | "github" | "custom"
+  type      String   // ConnectorType from src/lib/connectors/types.ts
   name      String
   config    String   // AES-256-GCM encrypted JSON
   enabled   Boolean  @default(true)

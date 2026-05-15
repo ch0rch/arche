@@ -16,6 +16,14 @@ async function gracefulShutdown(): Promise<void> {
   }
 
   try {
+    const { stopSlackSocketManager } = await import('@/lib/slack/socket-mode')
+    stopSlackSocketManager()
+    console.log('[shutdown] Slack socket manager stopped')
+  } catch (err) {
+    console.error('[shutdown] Failed to stop Slack socket manager:', err)
+  }
+
+  try {
     const { stopReaper } = await import('@/lib/spawner/reaper')
     stopReaper()
     console.log('[shutdown] Reaper stopped')
@@ -62,9 +70,18 @@ export async function registerNodeInstrumentation() {
   await initWebPrisma()
 
   if (process.env.NODE_ENV === 'production') {
-    const { startAutopilotScheduler } = await import('@/lib/autopilot/scheduler')
-    startAutopilotScheduler()
+    try {
+      const { shouldStartInlineAutopilotScheduler, startAutopilotScheduler } = await import('@/lib/autopilot/scheduler')
+      if (shouldStartInlineAutopilotScheduler()) {
+        startAutopilotScheduler()
+      }
+    } catch (error) {
+      console.error('[autopilot] Failed to start scheduler', error)
+    }
   }
+
+  const { startSlackSocketManager } = await import('@/lib/slack/socket-mode')
+  startSlackSocketManager()
 
   registerShutdownHooks()
 }

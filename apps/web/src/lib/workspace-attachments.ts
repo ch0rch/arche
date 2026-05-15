@@ -10,7 +10,9 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   md: 'text/markdown',
   mp3: 'audio/mpeg',
   mp4: 'video/mp4',
+  odt: 'application/vnd.oasis.opendocument.text',
   ods: 'application/vnd.oasis.opendocument.spreadsheet',
+  odp: 'application/vnd.oasis.opendocument.presentation',
   pdf: 'application/pdf',
   ppt: 'application/vnd.ms-powerpoint',
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
@@ -33,11 +35,24 @@ const SPREADSHEET_MIME_TYPES = new Set([
   'text/tab-separated-values',
 ])
 
+const DOCUMENT_MIME_TYPES = new Set([
+  'application/vnd.oasis.opendocument.text',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+])
+
+const PRESENTATION_MIME_TYPES = new Set([
+  'application/vnd.oasis.opendocument.presentation',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+])
+
 const FALLBACK_MIME = 'text/plain'
 const ATTACHMENT_DIR_PREFIX = '.arche/attachments/'
 
 export const WORKSPACE_ATTACHMENTS_DIR = '.arche/attachments'
-export const MAX_ATTACHMENT_UPLOAD_BYTES = 8 * 1024 * 1024
+export const MAX_ATTACHMENT_UPLOAD_BYTES = 100 * 1024 * 1024
+export const MAX_ATTACHMENT_UPLOAD_MEGABYTES = Math.floor(
+  MAX_ATTACHMENT_UPLOAD_BYTES / (1024 * 1024),
+)
 export const MAX_ATTACHMENTS_PER_UPLOAD = 8
 export const MAX_ATTACHMENTS_PER_MESSAGE = 8
 
@@ -111,4 +126,12 @@ export function formatAttachmentSize(bytes: number): string {
 
 export function isSpreadsheetMimeType(mime: string): boolean {
   return SPREADSHEET_MIME_TYPES.has(mime.toLowerCase())
+}
+
+export function isDocumentMimeType(mime: string): boolean {
+  return DOCUMENT_MIME_TYPES.has(mime.toLowerCase())
+}
+
+export function isPresentationMimeType(mime: string): boolean {
+  return PRESENTATION_MIME_TYPES.has(mime.toLowerCase())
 }

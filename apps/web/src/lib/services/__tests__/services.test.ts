@@ -52,6 +52,18 @@ const mockPrisma = {
   auditEvent: {
     create: vi.fn(),
   },
+  slackEventReceipt: {
+    create: vi.fn(),
+  },
+  externalIntegration: {
+    findUnique: vi.fn(),
+    updateMany: vi.fn(),
+    upsert: vi.fn(),
+  },
+  slackThreadBinding: {
+    findUnique: vi.fn(),
+    upsert: vi.fn(),
+  },
   autopilotTask: {
     create: vi.fn(),
     deleteMany: vi.fn(),
@@ -92,6 +104,7 @@ describe('service layer', () => {
       expect(services.auditService).toBeDefined()
       expect(services.healthService).toBeDefined()
       expect(services.autopilotService).toBeDefined()
+      expect(services.slackService).toBeDefined()
     })
   })
 
@@ -168,7 +181,9 @@ describe('service layer', () => {
       const count = await userService.countAdmins()
 
       expect(count).toBe(2)
-      expect(mockPrisma.user.count).toHaveBeenCalledWith({ where: { role: 'ADMIN' } })
+      expect(mockPrisma.user.count).toHaveBeenCalledWith({
+        where: { kind: 'HUMAN', role: 'ADMIN' },
+      })
     })
   })
 
@@ -236,6 +251,33 @@ describe('service layer', () => {
       expect(mockPrisma.connector.findFirst).toHaveBeenCalledWith({ where: { id: 'c1', userId: 'u1' } })
     })
 
+    it('findCapabilityInventoryEntries returns connector owners', async () => {
+      mockPrisma.connector.findMany.mockResolvedValue([])
+
+      const { connectorService } = await import('../index')
+      await connectorService.findCapabilityInventoryEntries()
+
+      expect(mockPrisma.connector.findMany).toHaveBeenCalledWith({
+        select: {
+          id: true,
+          type: true,
+          name: true,
+          enabled: true,
+          user: {
+            select: {
+              kind: true,
+              slug: true,
+            },
+          },
+        },
+        orderBy: [
+          { type: 'asc' },
+          { name: 'asc' },
+          { id: 'asc' },
+        ],
+      })
+    })
+
     it('updateManyByIdAndUserId scopes update to both id and userId', async () => {
       mockPrisma.connector.updateMany.mockResolvedValue({ count: 1 })
 
@@ -259,7 +301,7 @@ describe('service layer', () => {
   })
 
   describe('autopilotService', () => {
-    it('listTasksByUserId scopes tasks to the user and includes latest runs', async () => {
+    it('listTasksByUserId scopes active tasks to the user and includes latest runs', async () => {
       mockPrisma.autopilotTask.findMany.mockResolvedValue([])
 
       const { autopilotService } = await import('../index')
@@ -267,7 +309,7 @@ describe('service layer', () => {
 
       expect(mockPrisma.autopilotTask.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { userId: 'user-1' },
+          where: { deletedAt: null, userId: 'user-1' },
           include: expect.objectContaining({
             runs: expect.objectContaining({ take: 1 }),
           }),
@@ -461,7 +503,28 @@ describe('service layer', () => {
 
       expect(mockPrisma.instance.update).toHaveBeenCalledWith({
         where: { slug: 'alice' },
-        data: { status: 'error', containerId: null },
+        data: {
+          status: 'error',
+          containerId: null,
+          providerSyncHash: null,
+          providerSyncedAt: null,
+        },
+      })
+    })
+
+    it('setProviderSyncState persists the latest provider sync hash and timestamp', async () => {
+      const syncedAt = new Date('2026-04-21T10:00:00.000Z')
+      mockPrisma.instance.update.mockResolvedValue({ slug: 'alice', providerSyncHash: 'hash-123' })
+
+      const { instanceService } = await import('../index')
+      await instanceService.setProviderSyncState('alice', 'hash-123', syncedAt)
+
+      expect(mockPrisma.instance.update).toHaveBeenCalledWith({
+        where: { slug: 'alice' },
+        data: {
+          providerSyncHash: 'hash-123',
+          providerSyncedAt: syncedAt,
+        },
       })
     })
 

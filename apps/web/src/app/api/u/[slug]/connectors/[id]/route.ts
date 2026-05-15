@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 import { auditEvent } from '@/lib/auth'
-import { encryptConfig, decryptConfig } from '@/lib/connectors/crypto'
-import { getConnectorAuthType, getConnectorOAuthConfig } from '@/lib/connectors/oauth-config'
+import { decryptConfig, encryptConfig } from '@/lib/connectors/crypto'
+import { resolveLinearOAuthActor, type LinearOAuthActor } from '@/lib/connectors/linear'
+import {
+  getConnectorAuthType,
+  getConnectorOAuthConfig,
+  mergeConnectorConfigWithPreservedOAuth,
+} from '@/lib/connectors/oauth-config'
+import { requireConnectorCapability } from '@/lib/connectors/require-connector-capability'
+import { sanitizeConnectorConfigForResponse } from '@/lib/connectors/response-config'
+import { preserveConnectorToolPermissions } from '@/lib/connectors/tool-permissions'
 import type { ConnectorType } from '@/lib/connectors/types'
 import {
   validateConnectorConfig,
@@ -20,47 +28,11 @@ export interface ConnectorDetail {
   config: Record<string, unknown>
   enabled: boolean
   authType: 'manual' | 'oauth'
+  oauthActor?: LinearOAuthActor
   oauthConnected: boolean
   oauthExpiresAt?: string
   createdAt: string
   updatedAt: string
-}
-
-function isObjectRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function sanitizeConfigForResponse(type: ConnectorType, config: Record<string, unknown>): Record<string, unknown> {
-  if (getConnectorAuthType(config) !== 'oauth') return config
-
-  const sanitizedConfig = { ...config }
-  if (type === 'custom') {
-    delete sanitizedConfig.oauthClientSecret
-  }
-
-  if (isObjectRecord(sanitizedConfig.oauth)) {
-    const oauthSanitized = { ...sanitizedConfig.oauth }
-    delete oauthSanitized.accessToken
-    delete oauthSanitized.refreshToken
-    delete oauthSanitized.clientSecret
-    sanitizedConfig.oauth = oauthSanitized
-  }
-
-  const oauth = getConnectorOAuthConfig(type, config)
-  if (!oauth) return sanitizedConfig
-
-  const oauthResponse = {
-    provider: oauth.provider,
-    connected: true,
-    expiresAt: oauth.expiresAt,
-    connectedAt: oauth.connectedAt,
-    scope: oauth.scope,
-  }
-
-  return {
-    ...sanitizedConfig,
-    oauth: oauthResponse,
-  }
 }
 
 /**
@@ -94,6 +66,9 @@ export const GET = withAuth<ConnectorDetail | { error: string }, { slug: string;
       return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
     }
 
+    const connectorDenied = requireConnectorCapability(connector.type)
+    if (connectorDenied) return connectorDenied
+
     let config: Record<string, unknown>
     try {
       config = decryptConfig(connector.config)
@@ -108,9 +83,10 @@ export const GET = withAuth<ConnectorDetail | { error: string }, { slug: string;
       id: connector.id,
       type: connector.type,
       name: connector.name,
-      config: validateConnectorType(connector.type) ? sanitizeConfigForResponse(connector.type, config) : config,
+      config: validateConnectorType(connector.type) ? sanitizeConnectorConfigForResponse(connector.type, config) : config,
       enabled: connector.enabled,
       authType: getConnectorAuthType(config),
+      oauthActor: resolveLinearOAuthActor(connector.type, getConnectorAuthType(config), config),
       oauthConnected: validateConnectorType(connector.type)
         ? Boolean(getConnectorOAuthConfig(connector.type, config)?.accessToken)
         : false,
@@ -163,6 +139,9 @@ export const PATCH = withAuth<
     return NextResponse.json({ error: 'connector_not_found' }, { status: 404 })
   }
 
+  const connectorDenied = requireConnectorCapability(existingConnector.type)
+  if (connectorDenied) return connectorDenied
+
   // Parse request body
   let body: UpdateConnectorRequest
   try {
@@ -186,6 +165,7 @@ export const PATCH = withAuth<
 
   // Prepare data to update
   const updateData: { name?: string; config?: string; enabled?: boolean } = {}
+  let responseConfig: Record<string, unknown> | null = null
 
   if (name !== undefined) {
     const nameValidation = validateConnectorName(name)
@@ -208,6 +188,16 @@ export const PATCH = withAuth<
     updateData.enabled = enabled
   }
 
+  let existingDecryptedConfig: Record<string, unknown>
+  try {
+    existingDecryptedConfig = decryptConfig(existingConnector.config)
+  } catch {
+    return NextResponse.json(
+      { error: 'config_corrupted', message: 'Existing connector configuration is corrupted' },
+      { status: 500 }
+    )
+  }
+
   if (config !== undefined) {
     // Validate config is a non-null object
     if (config === null || typeof config !== 'object' || Array.isArray(config)) {
@@ -223,21 +213,26 @@ export const PATCH = withAuth<
         { status: 500 }
       )
     }
-    // NOTE: config is "full replace", not partial merge.
-    // Client must send the complete config with all required fields.
     const connectorType = existingConnector.type as ConnectorType
-    const configValidation = validateConnectorConfig(connectorType, config)
+    const configWithToolPermissions = preserveConnectorToolPermissions(existingDecryptedConfig, config)
+    const mergedConfig = mergeConnectorConfigWithPreservedOAuth({
+      connectorType,
+      currentConfig: existingDecryptedConfig,
+      nextConfig: configWithToolPermissions,
+    })
+    const configValidation = validateConnectorConfig(connectorType, mergedConfig)
     if (!configValidation.valid) {
       return NextResponse.json(
         {
           error: 'invalid_config',
-          message: `Missing required fields: ${configValidation.missing?.join(', ')}`,
+          message: configValidation.message ?? `Missing required fields: ${configValidation.missing?.join(', ')}`,
         },
         { status: 400 }
       )
     }
     try {
-      updateData.config = encryptConfig(config)
+      updateData.config = encryptConfig(mergedConfig)
+      responseConfig = mergedConfig
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to encrypt config'
       return NextResponse.json(
@@ -255,19 +250,11 @@ export const PATCH = withAuth<
     )
   }
 
-  // If config is NOT being updated, validate that existing config can be decrypted
-  // BEFORE applying changes (prevents mutation + 500 if config is corrupted)
-  let existingDecryptedConfig: Record<string, unknown> | null = null
-  if (config === undefined) {
-    try {
-      existingDecryptedConfig = decryptConfig(existingConnector.config)
-    } catch {
-      return NextResponse.json(
-        { error: 'config_corrupted', message: 'Existing connector configuration is corrupted' },
-        { status: 500 }
-      )
-    }
+  if (responseConfig === null) {
+    responseConfig = existingDecryptedConfig
   }
+
+  const resolvedResponseConfig = responseConfig ?? existingDecryptedConfig
 
   // Update connector atomically while verifying ownership (prevents TOCTOU)
   const result = await connectorService.updateManyByIdAndUserId(id, targetUser.id, updateData)
@@ -292,22 +279,18 @@ export const PATCH = withAuth<
     metadata: { connectorId: connector.id, fields: Object.keys(updateData) },
   })
 
-  // For response: use request config if updated, otherwise use existing decrypted config
-  const responseConfig = config !== undefined
-    ? config  // Already validated, use input directly
-    : existingDecryptedConfig!  // Already decrypted before update
-
   const connectorType = validateConnectorType(connector.type) ? connector.type : null
-  const authType = getConnectorAuthType(responseConfig)
-  const oauthConfig = connectorType ? getConnectorOAuthConfig(connectorType, responseConfig) : null
+  const authType = getConnectorAuthType(resolvedResponseConfig)
+  const oauthConfig = connectorType ? getConnectorOAuthConfig(connectorType, resolvedResponseConfig) : null
 
   return NextResponse.json({
     id: connector.id,
     type: connector.type,
     name: connector.name,
-    config: connectorType ? sanitizeConfigForResponse(connectorType, responseConfig) : responseConfig,
+    config: connectorType ? sanitizeConnectorConfigForResponse(connectorType, resolvedResponseConfig) : resolvedResponseConfig,
     enabled: connector.enabled,
     authType,
+    oauthActor: connectorType ? resolveLinearOAuthActor(connectorType, authType, resolvedResponseConfig) : undefined,
     oauthConnected: Boolean(oauthConfig?.accessToken),
     oauthExpiresAt: oauthConfig?.expiresAt,
     createdAt: connector.createdAt.toISOString(),

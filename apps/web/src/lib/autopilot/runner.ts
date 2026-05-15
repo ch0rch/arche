@@ -1,19 +1,20 @@
 import { AutopilotRunTrigger } from '@prisma/client'
 
 import { formatAutopilotRunDate } from '@/lib/autopilot/cron'
+import { planAutopilotRetry } from '@/lib/autopilot/retry-policy'
+import { serializeSlackNotificationConfig } from '@/lib/autopilot/serializers'
 import { createInstanceClient } from '@/lib/opencode/client'
-import { transformParts } from '@/lib/opencode/transform'
+import {
+  captureSessionMessageCursor,
+  ensureWorkspaceRunningForExecution,
+  readLatestAssistantText,
+  waitForSessionToComplete,
+} from '@/lib/opencode/session-execution'
 import { auditService, autopilotService, instanceService, userService } from '@/lib/services'
-import { getInstanceStatus, startInstance } from '@/lib/spawner/core'
 import type { AutopilotClaimedTask } from '@/lib/services/autopilot'
-import { deriveWorkspaceMessageRuntimeState } from '@/lib/workspace-message-state'
+import { sendSlackNotifications } from '@/lib/slack/notifications'
 
-const RUN_POLL_INTERVAL_MS = 2_000
-const RUN_TIMEOUT_MS = 30 * 60 * 1000
-const ACTIVITY_TOUCH_INTERVAL_MS = 20_000
 const LEASE_EXTENSION_INTERVAL_MS = 60_000
-const INSTANCE_START_POLL_INTERVAL_MS = 2_000
-const IDLE_WITHOUT_ASSISTANT_GRACE_MS = 15_000
 export const AUTOPILOT_TASK_LEASE_MS = 15 * 60 * 1000
 
 function importRuntimeModule<T>(specifier: string): Promise<T> {
@@ -29,146 +30,35 @@ async function createLeaseOwner(): Promise<string> {
   return `autopilot:${process.pid}:${randomUUID()}`
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
 function buildAutopilotSessionTitle(task: AutopilotClaimedTask, scheduledFor: Date): string {
   return `Autopilot | ${task.name} | ${formatAutopilotRunDate(scheduledFor, task.timezone)}`
 }
 
-function normalizeRole(role: unknown): 'assistant' | 'system' | 'user' | null {
-  if (role === 'assistant' || role === 'system' || role === 'user') {
-    return role
+function buildAutopilotSessionLink(slug: string, sessionId: string): string | undefined {
+  const publicBaseUrl = process.env.ARCHE_PUBLIC_BASE_URL?.trim()
+  if (!publicBaseUrl || publicBaseUrl.includes('0.0.0.0') || publicBaseUrl.includes('::')) {
+    return undefined
   }
 
-  return null
-}
-
-async function ensureWorkspaceRunningForAutopilot(slug: string, userId: string): Promise<void> {
-  const current = await getInstanceStatus(slug)
-  if (current?.status === 'running') {
-    return
+  try {
+    const url = new URL(publicBaseUrl)
+    url.pathname = `/w/${slug}`
+    url.searchParams.set('mode', 'tasks')
+    url.searchParams.set('session', sessionId)
+    return url.toString()
+  } catch {
+    return undefined
   }
-
-  if (current?.status === 'starting') {
-    const deadline = Date.now() + RUN_TIMEOUT_MS
-    while (Date.now() < deadline) {
-      await sleep(INSTANCE_START_POLL_INTERVAL_MS)
-      const next = await getInstanceStatus(slug)
-      if (next?.status === 'running') {
-        return
-      }
-    }
-
-    throw new Error('instance_start_timeout')
-  }
-
-  const startResult = await startInstance(slug, userId)
-  if (!startResult.ok && startResult.error !== 'already_running') {
-    throw new Error(startResult.detail ?? startResult.error)
-  }
-}
-
-async function inspectSessionOutcome(client: NonNullable<Awaited<ReturnType<typeof createInstanceClient>>>, sessionId: string): Promise<string | null> {
-  const response = await client.session.messages(
-    { sessionID: sessionId },
-    { throwOnError: true },
-  )
-  const messages = response.data ?? []
-  const assistantMessages = messages.filter((message) => normalizeRole(message.info.role) === 'assistant')
-
-  if (assistantMessages.length === 0) {
-    return 'autopilot_no_assistant_message'
-  }
-
-  const latestAssistant = assistantMessages[assistantMessages.length - 1]
-  const completedAt = (latestAssistant.info.time as { completed?: number } | undefined)?.completed
-  const parts = transformParts(latestAssistant.parts ?? [])
-  const runtimeState = deriveWorkspaceMessageRuntimeState({
-    role: 'assistant',
-    completedAt,
-    parts,
-    sessionStatus: 'idle',
-  })
-
-  if (runtimeState.pending) {
-    return 'autopilot_session_pending'
-  }
-
-  if (runtimeState.statusInfo?.status === 'error') {
-    return runtimeState.statusInfo.detail ?? 'autopilot_run_failed'
-  }
-
-  return null
-}
-
-async function waitForSessionToComplete(params: {
-  client: NonNullable<Awaited<ReturnType<typeof createInstanceClient>>>
-  leaseOwner: string
-  scheduledTask: AutopilotClaimedTask
-  sessionId: string
-  slug: string
-}): Promise<string | null> {
-  const deadline = Date.now() + RUN_TIMEOUT_MS
-  const startedAt = Date.now()
-  let lastActivityTouchAt = 0
-  let lastLeaseExtensionAt = 0
-  let assistantSeen = false
-
-  while (Date.now() < deadline) {
-    if (Date.now() - lastActivityTouchAt >= ACTIVITY_TOUCH_INTERVAL_MS) {
-      await instanceService.touchActivity(params.slug).catch(() => undefined)
-      lastActivityTouchAt = Date.now()
-    }
-
-    if (Date.now() - lastLeaseExtensionAt >= LEASE_EXTENSION_INTERVAL_MS) {
-      await autopilotService.extendTaskLease(
-        params.scheduledTask.id,
-        params.leaseOwner,
-        new Date(Date.now() + AUTOPILOT_TASK_LEASE_MS),
-      ).catch(() => undefined)
-      lastLeaseExtensionAt = Date.now()
-    }
-
-    const [statusResult, messagesResult] = await Promise.all([
-      params.client.session.status({}, { throwOnError: true }),
-      params.client.session.messages({ sessionID: params.sessionId }, { throwOnError: true }),
-    ])
-
-    const sessionStatus = statusResult.data?.[params.sessionId]
-    const messages = messagesResult.data ?? []
-    assistantSeen = assistantSeen || messages.some((message) => normalizeRole(message.info.role) === 'assistant')
-
-    if ((sessionStatus?.type === 'idle' || !sessionStatus) && assistantSeen) {
-      const outcome = await inspectSessionOutcome(params.client, params.sessionId)
-      if (outcome === 'autopilot_session_pending') {
-        await sleep(RUN_POLL_INTERVAL_MS)
-        continue
-      }
-
-      return outcome
-    }
-
-    if (
-      (sessionStatus?.type === 'idle' || !sessionStatus) &&
-      !assistantSeen &&
-      Date.now() - startedAt >= IDLE_WITHOUT_ASSISTANT_GRACE_MS
-    ) {
-      return 'autopilot_no_assistant_message'
-    }
-
-    await sleep(RUN_POLL_INTERVAL_MS)
-  }
-
-  return 'autopilot_run_timeout'
 }
 
 export async function runClaimedAutopilotTask(
   task: AutopilotClaimedTask,
   trigger: AutopilotRunTrigger,
 ): Promise<void> {
+  const attempt = task.retryAttempt + 1
+  const originalScheduledFor = task.retryScheduledFor ?? task.scheduledFor
   const run = await autopilotService.createRun({
+    attempt,
     taskId: task.id,
     trigger,
     scheduledFor: task.scheduledFor,
@@ -178,16 +68,82 @@ export async function runClaimedAutopilotTask(
   let sessionId: string | null = null
   let slug: string | null = null
   let sessionTitle: string | null = null
+  let promptSent = false
 
   const buildAuditMetadata = (extra: Record<string, unknown> = {}) => ({
+    attempt,
     runId: run.id,
     sessionId,
+    originalScheduledFor: originalScheduledFor.toISOString(),
+    scheduledFor: task.scheduledFor.toISOString(),
     taskId: task.id,
     trigger,
     userId: task.userId,
     ...(slug ? { slug } : {}),
     ...extra,
   })
+
+  const markFailed = async (detail: string, failedAt: Date) => {
+    const retryPlan = planAutopilotRetry({
+      error: detail,
+      now: failedAt,
+      promptSent,
+      retryAttempt: task.retryAttempt,
+      trigger,
+    })
+
+    await autopilotService.markRunFailed(run.id, {
+      error: detail,
+      finishedAt: failedAt,
+      openCodeSessionId: sessionId,
+      sessionTitle,
+    })
+
+    if (retryPlan.ok) {
+      await autopilotService.scheduleTaskRetry({
+        leaseOwner: task.leaseOwner ?? '',
+        retryAttempt: retryPlan.nextRetryAttempt,
+        retryAt: retryPlan.retryAt,
+        retryScheduledFor: originalScheduledFor,
+        taskId: task.id,
+      })
+
+      console.warn('[autopilot] Retry scheduled', {
+        attempt,
+        error: detail,
+        maxAttempts: retryPlan.maxAttempts,
+        retryAt: retryPlan.retryAt.toISOString(),
+        taskId: task.id,
+      })
+
+      await auditService.createEvent({
+        actorUserId: task.userId,
+        action: 'autopilot.run_failed',
+        metadata: buildAuditMetadata({
+          error: detail,
+          maxAttempts: retryPlan.maxAttempts,
+          retryAt: retryPlan.retryAt.toISOString(),
+          willRetry: true,
+        }),
+      })
+      return
+    }
+
+    if (task.retryAttempt > 0 || task.retryScheduledFor) {
+      await autopilotService.clearTaskRetryState(task.id, task.leaseOwner ?? '').catch(() => undefined)
+    }
+
+    await auditService.createEvent({
+      actorUserId: task.userId,
+      action: 'autopilot.run_failed',
+      metadata: buildAuditMetadata({
+        error: detail,
+        maxAttempts: retryPlan.maxAttempts,
+        retryReason: retryPlan.reason,
+        willRetry: false,
+      }),
+    })
+  }
 
   try {
     const owner = await userService.findByIdSelect(task.userId, { slug: true })
@@ -196,7 +152,7 @@ export async function runClaimedAutopilotTask(
     }
 
     slug = owner.slug
-    await ensureWorkspaceRunningForAutopilot(slug, task.userId)
+    await ensureWorkspaceRunningForExecution(slug, task.userId)
 
     await instanceService.touchActivity(slug).catch(() => undefined)
 
@@ -220,6 +176,8 @@ export async function runClaimedAutopilotTask(
       sessionTitle,
     })
 
+    const sessionCursor = await captureSessionMessageCursor(client, sessionId)
+    promptSent = true
     await client.session.promptAsync(
       {
         sessionID: sessionId,
@@ -234,29 +192,35 @@ export async function runClaimedAutopilotTask(
       { throwOnError: true },
     )
 
+    let lastLeaseExtensionAt = 0
     const failure = await waitForSessionToComplete({
       client,
-      leaseOwner: task.leaseOwner ?? '',
-      scheduledTask: task,
+      cursor: sessionCursor,
       sessionId,
       slug,
+      onPulse: async () => {
+        if (Date.now() - lastLeaseExtensionAt < LEASE_EXTENSION_INTERVAL_MS) {
+          return
+        }
+
+        await autopilotService.extendTaskLease(
+          task.id,
+          task.leaseOwner ?? '',
+          new Date(Date.now() + AUTOPILOT_TASK_LEASE_MS),
+        )
+        lastLeaseExtensionAt = Date.now()
+      },
     })
 
     const completedAt = new Date()
     finishedAt = completedAt
     if (failure) {
-      await autopilotService.markRunFailed(run.id, {
-        error: failure,
-        finishedAt: completedAt,
-        openCodeSessionId: sessionId,
-        sessionTitle,
-      })
-      await auditService.createEvent({
-        actorUserId: task.userId,
-        action: 'autopilot.run_failed',
-        metadata: buildAuditMetadata({ error: failure }),
-      })
+      await markFailed(failure, completedAt)
     } else {
+      if (task.retryAttempt > 0 || task.retryScheduledFor) {
+        await autopilotService.clearTaskRetryState(task.id, task.leaseOwner ?? '').catch(() => undefined)
+      }
+
       await autopilotService.markRunSucceeded(run.id, {
         finishedAt: completedAt,
         openCodeSessionId: sessionId,
@@ -267,21 +231,42 @@ export async function runClaimedAutopilotTask(
         action: 'autopilot.run_succeeded',
         metadata: buildAuditMetadata(),
       })
+
+      const slackNotificationConfig = serializeSlackNotificationConfig(task.slackNotificationConfig)
+      if (slackNotificationConfig?.enabled && sessionId && slug) {
+        try {
+          const assistantText = await readLatestAssistantText(client, sessionId, sessionCursor)
+          if (!assistantText) {
+            throw new Error('No assistant text to send')
+          }
+
+          const result = await sendSlackNotifications({
+            targets: slackNotificationConfig.targets,
+            text: `Autopilot report: ${task.name}\n\n${assistantText}`,
+            sessionLink: slackNotificationConfig.includeSessionLink
+              ? buildAutopilotSessionLink(slug, sessionId)
+              : undefined,
+            source: 'autopilot',
+          })
+
+          if (!result.ok) {
+            console.error('[autopilot] Failed to send Slack notification', result.error)
+          } else if (result.failed > 0) {
+            console.error('[autopilot] Partial Slack notification failure', {
+              errors: result.errors,
+              failed: result.failed,
+              sent: result.sent,
+            })
+          }
+        } catch (error) {
+          console.error('[autopilot] Error sending Slack notification', error)
+        }
+      }
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'autopilot_run_failed'
     finishedAt = new Date()
-    await autopilotService.markRunFailed(run.id, {
-      error: detail,
-      finishedAt,
-      openCodeSessionId: sessionId,
-      sessionTitle,
-    }).catch(() => undefined)
-    await auditService.createEvent({
-      actorUserId: task.userId,
-      action: 'autopilot.run_failed',
-      metadata: buildAuditMetadata({ error: detail }),
-    })
+    await markFailed(detail, finishedAt).catch(() => undefined)
   } finally {
     await autopilotService.releaseTaskLease(
       task.id,

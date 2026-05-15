@@ -4,7 +4,9 @@ set -euo pipefail
 # Arche One-Click Deployer
 # Usage:
 #   Remote:    ./deploy.sh --ip <IP> --domain <DOMAIN> --ssh-key <KEY> --acme-email <EMAIL>
+#   Tunnel:    ./deploy.sh --ip <IP> --domain <DOMAIN> --ssh-key <KEY> --cloudflare-tunnel
 #   Local dev: ./deploy.sh --local-dev
+#   Local dev down: ./deploy.sh --local-dev-down
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -40,10 +42,14 @@ DEPLOY_DOMAIN=""
 SSH_KEY=""
 SSH_USER="root"
 ACME_EMAIL=""
+EXPOSURE_MODE="direct"
+EXPOSURE_MODE_SET_BY_FLAG=false
+REMOTE_FLAGS_SET=false
 DRY_RUN=false
 VERBOSE=false
 SKIP_ENSURE_DNS_RECORD=false
 LOCAL_DOMAIN="arche.lvh.me"
+STOP_PODMAN_MACHINE=false
 
 # GHCR defaults
 IMAGE_PREFIX="${IMAGE_PREFIX:-ghcr.io/peaberry-studio/arche/}"
@@ -132,14 +138,16 @@ Arche One-Click Deployer
 
 REMOTE MODE:
   ./deploy.sh --ip <IP> --domain <DOMAIN> --ssh-key <KEY> --acme-email <EMAIL> [OPTIONS]
+  ./deploy.sh --ip <IP> --domain <DOMAIN> --ssh-key <KEY> --cloudflare-tunnel [OPTIONS]
 
   Required:
     --ip            VPS IP address (IPv4 or IPv6)
     --domain        Production domain (e.g. arche.example.com or app.arche.example.com)
     --ssh-key       Path to SSH private key
-    --acme-email    Email for Let's Encrypt ACME account
+    --acme-email    Email for Let's Encrypt ACME account (direct mode only)
 
   Optional:
+    --cloudflare-tunnel  Use Cloudflare Tunnel instead of public 80/443 + ACME
     --version       Web image tag to deploy (default: latest)
     --user          SSH user (default: root)
     --skip-ensure-dns-record  Skip DNS verification step before deploy
@@ -147,9 +155,10 @@ REMOTE MODE:
     --verbose       Enable verbose output
 
   DNS Setup:
-    The script will verify your domain points to the VPS IP.
+    In direct mode, the script will verify your domain points to the VPS IP.
     If not, it will show you exactly which DNS record to add.
     Works with any domain provider (Cloudflare, GoDaddy, Namecheap, etc.)
+    In Cloudflare Tunnel mode, DNS verification is skipped.
 
 LOCAL DEV MODE:
   ./deploy.sh --local-dev
@@ -163,6 +172,19 @@ LOCAL DEV MODE:
     - KB content deployed to ~/.arche/kb-content
     - KB config deployed to ~/.arche/kb-config
 
+  ./deploy.sh --local-dev-down
+
+  Tears down local development resources:
+    - Stops/removes local-dev containers
+    - Removes generated local compose/env files
+    - Removes local-dev network
+    - Removes local-dev named volumes
+    - Removes arche-workspace image
+    - Optionally stops podman machine when idle (with --stop-podman-machine)
+
+  Optional with --local-dev-down:
+    --stop-podman-machine  Stop first running podman machine if no containers remain
+
 
 ENVIRONMENT VARIABLES (via .env or exported):
   POSTGRES_PASSWORD         Database password
@@ -173,6 +195,11 @@ ENVIRONMENT VARIABLES (via .env or exported):
   ARCHE_GATEWAY_TOKEN_SECRET Gateway token signing secret
   ARCHE_GATEWAY_TOKEN_TTL_SECONDS Gateway token TTL (seconds, optional)
   ARCHE_GATEWAY_BASE_URL    Gateway base URL (optional)
+  ARCHE_PUBLIC_BASE_URL     Public callback base URL (optional)
+  ARCHE_SESSION_TTL_DAYS    Session TTL in days (optional)
+  ARCHE_CONNECTOR_GATEWAY_BASE_URL Connector gateway base URL (optional)
+  ARCHE_CONNECTOR_GATEWAY_TOKEN_SECRET Connector gateway token secret (optional)
+  ARCHE_CONNECTOR_*         Connector-specific OAuth/MCP overrides (optional)
   ARCHE_SEED_ADMIN_EMAIL    Seed admin email
   ARCHE_SEED_ADMIN_PASSWORD Seed admin password
   ARCHE_SEED_ADMIN_SLUG     Seed admin URL slug
@@ -181,6 +208,8 @@ ENVIRONMENT VARIABLES (via .env or exported):
   ARCHE_USERS_PATH          Host path for persisted user data (optional)
   OPENCODE_VERSION          OpenCode version override (optional)
   WEB_IMAGE                 Web app image (set arche-web:latest to build on VPS)
+  CLOUDFLARED_TUNNEL_TOKEN  Cloudflare Tunnel token (required with --cloudflare-tunnel)
+  CLOUDFLARED_IMAGE         cloudflared image override (optional)
   KB_CONTENT_HOST_PATH      Path to the KB content bare repo
   KB_CONFIG_HOST_PATH       Path to the KB config bare repo
 EOF
@@ -195,12 +224,15 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --local-dev)   MODE="local-dev";   shift ;;
-    --ip)          DEPLOY_IP="$2";       shift 2 ;;
-    --domain)      DEPLOY_DOMAIN="$2";   shift 2 ;;
-    --ssh-key)     SSH_KEY="$2";         shift 2 ;;
+    --local-dev-down) MODE="local-dev-down"; shift ;;
+    --ip)          DEPLOY_IP="$2";       REMOTE_FLAGS_SET=true; shift 2 ;;
+    --domain)      DEPLOY_DOMAIN="$2";   REMOTE_FLAGS_SET=true; shift 2 ;;
+    --ssh-key)     SSH_KEY="$2";         REMOTE_FLAGS_SET=true; shift 2 ;;
     --user)        SSH_USER="$2";        shift 2 ;;
-    --acme-email)  ACME_EMAIL="$2";      shift 2 ;;
+    --acme-email)  ACME_EMAIL="$2";      REMOTE_FLAGS_SET=true; shift 2 ;;
+    --cloudflare-tunnel) EXPOSURE_MODE="cloudflare-tunnel"; EXPOSURE_MODE_SET_BY_FLAG=true; REMOTE_FLAGS_SET=true; shift ;;
     --version)     WEB_VERSION="$2";     shift 2 ;;
+    --stop-podman-machine) STOP_PODMAN_MACHINE=true; shift ;;
     --skip-ensure-dns-record) SKIP_ENSURE_DNS_RECORD=true; shift ;;
     --dry-run)     DRY_RUN=true;         shift ;;
     --verbose)     VERBOSE=true;         shift ;;
@@ -212,7 +244,7 @@ done
 # ---------------------------------------------------------------------------
 # Load .env if present
 # ---------------------------------------------------------------------------
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
+if [[ "$MODE" != "local-dev-down" && -f "$SCRIPT_DIR/.env" ]]; then
   log "Loading .env file"
   set -a
   # shellcheck source=/dev/null
@@ -221,7 +253,12 @@ if [[ -f "$SCRIPT_DIR/.env" ]]; then
   log ".env file loaded successfully"
 fi
 
+if ! $EXPOSURE_MODE_SET_BY_FLAG; then
+  EXPOSURE_MODE="${ARCHE_EXPOSURE_MODE:-$EXPOSURE_MODE}"
+fi
+
 WEB_IMAGE="${WEB_IMAGE:-${IMAGE_PREFIX}web:${WEB_VERSION}}"
+CLOUDFLARED_IMAGE="${CLOUDFLARED_IMAGE:-docker.io/cloudflare/cloudflared:2026.5.0}"
 
 # ---------------------------------------------------------------------------
 # Validation
@@ -258,10 +295,20 @@ PY
 
 validate_remote() {
   log "Starting validate_remote..."
+  case "$EXPOSURE_MODE" in
+    direct|cloudflare-tunnel) ;;
+    *) ERRORS+=("Invalid exposure mode: $EXPOSURE_MODE (expected direct or cloudflare-tunnel)") ;;
+  esac
+
   [[ -z "$DEPLOY_IP" ]]    && ERRORS+=("--ip is required")
   [[ -z "$DEPLOY_DOMAIN" ]] && ERRORS+=("--domain is required")
   [[ -z "$SSH_KEY" ]]       && ERRORS+=("--ssh-key is required")
-  [[ -z "$ACME_EMAIL" ]]    && ERRORS+=("--acme-email is required")
+
+  if [[ "$EXPOSURE_MODE" == "direct" ]]; then
+    [[ -z "$ACME_EMAIL" ]] && ERRORS+=("--acme-email is required")
+  else
+    [[ -z "${CLOUDFLARED_TUNNEL_TOKEN:-}" ]] && ERRORS+=("CLOUDFLARED_TUNNEL_TOKEN is required when --cloudflare-tunnel is used")
+  fi
 
   if [[ -n "$SSH_KEY" && ! -f "$SSH_KEY" ]]; then
     ERRORS+=("SSH key not found: $SSH_KEY")
@@ -321,15 +368,19 @@ log "About to determine mode, current MODE=$MODE"
 # Determine mode
 if [[ "$MODE" == "local-dev" ]]; then
   # Ensure no remote flags were also passed
-  if [[ -n "$DEPLOY_IP" || -n "$DEPLOY_DOMAIN" || -n "$SSH_KEY" || -n "$ACME_EMAIL" ]]; then
-    ERRORS+=("--${MODE} is mutually exclusive with remote flags (--ip, --domain, etc.)")
+  if $REMOTE_FLAGS_SET; then
+    ERRORS+=("--${MODE} is mutually exclusive with remote flags (--ip, --domain, --ssh-key, --acme-email, --cloudflare-tunnel)")
   fi
   validate_local
-elif [[ -n "$DEPLOY_IP" || -n "$DEPLOY_DOMAIN" || -n "$SSH_KEY" || -n "$ACME_EMAIL" ]]; then
+elif [[ "$MODE" == "local-dev-down" ]]; then
+  if $REMOTE_FLAGS_SET; then
+    ERRORS+=("--${MODE} is mutually exclusive with remote flags (--ip, --domain, --ssh-key, --acme-email, --cloudflare-tunnel)")
+  fi
+elif $REMOTE_FLAGS_SET; then
   MODE="remote"
   validate_remote
 else
-  err "Specify --local-dev, or remote flags (--ip, --domain, etc.)"
+  err "Specify --local-dev, --local-dev-down, or remote flags (--ip, --domain, etc.)"
   usage 1
 fi
 
@@ -342,6 +393,11 @@ if [[ ${#ERRORS[@]} -gt 0 ]]; then
 fi
 
 log "Validation passed, MODE=$MODE"
+
+if [[ "$MODE" == "remote" && "$EXPOSURE_MODE" == "cloudflare-tunnel" && -z "${ARCHE_PUBLIC_BASE_URL:-}" ]]; then
+  export ARCHE_PUBLIC_BASE_URL="https://${DEPLOY_DOMAIN}"
+  log "Using ARCHE_PUBLIC_BASE_URL=$ARCHE_PUBLIC_BASE_URL"
+fi
 
 # ---------------------------------------------------------------------------
 # DNS Record Management (Simplified - User-guided)
@@ -482,7 +538,9 @@ deploy_remote() {
   fi
   log "SSH connection OK"
 
-  if $SKIP_ENSURE_DNS_RECORD; then
+  if [[ "$EXPOSURE_MODE" == "cloudflare-tunnel" ]]; then
+    warn "Skipping DNS verification (Cloudflare Tunnel mode)"
+  elif $SKIP_ENSURE_DNS_RECORD; then
     warn "Skipping DNS verification (--skip-ensure-dns-record enabled)"
   else
     # Ensure DNS record points to VPS IP
@@ -500,19 +558,22 @@ ${DEPLOY_IP} ansible_user=${SSH_USER} ansible_ssh_private_key_file=${SSH_KEY}
 EOF
 
   # Export variables so python3 subprocess can read them
-  export DEPLOY_DOMAIN ACME_EMAIL IMAGE_PREFIX WEB_VERSION WEB_IMAGE OPENCODE_IMAGE
+  export DEPLOY_DOMAIN ACME_EMAIL IMAGE_PREFIX WEB_VERSION WEB_IMAGE OPENCODE_IMAGE EXPOSURE_MODE CLOUDFLARED_TUNNEL_TOKEN CLOUDFLARED_IMAGE
 
   # Build extra vars as JSON (safe for secrets with special characters)
   python3 -c '
 import json, os, sys
 vars = {
     "domain": os.environ["DEPLOY_DOMAIN"],
-    "acme_email": os.environ["ACME_EMAIL"],
+    "acme_email": os.environ.get("ACME_EMAIL", ""),
     "deploy_mode": "remote",
+    "exposure_mode": os.environ["EXPOSURE_MODE"],
     "image_prefix": os.environ["IMAGE_PREFIX"],
     "web_version": os.environ["WEB_VERSION"],
     "web_image": os.environ["WEB_IMAGE"],
     "opencode_image": os.environ["OPENCODE_IMAGE"],
+    "cloudflared_tunnel_token": os.environ.get("CLOUDFLARED_TUNNEL_TOKEN", ""),
+    "cloudflared_image": os.environ["CLOUDFLARED_IMAGE"],
     "postgres_password": os.environ["POSTGRES_PASSWORD"],
     "arche_session_pepper": os.environ["ARCHE_SESSION_PEPPER"],
     "arche_encryption_key": os.environ["ARCHE_ENCRYPTION_KEY"],
@@ -521,6 +582,26 @@ vars = {
     "arche_gateway_token_secret": os.environ["ARCHE_GATEWAY_TOKEN_SECRET"],
     "arche_gateway_token_ttl_seconds": os.environ.get("ARCHE_GATEWAY_TOKEN_TTL_SECONDS", ""),
     "arche_gateway_base_url": os.environ.get("ARCHE_GATEWAY_BASE_URL", ""),
+    "arche_public_base_url": os.environ.get("ARCHE_PUBLIC_BASE_URL", ""),
+    "arche_session_ttl_days": os.environ.get("ARCHE_SESSION_TTL_DAYS", ""),
+    "arche_connector_gateway_base_url": os.environ.get("ARCHE_CONNECTOR_GATEWAY_BASE_URL", ""),
+    "arche_connector_gateway_token_secret": os.environ.get("ARCHE_CONNECTOR_GATEWAY_TOKEN_SECRET", ""),
+    "arche_connector_oauth_state_ttl_seconds": os.environ.get("ARCHE_CONNECTOR_OAUTH_STATE_TTL_SECONDS", ""),
+    "arche_connector_oauth_max_authorize_url_length": os.environ.get("ARCHE_CONNECTOR_OAUTH_MAX_AUTHORIZE_URL_LENGTH", ""),
+    "arche_connector_linear_mcp_url": os.environ.get("ARCHE_CONNECTOR_LINEAR_MCP_URL", ""),
+    "arche_connector_notion_mcp_url": os.environ.get("ARCHE_CONNECTOR_NOTION_MCP_URL", ""),
+    "arche_connector_linear_scope": os.environ.get("ARCHE_CONNECTOR_LINEAR_SCOPE", ""),
+    "arche_connector_notion_scope": os.environ.get("ARCHE_CONNECTOR_NOTION_SCOPE", ""),
+    "arche_connector_notion_client_id": os.environ.get("ARCHE_CONNECTOR_NOTION_CLIENT_ID", ""),
+    "arche_connector_notion_client_secret": os.environ.get("ARCHE_CONNECTOR_NOTION_CLIENT_SECRET", ""),
+    "arche_connector_google_client_id": os.environ.get("ARCHE_CONNECTOR_GOOGLE_CLIENT_ID", ""),
+    "arche_connector_google_client_secret": os.environ.get("ARCHE_CONNECTOR_GOOGLE_CLIENT_SECRET", ""),
+    "arche_connector_google_gmail_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_GMAIL_MCP_URL", ""),
+    "arche_connector_google_drive_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_DRIVE_MCP_URL", ""),
+    "arche_connector_google_calendar_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_CALENDAR_MCP_URL", ""),
+    "arche_connector_google_chat_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_CHAT_MCP_URL", ""),
+    "arche_connector_google_people_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_PEOPLE_MCP_URL", ""),
+    "arche_connector_meta_ads_graph_api_version": os.environ.get("ARCHE_CONNECTOR_META_ADS_GRAPH_API_VERSION", ""),
     "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
     "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
@@ -528,6 +609,7 @@ vars = {
     "arche_seed_test_slug": os.environ.get("ARCHE_SEED_TEST_SLUG", ""),
     "kb_content_host_path": os.environ.get("KB_CONTENT_HOST_PATH", "/opt/arche/kb-content"),
     "kb_config_host_path": os.environ.get("KB_CONFIG_HOST_PATH", "/opt/arche/kb-config"),
+    "users_path": os.environ.get("ARCHE_USERS_PATH", "/opt/arche/users"),
     "ghcr_token": os.environ.get("GHCR_TOKEN", ""),
 }
 json.dump(vars, open(sys.argv[1], "w"))
@@ -625,6 +707,9 @@ deploy_local_dev() {
     exit 1
   fi
 
+  LOCAL_DEV_PROJECT_NAME="arche"
+  LOCAL_DEV_NETWORK_NAME="arche-internal"
+
   # Build workspace image
   log "Building workspace image: arche-workspace:latest"
   podman build --build-arg OPENCODE_VERSION="$RESOLVED_OPENCODE_VERSION" -t arche-workspace:latest "$REPO_ROOT/infra/workspace-image"
@@ -660,6 +745,7 @@ deploy_local_dev() {
 import json, os, sys
 vars = {
     "deploy_mode": "local-dev",
+    "exposure_mode": "direct",
     "domain": os.environ["LOCAL_DOMAIN"],
     "acme_email": "",
     "env_file_name": ".env.local-dev",
@@ -667,6 +753,8 @@ vars = {
     "image_prefix": os.environ["IMAGE_PREFIX"],
     "web_version": os.environ["WEB_VERSION"],
     "opencode_image": "arche-workspace:latest",
+    "cloudflared_tunnel_token": "",
+    "cloudflared_image": "docker.io/cloudflare/cloudflared:2026.5.0",
     "repo_root": os.environ["REPO_ROOT"],
     "kb_content_host_path": os.environ["KB_CONTENT_DEST"],
     "kb_config_host_path": os.environ["KB_CONFIG_DEST"],
@@ -678,6 +766,26 @@ vars = {
     "arche_gateway_token_secret": os.environ["ARCHE_GATEWAY_TOKEN_SECRET"],
     "arche_gateway_token_ttl_seconds": os.environ.get("ARCHE_GATEWAY_TOKEN_TTL_SECONDS", ""),
     "arche_gateway_base_url": os.environ.get("ARCHE_GATEWAY_BASE_URL", ""),
+    "arche_public_base_url": os.environ.get("ARCHE_PUBLIC_BASE_URL", ""),
+    "arche_session_ttl_days": os.environ.get("ARCHE_SESSION_TTL_DAYS", ""),
+    "arche_connector_gateway_base_url": os.environ.get("ARCHE_CONNECTOR_GATEWAY_BASE_URL", ""),
+    "arche_connector_gateway_token_secret": os.environ.get("ARCHE_CONNECTOR_GATEWAY_TOKEN_SECRET", ""),
+    "arche_connector_oauth_state_ttl_seconds": os.environ.get("ARCHE_CONNECTOR_OAUTH_STATE_TTL_SECONDS", ""),
+    "arche_connector_oauth_max_authorize_url_length": os.environ.get("ARCHE_CONNECTOR_OAUTH_MAX_AUTHORIZE_URL_LENGTH", ""),
+    "arche_connector_linear_mcp_url": os.environ.get("ARCHE_CONNECTOR_LINEAR_MCP_URL", ""),
+    "arche_connector_notion_mcp_url": os.environ.get("ARCHE_CONNECTOR_NOTION_MCP_URL", ""),
+    "arche_connector_linear_scope": os.environ.get("ARCHE_CONNECTOR_LINEAR_SCOPE", ""),
+    "arche_connector_notion_scope": os.environ.get("ARCHE_CONNECTOR_NOTION_SCOPE", ""),
+    "arche_connector_notion_client_id": os.environ.get("ARCHE_CONNECTOR_NOTION_CLIENT_ID", ""),
+    "arche_connector_notion_client_secret": os.environ.get("ARCHE_CONNECTOR_NOTION_CLIENT_SECRET", ""),
+    "arche_connector_google_client_id": os.environ.get("ARCHE_CONNECTOR_GOOGLE_CLIENT_ID", ""),
+    "arche_connector_google_client_secret": os.environ.get("ARCHE_CONNECTOR_GOOGLE_CLIENT_SECRET", ""),
+    "arche_connector_google_gmail_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_GMAIL_MCP_URL", ""),
+    "arche_connector_google_drive_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_DRIVE_MCP_URL", ""),
+    "arche_connector_google_calendar_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_CALENDAR_MCP_URL", ""),
+    "arche_connector_google_chat_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_CHAT_MCP_URL", ""),
+    "arche_connector_google_people_mcp_url": os.environ.get("ARCHE_CONNECTOR_GOOGLE_PEOPLE_MCP_URL", ""),
+    "arche_connector_meta_ads_graph_api_version": os.environ.get("ARCHE_CONNECTOR_META_ADS_GRAPH_API_VERSION", ""),
     "arche_seed_admin_email": os.environ["ARCHE_SEED_ADMIN_EMAIL"],
     "arche_seed_admin_password": os.environ["ARCHE_SEED_ADMIN_PASSWORD"],
     "arche_seed_admin_slug": os.environ["ARCHE_SEED_ADMIN_SLUG"],
@@ -710,38 +818,58 @@ PLAYBOOK
     --extra-vars "deploy_dir=${SCRIPT_DIR}" \
     "$TEMP_PLAYBOOK"
 
-  # Ensure arche-internal network exists
-  if ! podman network inspect arche-internal &>/dev/null; then
-    log "Creating arche-internal network..."
-    podman network create arche-internal
+  LOCAL_DEV_ENV_FILE="$SCRIPT_DIR/.env.local-dev"
+  LOCAL_DEV_COMPOSE_ARGS=(-f "$COMPOSE_OUT" --env-file "$LOCAL_DEV_ENV_FILE" -p "$LOCAL_DEV_PROJECT_NAME")
+
+  # Ensure the local-dev workspace network exists
+  if ! podman network inspect "$LOCAL_DEV_NETWORK_NAME" &>/dev/null; then
+    log "Creating $LOCAL_DEV_NETWORK_NAME network..."
+    podman network create "$LOCAL_DEV_NETWORK_NAME"
   fi
 
   # Start the stack
   log "Starting Podman Compose stack..."
-  podman compose -f "$COMPOSE_OUT" --env-file "$SCRIPT_DIR/.env.local-dev" -p arche up -d
+  podman compose "${LOCAL_DEV_COMPOSE_ARGS[@]}" up -d
 
   # Wait for web to be ready (longer timeout — first-run pnpm install is slow)
   log "Waiting for web service to be ready (first run may take a while for pnpm install)..."
   RETRIES=60
-  until podman compose -f "$COMPOSE_OUT" -p arche exec -T web sh -c "node -e 'const net=require(\"net\");const s=net.connect(3000,\"127.0.0.1\");s.on(\"connect\",()=>process.exit(0));s.on(\"error\",()=>process.exit(1));'" 2>/dev/null; do
+  until podman compose "${LOCAL_DEV_COMPOSE_ARGS[@]}" exec -T web sh -c "node -e 'const net=require(\"net\");const s=net.connect(3000,\"127.0.0.1\");s.on(\"connect\",()=>process.exit(0));s.on(\"error\",()=>process.exit(1));'" 2>/dev/null; do
     RETRIES=$((RETRIES - 1))
     if [[ $RETRIES -le 0 ]]; then
-      warn "Web service did not become healthy. Continuing with migrations anyway..."
-      break
+      err "Web service did not become healthy in time."
+      podman compose "${LOCAL_DEV_COMPOSE_ARGS[@]}" logs --tail 100 web postgres || true
+      exit 1
     fi
     sleep 3
   done
 
   # In local-dev mode, migrations are NOT run by start.sh (uses pnpm dev, not start.sh)
   log "Running Prisma migrations..."
-  podman compose -f "$COMPOSE_OUT" -p arche exec -T web pnpm prisma migrate deploy || {
-    warn "Migration failed — check web container logs for details."
-  }
+  RETRIES=10
+  until podman compose "${LOCAL_DEV_COMPOSE_ARGS[@]}" exec -T web pnpm prisma migrate deploy; do
+    RETRIES=$((RETRIES - 1))
+    if [[ $RETRIES -le 0 ]]; then
+      err "Prisma migrations failed after repeated attempts."
+      podman compose "${LOCAL_DEV_COMPOSE_ARGS[@]}" logs --tail 100 web postgres || true
+      exit 1
+    fi
+    warn "Migration attempt failed. Retrying in 3s..."
+    sleep 3
+  done
 
   log "Running seed..."
-  podman compose -f "$COMPOSE_OUT" -p arche exec -T web pnpm prisma db seed || {
-    warn "Seed failed — this may be expected if already seeded."
-  }
+  RETRIES=10
+  until podman compose "${LOCAL_DEV_COMPOSE_ARGS[@]}" exec -T web pnpm prisma db seed; do
+    RETRIES=$((RETRIES - 1))
+    if [[ $RETRIES -le 0 ]]; then
+      err "Seed failed after repeated attempts."
+      podman compose "${LOCAL_DEV_COMPOSE_ARGS[@]}" logs --tail 100 web postgres || true
+      exit 1
+    fi
+    warn "Seed attempt failed. Retrying in 3s..."
+    sleep 3
+  done
 
   echo ""
   log "Local dev deployment ready!"
@@ -750,14 +878,96 @@ PLAYBOOK
   info "  Workspace:         http://${LOCAL_DOMAIN}/w/${ARCHE_SEED_ADMIN_SLUG}"
   info "  Traefik dashboard: http://localhost:8081"
   info "  Postgres:         localhost:5432"
+  info "  Project:          ${LOCAL_DEV_PROJECT_NAME}"
+  info "  Network:          ${LOCAL_DEV_NETWORK_NAME}"
   echo ""
   info "Hot reload is active — edit files in apps/web/src/ and Next.js reloads automatically."
   echo ""
   info "Useful commands:"
-  info "  Logs:     podman compose -f $COMPOSE_OUT -p arche logs -f"
-  info "  Web logs: podman compose -f $COMPOSE_OUT -p arche logs -f web"
-  info "  Stop:     podman compose -f $COMPOSE_OUT -p arche down"
-  info "  Restart:  podman compose -f $COMPOSE_OUT -p arche restart"
+  info "  Logs:     podman compose -f $COMPOSE_OUT --env-file $LOCAL_DEV_ENV_FILE -p $LOCAL_DEV_PROJECT_NAME logs -f"
+  info "  Web logs: podman compose -f $COMPOSE_OUT --env-file $LOCAL_DEV_ENV_FILE -p $LOCAL_DEV_PROJECT_NAME logs -f web"
+  info "  Stop:     podman compose -f $COMPOSE_OUT --env-file $LOCAL_DEV_ENV_FILE -p $LOCAL_DEV_PROJECT_NAME down"
+  info "  Restart:  podman compose -f $COMPOSE_OUT --env-file $LOCAL_DEV_ENV_FILE -p $LOCAL_DEV_PROJECT_NAME restart"
+}
+
+teardown_local_dev() {
+  log "Starting local-dev teardown"
+
+  if ! command -v podman &>/dev/null; then
+    warn "Podman not found; nothing to tear down."
+    return 0
+  fi
+
+  if ! podman compose version &>/dev/null; then
+    warn "podman compose not found; skipping compose teardown."
+  fi
+
+  local project_name="arche"
+  local network_name="arche-internal"
+  local compose_file="$SCRIPT_DIR/.compose-local-dev.yml"
+  local env_file="$SCRIPT_DIR/.env.local-dev"
+  local workspace_images=("arche-workspace:latest" "localhost/arche-workspace:latest")
+
+  if [[ -f "$compose_file" && -f "$env_file" ]] && podman compose version &>/dev/null; then
+    log "Stopping/removing compose stack for project ${project_name}..."
+    podman compose -f "$compose_file" --env-file "$env_file" -p "$project_name" down -v --remove-orphans || warn "Compose down reported issues; continuing cleanup."
+  else
+    warn "Local compose/env files not found; attempting label-based cleanup."
+    local containers=()
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && containers+=("$line")
+    done < <(podman ps -a --filter "label=io.podman.compose.project=${project_name}" --format '{{.ID}}' 2>/dev/null || true)
+    if [[ ${#containers[@]} -gt 0 ]]; then
+      podman rm -f "${containers[@]}" || warn "Failed removing some project containers."
+    fi
+  fi
+
+  if [[ -f "$compose_file" ]]; then
+    log "Removing generated compose file: $compose_file"
+    rm -f "$compose_file"
+  fi
+
+  if [[ -f "$env_file" ]]; then
+    log "Removing generated env file: $env_file"
+    rm -f "$env_file"
+  fi
+
+  if podman network inspect "$network_name" &>/dev/null; then
+    log "Removing network: $network_name"
+    podman network rm "$network_name" || warn "Could not remove network $network_name (may still be in use)."
+  fi
+
+  local volumes=()
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && volumes+=("$line")
+  done < <(podman volume ls --format '{{.Name}}' 2>/dev/null | grep "^${project_name}_" || true)
+  if [[ ${#volumes[@]} -gt 0 ]]; then
+    log "Removing project volumes (${#volumes[@]})..."
+    podman volume rm "${volumes[@]}" || warn "Failed removing some volumes."
+  fi
+
+  local image
+  for image in "${workspace_images[@]}"; do
+    if podman image exists "$image" 2>/dev/null; then
+      log "Removing workspace image: $image"
+      podman rmi -f "$image" || warn "Failed to remove $image."
+    fi
+  done
+
+  if $STOP_PODMAN_MACHINE; then
+    local running_containers
+    running_containers="$(podman ps -q 2>/dev/null || true)"
+    if [[ -z "$running_containers" ]] && podman machine inspect &>/dev/null; then
+      local machine_name
+      machine_name="$(podman machine list --format '{{.Name}} {{.Running}}' | awk '$2=="true"{print $1}' | head -n 1)"
+      if [[ -n "$machine_name" ]]; then
+        log "Stopping idle podman machine: $machine_name"
+        podman machine stop "$machine_name" || warn "Could not stop podman machine $machine_name."
+      fi
+    fi
+  fi
+
+  log "Local-dev teardown complete."
 }
 
 # ---------------------------------------------------------------------------
@@ -766,4 +976,5 @@ PLAYBOOK
 case "$MODE" in
   remote)    deploy_remote ;;
   local-dev) deploy_local_dev ;;
+  local-dev-down) teardown_local_dev ;;
 esac

@@ -3,8 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RuntimeSessionResult } from '@/lib/runtime/types'
 
 const mockGetSession = vi.fn<() => Promise<RuntimeSessionResult>>()
+const mockGetRuntimeCapabilities = vi.fn()
+const mockIsDesktop = vi.fn(() => false)
+const mockValidateDesktopToken = vi.fn(() => false)
 
 const mockFindCredentialsBySlug = vi.fn()
+const mockFindRunById = vi.fn()
+const mockMarkRunFailed = vi.fn()
+const mockMarkRunSucceeded = vi.fn()
 
 const mockDecryptPassword = vi.fn(() => 'secret-password')
 
@@ -21,22 +27,11 @@ async function loadRoute() {
   }))
 
   vi.doMock('@/lib/runtime/mode', () => ({
-    isDesktop: () => false,
+    isDesktop: () => mockIsDesktop(),
   }))
 
   vi.doMock('@/lib/runtime/capabilities', () => ({
-    getRuntimeCapabilities: () => ({
-      multiUser: true,
-      auth: true,
-      containers: true,
-      workspaceAgent: true,
-      reaper: true,
-      csrf: true,
-      twoFactor: true,
-      teamManagement: true,
-      connectors: true,
-      kickstart: true,
-    }),
+    getRuntimeCapabilities: () => mockGetRuntimeCapabilities(),
   }))
 
   vi.doMock('@/lib/csrf', () => ({
@@ -48,12 +43,17 @@ async function loadRoute() {
 
   vi.doMock('@/lib/runtime/desktop/token', () => ({
     DESKTOP_TOKEN_HEADER: 'x-arche-desktop-token',
-    validateDesktopToken: () => false,
+    validateDesktopToken: () => mockValidateDesktopToken(),
   }))
 
   vi.doMock('@/lib/services', () => ({
     instanceService: {
       findCredentialsBySlug: (...args: unknown[]) => mockFindCredentialsBySlug(...args),
+    },
+    messageRunService: {
+      findRunById: (...args: unknown[]) => mockFindRunById(...args),
+      markRunFailed: (...args: unknown[]) => mockMarkRunFailed(...args),
+      markRunSucceeded: (...args: unknown[]) => mockMarkRunSucceeded(...args),
     },
   }))
 
@@ -74,7 +74,7 @@ async function loadRoute() {
 
 function createRequest(
   slug = 'alice',
-  body: BodyInit | null = JSON.stringify({ sessionId: 'session-1', text: 'Hello' }),
+  body: BodyInit | null = JSON.stringify({ sessionId: 'session-1', runId: 'run-1' }),
   init?: {
     headers?: Record<string, string>
     signal?: AbortSignal
@@ -111,11 +111,39 @@ describe('POST /api/w/[slug]/chat/stream', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.resetModules()
+    mockIsDesktop.mockReturnValue(false)
+    mockValidateDesktopToken.mockReturnValue(false)
+    mockGetRuntimeCapabilities.mockReturnValue({
+      multiUser: true,
+      auth: true,
+      containers: true,
+      workspaceAgent: true,
+      reaper: true,
+      csrf: true,
+      twoFactor: true,
+      teamManagement: true,
+      connectors: true,
+      kickstart: true,
+      autopilot: true,
+      slackIntegration: true,
+    })
     mockGetSession.mockResolvedValue(session('alice'))
     mockFindCredentialsBySlug.mockResolvedValue({
       serverPassword: 'encrypted-password',
       status: 'running',
     })
+    mockFindRunById.mockResolvedValue({
+      id: 'run-1',
+      slug: 'alice',
+      sessionId: 'session-1',
+      source: 'web',
+      status: 'running',
+      error: null,
+      startedAt: new Date(),
+      finishedAt: null,
+    })
+    mockMarkRunFailed.mockResolvedValue(undefined)
+    mockMarkRunSucceeded.mockResolvedValue(undefined)
     mockDecryptPassword.mockReturnValue('secret-password')
   })
 
@@ -178,16 +206,49 @@ describe('POST /api/w/[slug]/chat/stream', () => {
     await expect(response.json()).resolves.toEqual({ error: 'instance_unavailable' })
   })
 
-  it('passes the client abort signal to upstream event and prompt requests', async () => {
+  it('accepts desktop chat requests without origin when the desktop token is valid', async () => {
+    mockIsDesktop.mockReturnValue(true)
+    mockValidateDesktopToken.mockReturnValue(true)
+    mockGetRuntimeCapabilities.mockReturnValue({
+      multiUser: false,
+      auth: false,
+      containers: false,
+      workspaceAgent: true,
+      reaper: false,
+      csrf: false,
+      twoFactor: false,
+      teamManagement: false,
+      connectors: true,
+      kickstart: true,
+      autopilot: false,
+      slackIntegration: false,
+    })
+    mockGetSession.mockResolvedValue(session('local', 'ADMIN'))
+    mockFindCredentialsBySlug.mockResolvedValue(null)
+
+    const { POST } = await loadRoute()
+    const response = await POST(new Request('http://localhost/api/w/local/chat/stream', {
+      method: 'POST',
+      headers: {
+        host: 'localhost',
+        'content-type': 'application/json',
+        'x-arche-desktop-token': 'desktop-token',
+      },
+      body: JSON.stringify({ sessionId: 'session-1', text: 'Hello' }),
+    }) as never, {
+      params: Promise.resolve({ slug: 'local' }),
+    })
+
+    expect(response.status).toBe(503)
+    await expect(response.json()).resolves.toEqual({ error: 'instance_unavailable' })
+  })
+
+  it('does not pass the client abort signal to upstream OpenCode requests', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
 
       if (url.endsWith('/event')) {
         return emptyEventStreamResponse()
-      }
-
-      if (url.includes('/prompt_async')) {
-        return new Response('', { status: 200 })
       }
 
       throw new Error(`Unexpected fetch url: ${url}`)
@@ -199,7 +260,7 @@ describe('POST /api/w/[slug]/chat/stream', () => {
     const response = await POST(
       createRequest(
         'alice',
-        JSON.stringify({ sessionId: 'session-1', text: 'Hello' }),
+        JSON.stringify({ sessionId: 'session-1', runId: 'run-1' }),
         { signal: abortController.signal },
       ) as never,
       {
@@ -211,17 +272,66 @@ describe('POST /api/w/[slug]/chat/stream', () => {
     await response.text()
 
     const eventSignal = fetchMock.mock.calls[0]?.[1]?.signal
-    const promptSignal = fetchMock.mock.calls[1]?.[1]?.signal
 
     expect(eventSignal).toBeInstanceOf(AbortSignal)
-    expect(promptSignal).toBeInstanceOf(AbortSignal)
-    expect(eventSignal?.aborted).toBe(false)
-    expect(promptSignal?.aborted).toBe(false)
+    expect(eventSignal).not.toBe(abortController.signal)
+  })
 
+  it('keeps execution independent when the client disconnects during observation', async () => {
+    let upstreamAborted = false
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+
+      if (url.endsWith('/event')) {
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              init?.signal?.addEventListener(
+                'abort',
+                () => {
+                  upstreamAborted = true
+                  try {
+                    controller.close()
+                  } catch {
+                    // The route may already have closed the mock upstream stream.
+                  }
+                },
+                { once: true },
+              )
+            },
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'text/event-stream' },
+          },
+        )
+      }
+
+      throw new Error(`Unexpected fetch url: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const abortController = new AbortController()
+    const { POST } = await loadRoute()
+    const response = await POST(
+      createRequest(
+        'alice',
+        JSON.stringify({ sessionId: 'session-1', runId: 'run-1' }),
+        { signal: abortController.signal },
+      ) as never,
+      {
+        params: Promise.resolve({ slug: 'alice' }),
+      },
+    )
+
+    expect(response.status).toBe(200)
+
+    const responseTextPromise = response.text()
     abortController.abort()
 
-    expect(eventSignal?.aborted).toBe(true)
-    expect(promptSignal?.aborted).toBe(true)
+    expect(upstreamAborted).toBe(true)
+    await responseTextPromise
   })
 
   it('aborts the upstream event stream and closes the SSE response when the client disconnects', async () => {

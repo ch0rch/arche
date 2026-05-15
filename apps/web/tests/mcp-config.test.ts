@@ -48,11 +48,52 @@ describe('mcp-config', () => {
           oauth: { provider: 'custom', clientId: 'client-custom', accessToken: 'custom_oauth_token' },
         }),
       },
+      {
+        id: 'z1',
+        type: 'zendesk',
+        name: 'Zendesk',
+        enabled: true,
+        config: encryptConfig({
+          subdomain: 'acme',
+          email: 'agent@example.com',
+          apiToken: 'zendesk-token',
+        }),
+      },
+      {
+        id: 'm1',
+        type: 'meta-ads',
+        name: 'Meta Ads',
+        enabled: true,
+        config: encryptConfig({
+          authType: 'oauth',
+          appId: 'meta-app-id',
+          appSecret: 'meta-app-secret',
+          permissions: {
+            allowRead: true,
+            allowWriteCampaigns: false,
+            allowWriteAdSets: false,
+            allowWriteAds: false,
+          },
+          selectedAdAccountIds: ['act_123'],
+          oauth: { provider: 'meta-ads', clientId: 'meta-app-id', accessToken: 'meta-token' },
+        }),
+      },
     ]
 
-    const result = buildMcpConfigFromConnectors(connectors)
+    const result = buildMcpConfigFromConnectors(connectors, {
+      gatewayTargets: {
+        z1: {
+          url: 'http://web:3000/api/internal/mcp/connectors/z1/mcp',
+          token: 'gateway-token-z1',
+        },
+        m1: {
+          url: 'http://web:3000/api/internal/mcp/connectors/m1/mcp',
+          token: 'gateway-token-m1',
+        },
+      },
+    })
 
-    expect(result.mcp.arche_linear_c1).toEqual({
+    expect(result.mcpConfig.mcp.arche_linear_c1).toEqual({
       type: 'remote',
       url: 'https://mcp.linear.app/mcp',
       enabled: true,
@@ -62,7 +103,7 @@ describe('mcp-config', () => {
       oauth: false,
     })
 
-    expect(result.mcp.arche_notion_c2).toEqual({
+    expect(result.mcpConfig.mcp.arche_notion_c2).toEqual({
       type: 'remote',
       url: 'https://mcp.notion.com/mcp',
       enabled: true,
@@ -72,7 +113,7 @@ describe('mcp-config', () => {
       oauth: false,
     })
 
-    expect(result.mcp.arche_custom_c3).toEqual({
+    expect(result.mcpConfig.mcp.arche_custom_c3).toEqual({
       type: 'remote',
       url: 'https://api.example.com/mcp',
       enabled: true,
@@ -83,7 +124,7 @@ describe('mcp-config', () => {
       },
     })
 
-    expect(result.mcp.arche_custom_c4).toEqual({
+    expect(result.mcpConfig.mcp.arche_custom_c4).toEqual({
       type: 'remote',
       url: 'https://oauth.example.com/mcp',
       enabled: true,
@@ -92,6 +133,26 @@ describe('mcp-config', () => {
         'X-Workspace': 'acme',
         Authorization: 'Bearer custom_oauth_token',
       },
+    })
+
+    expect(result.mcpConfig.mcp.arche_zendesk_z1).toEqual({
+      type: 'remote',
+      url: 'http://web:3000/api/internal/mcp/connectors/z1/mcp',
+      enabled: true,
+      headers: {
+        Authorization: 'Bearer gateway-token-z1',
+      },
+      oauth: false,
+    })
+
+    expect(result.mcpConfig.mcp['arche_meta-ads_m1']).toEqual({
+      type: 'remote',
+      url: 'http://web:3000/api/internal/mcp/connectors/m1/mcp',
+      enabled: true,
+      headers: {
+        Authorization: 'Bearer gateway-token-m1',
+      },
+      oauth: false,
     })
   })
 
@@ -125,7 +186,7 @@ describe('mcp-config', () => {
 
     const result = buildMcpConfigFromConnectors(connectors)
 
-    expect(result.mcp.arche_linear_ok1).toEqual({
+    expect(result.mcpConfig.mcp.arche_linear_ok1).toEqual({
       type: 'remote',
       url: 'https://mcp.linear.app/mcp',
       enabled: true,
@@ -135,8 +196,8 @@ describe('mcp-config', () => {
       oauth: false,
     })
 
-    expect(result.mcp.arche_linear_bad1).toBeUndefined()
-    expect(result.mcp.arche_custom_bad2).toBeUndefined()
+    expect(result.mcpConfig.mcp.arche_linear_bad1).toBeUndefined()
+    expect(result.mcpConfig.mcp.arche_custom_bad2).toBeUndefined()
   })
 
   it('uses full connector id in MCP keys to avoid collisions', () => {
@@ -164,7 +225,7 @@ describe('mcp-config', () => {
     ]
 
     const result = buildMcpConfigFromConnectors(connectors)
-    const keys = Object.keys(result.mcp).sort()
+    const keys = Object.keys(result.mcpConfig.mcp).sort()
 
     expect(keys).toEqual(['arche_linear_abcdef12-1111', 'arche_linear_abcdef12-2222'])
   })
@@ -186,7 +247,7 @@ describe('mcp-config', () => {
     ]
 
     const result = buildMcpConfigFromConnectors(connectors, {
-      oauthGatewayTargets: {
+      gatewayTargets: {
         'custom-oauth-1': {
           url: 'http://web:3000/api/internal/mcp/connectors/custom-oauth-1/mcp',
           token: 'gateway-token',
@@ -194,7 +255,7 @@ describe('mcp-config', () => {
       },
     })
 
-    expect(result.mcp['arche_custom_custom-oauth-1']).toEqual({
+    expect(result.mcpConfig.mcp['arche_custom_custom-oauth-1']).toEqual({
       type: 'remote',
       url: 'http://web:3000/api/internal/mcp/connectors/custom-oauth-1/mcp',
       enabled: true,
@@ -202,6 +263,39 @@ describe('mcp-config', () => {
       headers: {
         'X-Tenant': 'acme',
         Authorization: 'Bearer gateway-token',
+      },
+    })
+  })
+
+  it('routes Ahrefs connectors through gateway targets when provided', () => {
+    const connectors = [
+      {
+        id: 'ahrefs-1',
+        type: 'ahrefs',
+        name: 'Ahrefs',
+        enabled: true,
+        config: encryptConfig({
+          apiKey: 'ahrefs-api-key',
+        }),
+      },
+    ]
+
+    const result = buildMcpConfigFromConnectors(connectors, {
+      gatewayTargets: {
+        'ahrefs-1': {
+          url: 'http://web:3000/api/internal/mcp/connectors/ahrefs-1/mcp',
+          token: 'gateway-token-ahrefs',
+        },
+      },
+    })
+
+    expect(result.mcpConfig.mcp['arche_ahrefs_ahrefs-1']).toEqual({
+      type: 'remote',
+      url: 'http://web:3000/api/internal/mcp/connectors/ahrefs-1/mcp',
+      enabled: true,
+      oauth: false,
+      headers: {
+        Authorization: 'Bearer gateway-token-ahrefs',
       },
     })
   })

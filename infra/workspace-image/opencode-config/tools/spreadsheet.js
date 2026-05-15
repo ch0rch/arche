@@ -1,69 +1,32 @@
-import fs from 'node:fs/promises'
-import path from 'node:path'
-
 import * as XLSX from 'xlsx'
 import { z } from 'zod'
 
-const WORKSPACE_ROOT = '/workspace'
-const ATTACHMENTS_PREFIX = '/workspace/.arche/attachments/'
-const MAX_FILE_BYTES = 25 * 1024 * 1024
+import {
+  readAttachmentBuffer,
+  resolveAttachmentPath,
+  toToolOutput,
+} from '../shared/attachment-tools.js'
+
 const MAX_SAMPLE_LIMIT = 500
 const MAX_QUERY_LIMIT = 1000
 const MAX_COLUMN_COUNT = 200
 
-function toToolOutput(value) {
-  return JSON.stringify(value, null, 2)
-}
-
-function normalizeAttachmentPath(inputPath) {
-  const trimmed = String(inputPath || '').trim()
-  if (!trimmed) return null
-
-  const normalized = trimmed.replace(/\\/g, '/')
-  if (normalized.startsWith('/workspace/')) {
-    return normalized
-  }
-
-  const relative = normalized.replace(/^\.\//, '').replace(/^\/+/, '')
-  return path.posix.join(WORKSPACE_ROOT, relative)
-}
-
-export function resolveSpreadsheetPath(inputPath) {
-  const candidate = normalizeAttachmentPath(inputPath)
-  if (!candidate) return { ok: false, error: 'invalid_path' }
-  const absolute = path.posix.normalize(candidate)
-  if (!absolute.startsWith(ATTACHMENTS_PREFIX)) {
-    return { ok: false, error: 'path_outside_attachments' }
-  }
-  return { ok: true, path: absolute }
+function resolveSpreadsheetPath(inputPath) {
+  return resolveAttachmentPath(inputPath)
 }
 
 async function readWorkbook(filePath) {
-  let stat
-  try {
-    stat = await fs.stat(filePath)
-  } catch {
-    return { ok: false, error: 'file_not_found' }
-  }
-
-  if (!stat.isFile()) return { ok: false, error: 'not_a_file' }
-  if (stat.size > MAX_FILE_BYTES) return { ok: false, error: 'file_too_large' }
-
-  let buffer
-  try {
-    buffer = await fs.readFile(filePath)
-  } catch {
-    return { ok: false, error: 'file_read_failed' }
-  }
+  const fileResult = await readAttachmentBuffer(filePath)
+  if (!fileResult.ok) return fileResult
 
   try {
-    const workbook = XLSX.read(buffer, {
+    const workbook = XLSX.read(fileResult.buffer, {
       type: 'buffer',
       cellDates: true,
       raw: false,
       dense: true,
     })
-    return { ok: true, workbook, fileSize: stat.size }
+    return { ok: true, workbook, fileSize: fileResult.fileSize }
   } catch {
     return { ok: false, error: 'unsupported_or_corrupted_spreadsheet' }
   }

@@ -55,12 +55,15 @@ describe('capability enforcement matrix', () => {
     { capability: 'containers', web: true, desktop: false },
     { capability: 'workspaceAgent', web: true, desktop: true },
     { capability: 'reaper', web: true, desktop: false },
-    { capability: 'csrf', web: true, desktop: true },
+    { capability: 'csrf', web: true, desktop: false },
     { capability: 'twoFactor', web: true, desktop: false },
     { capability: 'teamManagement', web: true, desktop: false },
     { capability: 'connectors', web: true, desktop: true },
     { capability: 'kickstart', web: true, desktop: true },
     { capability: 'autopilot', web: true, desktop: false },
+    { capability: 'slackIntegration', web: true, desktop: false },
+    { capability: 'googleWorkspaceIntegration', web: true, desktop: false },
+    { capability: 'metaAdsConnector', web: true, desktop: true },
   ]
 
   describe.each([webMode, desktopMode])('$name mode', (mode) => {

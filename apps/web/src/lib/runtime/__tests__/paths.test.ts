@@ -9,6 +9,7 @@ describe('runtime paths', () => {
   })
 
   afterEach(() => {
+    vi.doUnmock('@/lib/runtime/desktop/context-store')
     vi.doUnmock('path')
     process.env = originalEnv
   })
@@ -31,6 +32,27 @@ describe('runtime paths', () => {
     it('returns /kb-config for kbConfigRoot', async () => {
       const { getKbConfigRoot } = await import('../paths')
       expect(getKbConfigRoot()).toBe('/kb-config')
+    })
+
+    it('ignores KB_CONFIG_HOST_PATH and KB_CONTENT_HOST_PATH overrides outside E2E hooks', async () => {
+      process.env.NODE_ENV = 'test'
+      process.env.KB_CONFIG_HOST_PATH = '/custom/kb-config'
+      process.env.KB_CONTENT_HOST_PATH = '/custom/kb-content'
+      const { getKbConfigRoot, getKbContentRoot } = await import('../paths')
+
+      expect(getKbConfigRoot()).toBe('/kb-config')
+      expect(getKbContentRoot()).toBe('/kb-content')
+    })
+
+    it('respects KB_CONFIG_HOST_PATH and KB_CONTENT_HOST_PATH overrides in E2E mode', async () => {
+      process.env.NODE_ENV = 'test'
+      process.env.ARCHE_ENABLE_E2E_HOOKS = '1'
+      process.env.KB_CONFIG_HOST_PATH = '/custom/kb-config'
+      process.env.KB_CONTENT_HOST_PATH = '/custom/kb-content'
+      const { getKbConfigRoot, getKbContentRoot } = await import('../paths')
+
+      expect(getKbConfigRoot()).toBe('/custom/kb-config')
+      expect(getKbContentRoot()).toBe('/custom/kb-content')
     })
 
     it('returns /kb-content for kbContentRoot', async () => {
@@ -80,6 +102,25 @@ describe('runtime paths', () => {
       expect(getKbContentRoot()).toBe('/tmp/arche-test/.kb-content')
       expect(getUsersBasePath()).toBe('/tmp/arche-test/.users')
       expect(getUserDataPath('local')).toBe('/tmp/arche-test/.users/local')
+    })
+
+    it('uses the selected vault runtime context before ARCHE_DATA_DIR', async () => {
+      delete process.env.ARCHE_DATA_DIR
+      vi.doMock('@/lib/runtime/desktop/context-store', () => ({
+        getDesktopVaultRuntimeContext: () => ({ vaultRoot: '  /selected/vault/  ' }),
+      }))
+      const { getKbConfigRoot, getUserDataPath } = await import('../paths')
+
+      expect(getKbConfigRoot()).toBe('/selected/vault/.kb-config')
+      expect(getUserDataPath('local')).toBe('/selected/vault/.users/local')
+    })
+
+    it('joins desktop paths from filesystem roots without duplicate separators', async () => {
+      process.env.ARCHE_DATA_DIR = '/'
+      const { getKbConfigRoot, getUserDataPath } = await import('../paths')
+
+      expect(getKbConfigRoot()).toBe('/.kb-config')
+      expect(getUserDataPath('local')).toBe('/.users/local')
     })
 
     it('throws when ARCHE_DATA_DIR is unset', async () => {

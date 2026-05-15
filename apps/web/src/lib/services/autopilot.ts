@@ -1,5 +1,7 @@
-import { AutopilotRunStatus, AutopilotRunTrigger } from '@prisma/client'
+import { AutopilotRunStatus, Prisma } from '@prisma/client'
+import type { AutopilotRunTrigger } from '@prisma/client'
 
+import type { AutopilotSlackNotificationConfig } from '@/lib/autopilot/types'
 import { prisma } from '@/lib/prisma'
 
 export type AutopilotTaskRecord = {
@@ -15,8 +17,12 @@ export type AutopilotTaskRecord = {
   lastRunAt: Date | null
   leaseOwner: string | null
   leaseExpiresAt: Date | null
+  retryAttempt: number
+  retryScheduledFor: Date | null
+  slackNotificationConfig?: Prisma.JsonValue | null
   createdAt: Date
   updatedAt: Date
+  deletedAt: Date | null
 }
 
 export type AutopilotRunRecord = {
@@ -25,6 +31,7 @@ export type AutopilotRunRecord = {
   status: AutopilotRunStatus
   trigger: AutopilotRunTrigger
   scheduledFor: Date
+  attempt: number
   startedAt: Date
   finishedAt: Date | null
   error: string | null
@@ -46,6 +53,8 @@ export type AutopilotTaskDetailRecord = AutopilotTaskRecord & {
 export type AutopilotClaimedTask = AutopilotTaskRecord & {
   scheduledFor: Date
 }
+
+export type AutopilotClaimConcurrencyPolicy = 'per_user' | 'task_only'
 
 type LeaseScope = {
   leaseExpiresAt: null
@@ -78,6 +87,28 @@ const TASK_DETAIL_INCLUDE = {
   },
 }
 
+function slackNotificationConfigToJson(
+  config: AutopilotSlackNotificationConfig,
+): Prisma.InputJsonObject {
+  return {
+    enabled: config.enabled,
+    includeSessionLink: config.includeSessionLink,
+    targets: config.targets.map((target) => {
+      if (target.type === 'dm') {
+        return {
+          type: 'dm',
+          userId: target.userId,
+        }
+      }
+
+      return {
+        type: 'channel',
+        channelId: target.channelId,
+      }
+    }),
+  }
+}
+
 function availableLease(now: Date): LeaseScope[] {
   return [
     { leaseExpiresAt: null },
@@ -85,9 +116,33 @@ function availableLease(now: Date): LeaseScope[] {
   ]
 }
 
+function noActiveUserLease(now: Date) {
+  return {
+    user: {
+      autopilotTasks: {
+        none: {
+          leaseExpiresAt: {
+            gt: now,
+          },
+        },
+      },
+    },
+  }
+}
+
+function claimAvailabilityWhere(
+  now: Date,
+  concurrencyPolicy: AutopilotClaimConcurrencyPolicy,
+): Prisma.AutopilotTaskWhereInput {
+  return {
+    OR: availableLease(now),
+    ...(concurrencyPolicy === 'per_user' ? noActiveUserLease(now) : {}),
+  }
+}
+
 export async function listTasksByUserId(userId: string): Promise<AutopilotTaskListRecord[]> {
   return prisma.autopilotTask.findMany({
-    where: { userId },
+    where: { deletedAt: null, userId },
     include: TASK_RUN_INCLUDE,
     orderBy: [
       { enabled: 'desc' },
@@ -99,7 +154,7 @@ export async function listTasksByUserId(userId: string): Promise<AutopilotTaskLi
 
 export async function findTaskByIdAndUserId(id: string, userId: string): Promise<AutopilotTaskDetailRecord | null> {
   return prisma.autopilotTask.findFirst({
-    where: { id, userId },
+    where: { deletedAt: null, id, userId },
     include: TASK_DETAIL_INCLUDE,
   })
 }
@@ -113,6 +168,7 @@ export async function createTask(data: {
   timezone: string
   enabled: boolean
   nextRunAt: Date
+  slackNotificationConfig?: AutopilotSlackNotificationConfig | null
 }): Promise<AutopilotTaskRecord> {
   return prisma.autopilotTask.create({
     data: {
@@ -124,6 +180,9 @@ export async function createTask(data: {
       timezone: data.timezone,
       enabled: data.enabled,
       nextRunAt: data.nextRunAt,
+      ...(data.slackNotificationConfig
+        ? { slackNotificationConfig: slackNotificationConfigToJson(data.slackNotificationConfig) }
+        : {}),
     },
   })
 }
@@ -139,18 +198,37 @@ export async function updateTaskByIdAndUserId(
     timezone?: string
     enabled?: boolean
     nextRunAt?: Date
+    slackNotificationConfig?: AutopilotSlackNotificationConfig | null
   },
 ): Promise<AutopilotTaskRecord | null> {
+  const { slackNotificationConfig, ...taskData } = data
+  const updateData: Prisma.AutopilotTaskUpdateManyMutationInput = { ...taskData }
+  if ('slackNotificationConfig' in data) {
+    updateData.slackNotificationConfig = slackNotificationConfig
+      ? slackNotificationConfigToJson(slackNotificationConfig)
+      : Prisma.DbNull
+  }
+
   const result = await prisma.autopilotTask.updateMany({
-    where: { id, userId },
-    data,
+    where: { deletedAt: null, id, userId },
+    data: updateData,
   })
   if (result.count === 0) return null
-  return prisma.autopilotTask.findFirst({ where: { id, userId } })
+  return prisma.autopilotTask.findFirst({ where: { deletedAt: null, id, userId } })
 }
 
-export function deleteTaskByIdAndUserId(id: string, userId: string) {
-  return prisma.autopilotTask.deleteMany({ where: { id, userId } })
+export function deleteTaskByIdAndUserId(id: string, userId: string, deletedAt = new Date()) {
+  return prisma.autopilotTask.updateMany({
+    where: { deletedAt: null, id, userId },
+    data: {
+      deletedAt,
+      enabled: false,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      retryAttempt: 0,
+      retryScheduledFor: null,
+    },
+  })
 }
 
 export async function claimNextDueTask(params: {
@@ -162,9 +240,10 @@ export async function claimNextDueTask(params: {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const task = await prisma.autopilotTask.findFirst({
       where: {
+        deletedAt: null,
         enabled: true,
         nextRunAt: { lte: params.now },
-        OR: availableLease(params.now),
+        ...claimAvailabilityWhere(params.now, 'per_user'),
       },
       orderBy: [
         { nextRunAt: 'asc' },
@@ -180,13 +259,15 @@ export async function claimNextDueTask(params: {
     // We advance nextRunAt as part of the lease claim, so a process crash after
     // claiming but before execution can skip the current slot instead of replaying it.
     const nextRunAt = params.resolveNextRunAt(task)
+    const scheduledFor = task.retryScheduledFor ?? task.nextRunAt
     const leaseExpiresAt = new Date(params.now.getTime() + params.leaseMs)
     const claimed = await prisma.autopilotTask.updateMany({
       where: {
+        deletedAt: null,
         id: task.id,
         enabled: true,
         nextRunAt: task.nextRunAt,
-        OR: availableLease(params.now),
+        ...claimAvailabilityWhere(params.now, 'per_user'),
       },
       data: {
         leaseOwner: params.leaseOwner,
@@ -196,12 +277,19 @@ export async function claimNextDueTask(params: {
     })
 
     if (claimed.count === 1) {
+      console.log('[autopilot] Task claimed', {
+        taskId: task.id,
+        userId: task.userId,
+        scheduledFor: scheduledFor.toISOString(),
+        retryAttempt: task.retryAttempt,
+      })
+
       return {
         ...task,
         leaseOwner: params.leaseOwner,
         leaseExpiresAt,
         nextRunAt,
-        scheduledFor: task.nextRunAt,
+        scheduledFor,
       }
     }
   }
@@ -215,12 +303,15 @@ export async function claimTaskForImmediateRun(params: {
   leaseOwner: string
   now: Date
   userId?: string
+  concurrencyPolicy?: AutopilotClaimConcurrencyPolicy
 }): Promise<AutopilotClaimedTask | null> {
+  const concurrencyPolicy = params.concurrencyPolicy ?? 'task_only'
   const task = await prisma.autopilotTask.findFirst({
     where: {
+      deletedAt: null,
       id: params.id,
       ...(params.userId ? { userId: params.userId } : {}),
-      OR: availableLease(params.now),
+      ...claimAvailabilityWhere(params.now, concurrencyPolicy),
     },
   })
 
@@ -231,9 +322,10 @@ export async function claimTaskForImmediateRun(params: {
   const leaseExpiresAt = new Date(params.now.getTime() + params.leaseMs)
   const claimed = await prisma.autopilotTask.updateMany({
     where: {
+      deletedAt: null,
       id: task.id,
       ...(params.userId ? { userId: params.userId } : {}),
-      OR: availableLease(params.now),
+      ...claimAvailabilityWhere(params.now, concurrencyPolicy),
     },
     data: {
       leaseOwner: params.leaseOwner,
@@ -285,6 +377,7 @@ export function createRun(data: {
   trigger: AutopilotRunTrigger
   scheduledFor: Date
   startedAt?: Date
+  attempt?: number
 }): Promise<AutopilotRunRecord> {
   return prisma.autopilotRun.create({
     data: {
@@ -292,7 +385,41 @@ export function createRun(data: {
       status: data.status ?? AutopilotRunStatus.running,
       trigger: data.trigger,
       scheduledFor: data.scheduledFor,
+      attempt: data.attempt ?? 1,
       startedAt: data.startedAt,
+    },
+  })
+}
+
+export function scheduleTaskRetry(data: {
+  taskId: string
+  leaseOwner: string
+  retryAttempt: number
+  retryAt: Date
+  retryScheduledFor: Date
+}) {
+  return prisma.autopilotTask.updateMany({
+    where: {
+      id: data.taskId,
+      leaseOwner: data.leaseOwner,
+    },
+    data: {
+      nextRunAt: data.retryAt,
+      retryAttempt: data.retryAttempt,
+      retryScheduledFor: data.retryScheduledFor,
+    },
+  })
+}
+
+export function clearTaskRetryState(id: string, leaseOwner: string) {
+  return prisma.autopilotTask.updateMany({
+    where: {
+      id,
+      leaseOwner,
+    },
+    data: {
+      retryAttempt: 0,
+      retryScheduledFor: null,
     },
   })
 }

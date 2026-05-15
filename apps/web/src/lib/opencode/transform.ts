@@ -1,10 +1,44 @@
 import type { MessagePart, ToolState } from "@/lib/opencode/types";
+import { WORKSPACE_ATTACHMENTS_DIR } from "@/lib/workspace-attachments";
 
 /**
  * Internal-only parts that should be completely hidden.
  * These are OpenCode internals that have no user-facing value.
  */
 const HIDDEN_PART_TYPES = new Set(["snapshot", "compaction"]);
+
+function resolveFilePartPath(sourcePath: string | undefined, fileUrl: string | undefined): string | undefined {
+  if (sourcePath) {
+    return sourcePath;
+  }
+
+  if (!fileUrl?.startsWith("file://")) {
+    return undefined;
+  }
+
+  const candidates: string[] = [];
+  try {
+    candidates.push(decodeURIComponent(new URL(fileUrl).pathname));
+  } catch {
+    // Fall back to the raw URL string below.
+  }
+  candidates.push(fileUrl.slice("file://".length));
+
+  for (const rawCandidate of candidates) {
+    const candidate = rawCandidate.replace(/\\/g, "/");
+    if (candidate.startsWith("/workspace/")) {
+      return candidate.slice("/workspace/".length);
+    }
+
+    const attachmentMarker = `/${WORKSPACE_ATTACHMENTS_DIR}/`;
+    const attachmentIndex = candidate.indexOf(attachmentMarker);
+    if (attachmentIndex >= 0) {
+      return candidate.slice(attachmentIndex + 1);
+    }
+  }
+
+  return undefined;
+}
 
 function normalizeSerializableValue(value: unknown): unknown {
   if (typeof value === "bigint") {
@@ -74,6 +108,12 @@ export function transformParts(parts: unknown[]): MessagePart[] {
             normalizedInput && typeof normalizedInput === "object" && !Array.isArray(normalizedInput)
               ? (normalizedInput as Record<string, unknown>)
               : {};
+          const normalizedMetadata = normalizeSerializableValue(state?.metadata);
+          const metadata =
+            normalizedMetadata && typeof normalizedMetadata === "object" && !Array.isArray(normalizedMetadata)
+              ? (normalizedMetadata as Record<string, unknown>)
+              : undefined;
+          const metadataProps = metadata ? { metadata } : {};
 
           if (status === "completed") {
             toolState = {
@@ -81,21 +121,24 @@ export function transformParts(parts: unknown[]): MessagePart[] {
               input,
               output: String(state?.output ?? ""),
               title: String(state?.title ?? toolName),
+              ...metadataProps,
             };
           } else if (status === "error") {
             toolState = {
               status: "error",
               input,
               error: String(state?.error ?? "Unknown error"),
+              ...metadataProps,
             };
           } else if (status === "running") {
             toolState = {
               status: "running",
               input,
               title: state?.title ? String(state.title) : undefined,
+              ...metadataProps,
             };
           } else {
-            toolState = { status: "pending", input };
+            toolState = { status: "pending", input, ...metadataProps };
           }
 
           return {
@@ -116,16 +159,7 @@ export function transformParts(parts: unknown[]): MessagePart[] {
               : undefined;
           const fileUrl = part.url ? String(part.url) : undefined;
 
-          let resolvedPath = sourcePath;
-          if (!resolvedPath && fileUrl?.startsWith("file:///workspace/")) {
-            try {
-              resolvedPath = decodeURIComponent(
-                fileUrl.slice("file:///workspace/".length)
-              );
-            } catch {
-              resolvedPath = fileUrl.slice("file:///workspace/".length);
-            }
-          }
+          const resolvedPath = resolveFilePartPath(sourcePath, fileUrl);
           return {
             type: "file" as const,
             id: partId,

@@ -1,9 +1,17 @@
 import { decryptConfig } from '@/lib/connectors/crypto'
 import { getConnectorGatewayBaseUrl } from '@/lib/connectors/gateway-config'
 import { issueConnectorGatewayToken } from '@/lib/connectors/gateway-tokens'
-import { getConnectorAuthType, getConnectorOAuthConfig } from '@/lib/connectors/oauth-config'
+import { isConnectorCapabilityAvailable } from '@/lib/connectors/require-connector-capability'
+import {
+  getStoredConnectorToolPermissions,
+  type ConnectorToolPermissionMap,
+} from '@/lib/connectors/tool-permissions'
 import type { ConnectorType } from '@/lib/connectors/types'
 import { validateConnectorConfig, validateConnectorType } from '@/lib/connectors/validators'
+import {
+  buildConnectorMcpServerConfig,
+  shouldExposeConnectorViaGateway,
+} from '@/lib/spawner/mcp-connector-config'
 
 const OPENCODE_CONFIG_SCHEMA = 'https://opencode.ai/config.json'
 
@@ -22,6 +30,11 @@ export type McpConfig = {
   mcp: Record<string, McpServerConfig>
 }
 
+export type McpConfigBuildResult = {
+  mcpConfig: McpConfig
+  connectorToolPermissions: Record<string, ConnectorToolPermissionMap>
+}
+
 export type ConnectorRecord = {
   id: string
   type: string
@@ -30,22 +43,9 @@ export type ConnectorRecord = {
   config: string
 }
 
-type GatewayTarget = {
+export type GatewayTarget = {
   url: string
   token: string
-}
-
-function getString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-function toStringRecord(value: unknown): Record<string, string> | undefined {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
-  const record: Record<string, string> = {}
-  for (const [key, entry] of Object.entries(value)) {
-    if (typeof entry === 'string') record[key] = entry
-  }
-  return Object.keys(record).length ? record : undefined
 }
 
 export function buildMcpServerKey(type: ConnectorType, id: string): string {
@@ -54,9 +54,10 @@ export function buildMcpServerKey(type: ConnectorType, id: string): string {
 
 export function buildMcpConfigFromConnectors(
   connectors: ConnectorRecord[],
-  options?: { oauthGatewayTargets?: Record<string, GatewayTarget> },
-): McpConfig {
+  options?: { gatewayTargets?: Record<string, GatewayTarget> },
+): McpConfigBuildResult {
   const mcp: Record<string, McpServerConfig> = {}
+  const connectorToolPermissions: Record<string, ConnectorToolPermissionMap> = {}
 
   for (const connector of connectors) {
     if (!connector.enabled) continue
@@ -72,157 +73,33 @@ export function buildMcpConfigFromConnectors(
     const validation = validateConnectorConfig(connector.type, config)
     if (!validation.valid) continue
 
-    const key = buildMcpServerKey(connector.type, connector.id)
+    const serverConfig = buildConnectorMcpServerConfig({
+      connectorId: connector.id,
+      connectorType: connector.type,
+      config,
+      gatewayTargets: options?.gatewayTargets,
+    })
+    if (serverConfig) {
+      const serverKey = buildMcpServerKey(connector.type, connector.id)
+      mcp[serverKey] = serverConfig
 
-    switch (connector.type) {
-      case 'notion':
-        if (getConnectorAuthType(config) === 'oauth') {
-          const gatewayTarget = options?.oauthGatewayTargets?.[connector.id]
-          if (gatewayTarget) {
-            mcp[key] = {
-              type: 'remote',
-              url: gatewayTarget.url,
-              enabled: true,
-              headers: {
-                Authorization: `Bearer ${gatewayTarget.token}`,
-              },
-              oauth: false,
-            }
-            break
-          }
-
-          const oauthToken = getConnectorOAuthConfig('notion', config)?.accessToken
-          if (!oauthToken) break
-          mcp[key] = {
-            type: 'remote',
-            url: 'https://mcp.notion.com/mcp',
-            enabled: true,
-            headers: {
-              Authorization: `Bearer ${oauthToken}`,
-            },
-            oauth: false,
-          }
-          break
-        }
-
-        const notionApiKey = getString(config.apiKey)
-        if (!notionApiKey) break
-        mcp[key] = {
-          type: 'local',
-          command: ['npx', '-y', '@suekou/mcp-notion-server'],
-          enabled: true,
-          environment: {
-            NOTION_API_TOKEN: notionApiKey,
-          },
-        }
-        break
-
-      case 'linear':
-        if (getConnectorAuthType(config) === 'oauth') {
-          const gatewayTarget = options?.oauthGatewayTargets?.[connector.id]
-          if (gatewayTarget) {
-            mcp[key] = {
-              type: 'remote',
-              url: gatewayTarget.url,
-              enabled: true,
-              headers: {
-                Authorization: `Bearer ${gatewayTarget.token}`,
-              },
-              oauth: false,
-            }
-            break
-          }
-
-          const oauthToken = getConnectorOAuthConfig('linear', config)?.accessToken
-          if (!oauthToken) break
-          mcp[key] = {
-            type: 'remote',
-            url: 'https://mcp.linear.app/mcp',
-            enabled: true,
-            headers: {
-              Authorization: `Bearer ${oauthToken}`,
-            },
-            oauth: false,
-          }
-          break
-        }
-
-        const linearApiKey = getString(config.apiKey)
-        if (!linearApiKey) break
-        mcp[key] = {
-          type: 'remote',
-          url: 'https://mcp.linear.app/mcp',
-          enabled: true,
-          headers: {
-            Authorization: `Bearer ${linearApiKey}`,
-          },
-          oauth: false,
-        }
-        break
-
-      case 'custom': {
-        if (getConnectorAuthType(config) === 'oauth') {
-          const oauth = getConnectorOAuthConfig('custom', config)
-          if (!oauth?.accessToken) break
-
-          const endpoint = oauth.mcpServerUrl ?? getString(config.endpoint)
-          if (!endpoint) break
-
-          const headers = toStringRecord(config.headers)
-          const mergedHeaders = { ...(headers ?? {}) }
-
-          const gatewayTarget = options?.oauthGatewayTargets?.[connector.id]
-          if (gatewayTarget) {
-            mergedHeaders.Authorization = `Bearer ${gatewayTarget.token}`
-            mcp[key] = {
-              type: 'remote',
-              url: gatewayTarget.url,
-              enabled: true,
-              headers: mergedHeaders,
-              oauth: false,
-            }
-            break
-          }
-
-          mergedHeaders.Authorization = `Bearer ${oauth.accessToken}`
-          mcp[key] = {
-            type: 'remote',
-            url: endpoint,
-            enabled: true,
-            headers: mergedHeaders,
-            oauth: false,
-          }
-          break
-        }
-
-        const endpoint = getString(config.endpoint)
-        if (!endpoint) break
-        const headers = toStringRecord(config.headers)
-        const auth = getString(config.auth)
-        const mergedHeaders = { ...(headers ?? {}) }
-        if (auth && !mergedHeaders.Authorization) {
-          mergedHeaders.Authorization = `Bearer ${auth}`
-        }
-
-        mcp[key] = {
-          type: 'remote',
-          url: endpoint,
-          enabled: true,
-          headers: Object.keys(mergedHeaders).length ? mergedHeaders : undefined,
-          oauth: auth ? false : undefined,
-        }
-        break
+      const toolPermissions = getStoredConnectorToolPermissions(config)
+      if (toolPermissions) {
+        connectorToolPermissions[serverKey] = toolPermissions
       }
-
-      default:
-        break
     }
   }
 
-  return { $schema: OPENCODE_CONFIG_SCHEMA, mcp }
+  return {
+    mcpConfig: {
+      $schema: OPENCODE_CONFIG_SCHEMA,
+      mcp,
+    },
+    connectorToolPermissions,
+  }
 }
 
-export async function buildMcpConfigForSlug(slug: string): Promise<McpConfig | null> {
+export async function buildMcpConfigForSlug(slug: string): Promise<McpConfigBuildResult | null> {
   const { userService, connectorService } = await import('@/lib/services')
 
   const user = await userService.findIdBySlug(slug)
@@ -230,11 +107,12 @@ export async function buildMcpConfigForSlug(slug: string): Promise<McpConfig | n
 
   const connectors = await connectorService.findEnabledMcpByUserId(user.id)
 
-  const oauthGatewayTargets: Record<string, GatewayTarget> = {}
+  const gatewayTargets: Record<string, GatewayTarget> = {}
   const gatewayBase = getConnectorGatewayBaseUrl()
 
   for (const connector of connectors) {
     if (!validateConnectorType(connector.type)) continue
+    if (!isConnectorCapabilityAvailable(connector.type)) continue
 
     let config: Record<string, unknown>
     try {
@@ -243,15 +121,9 @@ export async function buildMcpConfigForSlug(slug: string): Promise<McpConfig | n
       continue
     }
 
-    if (getConnectorAuthType(config) !== 'oauth') continue
-    const oauth = getConnectorOAuthConfig(connector.type, config)
-    if (!oauth?.accessToken) continue
+    if (!shouldExposeConnectorViaGateway(connector.type, config)) continue
 
-    if (connector.type === 'custom' && !oauth.mcpServerUrl && !getString(config.endpoint)) {
-      continue
-    }
-
-    oauthGatewayTargets[connector.id] = {
+    gatewayTargets[connector.id] = {
       url: `${gatewayBase}/${connector.id}/mcp`,
       token: issueConnectorGatewayToken({
         userId: user.id,
@@ -261,8 +133,8 @@ export async function buildMcpConfigForSlug(slug: string): Promise<McpConfig | n
     }
   }
 
-  const config = buildMcpConfigFromConnectors(connectors, {
-    oauthGatewayTargets,
+  const result = buildMcpConfigFromConnectors(connectors, {
+    gatewayTargets,
   })
-  return Object.keys(config.mcp).length ? config : null
+  return Object.keys(result.mcpConfig.mcp).length ? result : null
 }

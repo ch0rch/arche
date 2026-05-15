@@ -1,5 +1,12 @@
 import { getConnectorAuthType } from '@/lib/connectors/oauth-config'
+import { getLinearOAuthActor, getLinearOAuthScopeValidationError, isLinearOAuthActor } from '@/lib/connectors/linear'
 import { isOAuthConnectorType } from '@/lib/connectors/oauth'
+import { validateMetaAdsConnectorConfig } from '@/lib/connectors/meta-ads-config'
+import { validateUmamiConnectorConfig } from '@/lib/connectors/umami-config'
+import type { ConnectorConfigValidationResult } from '@/lib/connectors/config-validation'
+import { validateAhrefsConnectorConfig } from '@/lib/connectors/ahrefs-config'
+import { validateZendeskConnectorConfig } from '@/lib/connectors/zendesk-config'
+import { isGoogleWorkspaceConnectorType } from '@/lib/connectors/google-workspace'
 
 import { CONNECTOR_TYPES, type ConnectorType } from './types'
 
@@ -13,9 +20,18 @@ export interface ConnectorConfigSchema {
   optional?: string[]
 }
 
+export type { ConnectorConfigValidationResult } from '@/lib/connectors/config-validation'
+
 export const CONNECTOR_SCHEMAS: Record<ConnectorType, ConnectorConfigSchema> = {
-  linear: { required: ['apiKey'] },
+  linear: { required: ['apiKey'], optional: ['oauthActor', 'oauthClientId', 'oauthClientSecret', 'oauthScope'] },
   notion: { required: ['apiKey'] },
+  zendesk: { required: ['subdomain', 'email', 'apiToken'] },
+  ahrefs: { required: ['apiKey'] },
+  umami: { required: ['authMethod', 'baseUrl'] },
+  'meta-ads': {
+    required: ['authType', 'appId', 'appSecret'],
+    optional: ['permissions', 'selectedAdAccountIds', 'defaultAdAccountId', 'oauth'],
+  },
   custom: {
     required: ['endpoint'],
     optional: [
@@ -29,6 +45,11 @@ export const CONNECTOR_SCHEMAS: Record<ConnectorType, ConnectorConfigSchema> = {
       'oauthRegistrationEndpoint',
     ],
   },
+  google_gmail: { required: [] },
+  google_drive: { required: [] },
+  google_calendar: { required: [] },
+  google_chat: { required: [] },
+  google_people: { required: [] },
 }
 
 export function validateConnectorType(type: string): type is ConnectorType {
@@ -58,18 +79,88 @@ function isValidConfigValue(value: unknown): boolean {
   return true
 }
 
+function getOptionalNonEmptyStringError(label: string, value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  return typeof value === 'string' && value.trim()
+    ? undefined
+    : `${label} must be a non-empty string`
+}
+
 export function validateConnectorConfig(
   type: ConnectorType,
   config: Record<string, unknown>
-): { valid: boolean; missing?: string[] } {
+): ConnectorConfigValidationResult {
+  if (type === 'meta-ads') {
+    return validateMetaAdsConnectorConfig(config)
+  }
+
   if (getConnectorAuthType(config) === 'oauth' && isOAuthConnectorType(type)) {
+    if (type === 'linear' && config.oauthActor !== undefined && !isLinearOAuthActor(config.oauthActor)) {
+      return { valid: false, message: 'Linear OAuth actor must be user or app' }
+    }
+
+    if (type === 'linear' && config.oauthActor === 'app') {
+      const clientIdError = getOptionalNonEmptyStringError('Linear OAuth client ID', config.oauthClientId)
+      if (clientIdError) {
+        return { valid: false, message: clientIdError }
+      }
+
+      const clientSecretError = getOptionalNonEmptyStringError('Linear OAuth client secret', config.oauthClientSecret)
+      if (clientSecretError) {
+        return { valid: false, message: clientSecretError }
+      }
+
+      if (!isValidConfigValue(config.oauthClientId) || !isValidConfigValue(config.oauthClientSecret)) {
+        return { valid: false, message: 'Linear app actor OAuth requires both client ID and client secret' }
+      }
+    }
+
+    if (type === 'linear') {
+      const scopeError = getLinearOAuthScopeValidationError(config.oauthScope, getLinearOAuthActor(config))
+      if (scopeError) {
+        return { valid: false, message: scopeError }
+      }
+    }
+
     if (type === 'custom') {
       return isValidConfigValue(config.endpoint)
         ? { valid: true }
         : { valid: false, missing: ['endpoint'] }
     }
 
+    if (isGoogleWorkspaceConnectorType(type)) {
+      return { valid: true }
+    }
+
     return { valid: true }
+  }
+
+  if (type === 'zendesk') {
+    if (getConnectorAuthType(config) === 'oauth') {
+      return { valid: false, message: 'Zendesk connectors do not support OAuth' }
+    }
+
+    return validateZendeskConnectorConfig(config)
+  }
+
+  if (type === 'ahrefs') {
+    if (getConnectorAuthType(config) === 'oauth') {
+      return { valid: false, message: 'Ahrefs connectors do not support OAuth' }
+    }
+
+    return validateAhrefsConnectorConfig(config)
+  }
+
+  if (type === 'umami') {
+    if (getConnectorAuthType(config) === 'oauth') {
+      return { valid: false, message: 'Umami connectors do not support OAuth' }
+    }
+
+    return validateUmamiConnectorConfig(config)
+  }
+
+  if (isGoogleWorkspaceConnectorType(type)) {
+    return { valid: false, message: 'Google Workspace connectors only support OAuth' }
   }
 
   const schema = CONNECTOR_SCHEMAS[type]

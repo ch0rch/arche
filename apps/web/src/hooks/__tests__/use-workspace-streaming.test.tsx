@@ -13,6 +13,7 @@ import { useWorkspace } from "@/hooks/use-workspace";
 const opencodeMocks = vi.hoisted(() => ({
   checkConnectionAction: vi.fn(),
   listSessionsAction: vi.fn(),
+  listSessionFamilyAction: vi.fn(),
   createSessionAction: vi.fn(),
   deleteSessionAction: vi.fn(),
   markAutopilotRunSeenAction: vi.fn(),
@@ -82,6 +83,12 @@ const DEFAULT_AGENTS = [
     model: "openai/gpt-5.4",
     isPrimary: true,
   },
+  {
+    id: "reviewer",
+    displayName: "Reviewer",
+    model: "openai/gpt-5.2",
+    isPrimary: false,
+  },
 ];
 
 function setupDefaultMocks() {
@@ -89,7 +96,9 @@ function setupDefaultMocks() {
   opencodeMocks.listSessionsAction.mockResolvedValue({
     ok: true,
     sessions: [{ id: "s1", title: "Existing", status: "idle", updatedAt: "now" }],
+    hasMore: false,
   });
+  opencodeMocks.listSessionFamilyAction.mockResolvedValue({ ok: true, rootSessionId: "s1", sessions: [] });
   opencodeMocks.createSessionAction.mockResolvedValue({
     ok: true,
     session: { id: "s2", title: "Fresh", status: "active", updatedAt: "now" },
@@ -133,6 +142,18 @@ function stubFetchWithStream(
           json: async () => ({ agents: DEFAULT_AGENTS }),
         };
       }
+      if (String(input) === "/api/w/alice/chat/runs") {
+        return {
+          ok: true,
+          json: async () => ({ runId: "run-1", sessionId: "s1", status: "running" }),
+        };
+      }
+      if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+        return {
+          ok: true,
+          json: async () => ({ activeRun: null }),
+        };
+      }
       if (String(input) === "/api/w/alice/chat/stream") {
         return {
           ok: true,
@@ -146,7 +167,7 @@ function stubFetchWithStream(
 
 async function renderConnectedHook(options?: { pollInterval?: number }) {
   const { result } = renderHook(() =>
-    useWorkspace({ slug: "alice", pollInterval: options?.pollInterval ?? 0 })
+    useWorkspace({ slug: "alice", pollInterval: options?.pollInterval ?? 0, initialSessionId: "s1" })
   );
   await waitFor(() => {
     expect(result.current.isConnected).toBe(true);
@@ -162,7 +183,9 @@ async function renderConnectedHook(options?: { pollInterval?: number }) {
 describe("useWorkspace streaming", () => {
   beforeEach(() => {
     stubBrowserStorage();
+    vi.resetAllMocks();
     localStorage.clear();
+    sessionStorage.clear();
     setupDefaultMocks();
   });
 
@@ -215,6 +238,43 @@ describe("useWorkspace streaming", () => {
       // After stream + reconciliation, status returns to ready
       await waitFor(() => {
         expect(result.current.isSending).toBe(false);
+      });
+    });
+
+    it("marks background streams as unseen when they complete", async () => {
+      const sse = createSSEStream();
+      stubFetchWithStream(() => sse);
+
+      const result = await renderConnectedHook();
+
+      await act(async () => {
+        const accepted = await result.current.sendMessage("background work", undefined, {
+          forceNewSession: true,
+        });
+        expect(accepted).toBe(true);
+      });
+
+      await waitFor(() => {
+        expect(result.current.activeSessionId).toBe("s2");
+        expect(result.current.isSending).toBe(true);
+      });
+
+      act(() => {
+        result.current.selectSession("s1");
+      });
+
+      await waitFor(() => {
+        expect(result.current.activeSessionId).toBe("s1");
+      });
+
+      act(() => {
+        sse.push(sseEvent("done", {}));
+        sse.close();
+      });
+
+      await waitFor(() => {
+        expect(result.current.isSending).toBe(false);
+        expect(result.current.unseenCompletedSessions.has("s2")).toBe(true);
       });
     });
 
@@ -336,6 +396,62 @@ describe("useWorkspace streaming", () => {
       });
 
       expect(secondResult).toBe(false);
+
+      act(() => { sse.close(); });
+    });
+
+    it("posts new prompt payloads directly to the stream endpoint", async () => {
+      const sse = createSSEStream();
+      let runsPostCount = 0;
+      let streamBody: Record<string, unknown> | null = null;
+
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          if (String(input) === "/api/u/alice/agents") {
+            return { ok: true, json: async () => ({ agents: DEFAULT_AGENTS }) };
+          }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            runsPostCount += 1;
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
+          }
+          if (String(input) === "/api/w/alice/chat/stream") {
+            streamBody = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+            return { ok: true, body: sse };
+          }
+          throw new Error(`Unexpected fetch: ${String(input)}`);
+        })
+      );
+
+      const result = await renderConnectedHook();
+
+      await act(async () => {
+        await result.current.sendMessage(
+          "hello",
+          { providerId: "openai", modelId: "gpt-5.2" },
+          {
+            attachments: [{ path: "docs/a.md", filename: "a.md", mime: "text/markdown" }],
+            contextPaths: ["docs/a.md"],
+          }
+        );
+      });
+
+      await waitFor(() => {
+        expect(streamBody).not.toBeNull();
+      });
+
+      expect(runsPostCount).toBe(0);
+      expect(streamBody).toEqual({
+        sessionId: "s1",
+        resume: false,
+        text: "hello",
+        model: { providerId: "openai", modelId: "gpt-5.2" },
+        attachments: [{ path: "docs/a.md", filename: "a.md", mime: "text/markdown" }],
+        contextPaths: ["docs/a.md"],
+      });
 
       act(() => { sse.close(); });
     });
@@ -562,6 +678,138 @@ describe("useWorkspace streaming", () => {
       });
     });
 
+    it("derives runtime metadata and status from non-text streamed parts", async () => {
+      const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
+
+      try {
+        const sse = createSSEStream();
+        stubFetchWithStream(() => sse);
+
+        const result = await renderConnectedHook();
+
+        await act(async () => {
+          await result.current.sendMessage("hello");
+        });
+
+        act(() => {
+          sse.push(sseEvent("message", { id: "assistant-1", role: "assistant" }));
+          sse.push(sseEvent("assistant-meta", {
+            agent: "Reviewer",
+            modelID: "gpt-5.4",
+            providerID: "openai",
+          }));
+          sse.push(sseEvent("agent", { agent: "reviewer" }));
+        });
+
+        await waitFor(() => {
+          expect(result.current.selectedModel?.modelId).toBe("gpt-5.4");
+        });
+
+        act(() => {
+          sse.push(sseEvent("part", {
+            messageId: "assistant-1",
+            part: 42,
+          }));
+          sse.push(sseEvent("part", {
+            messageId: "assistant-1",
+            part: {
+              id: "empty-text",
+              messageID: "assistant-1",
+              text: "",
+              type: "text",
+            },
+          }));
+          sse.push(sseEvent("part", {
+            messageId: "assistant-1",
+            part: {
+              id: "reasoning-1",
+              messageID: "assistant-1",
+              text: "checking",
+              type: "reasoning",
+            },
+          }));
+        });
+
+        await waitFor(() => {
+          const assistant = result.current.messages.find((m) => m.role === "assistant");
+          expect(assistant?.statusInfo?.status).toBe("reasoning");
+        });
+
+        act(() => {
+          sse.push(sseEvent("part", {
+            messageId: "assistant-1",
+            part: {
+              id: "tool-running",
+              messageID: "assistant-1",
+              state: {
+                input: { subagent_type: "explore" },
+                status: "running",
+                title: "Searching",
+              },
+              tool: "task",
+              type: "tool",
+            },
+          }));
+        });
+
+        await waitFor(() => {
+          const assistant = result.current.messages.find((m) => m.role === "assistant");
+          expect(assistant?.statusInfo).toEqual({
+            detail: "to Explore",
+            status: "tool-calling",
+            toolName: "task",
+          });
+        });
+
+        act(() => {
+          sse.push(sseEvent("part", {
+            messageId: "assistant-1",
+            part: {
+              id: "tool-error",
+              messageID: "assistant-1",
+              state: { error: "tool failed", input: {}, status: "error" },
+              tool: "bash",
+              type: "tool",
+            },
+          }));
+        });
+
+        await waitFor(() => {
+          const assistant = result.current.messages.find((m) => m.role === "assistant");
+          expect(assistant?.statusInfo).toEqual({
+            detail: "tool failed",
+            status: "error",
+            toolName: "bash",
+          });
+        });
+
+        act(() => {
+          sse.push(sseEvent("part", {
+            messageId: "assistant-1",
+            part: { id: "step-1", messageID: "assistant-1", type: "step-start" },
+          }));
+          sse.push(sseEvent("part", {
+            messageId: "assistant-1",
+            part: {
+              attempt: 2,
+              error: { data: { message: "retrying" } },
+              id: "retry-1",
+              messageID: "assistant-1",
+              type: "retry",
+            },
+          }));
+          sse.push(sseEvent("done", {}));
+          sse.close();
+        });
+
+        await waitFor(() => {
+          expect(result.current.isSending).toBe(false);
+        });
+      } finally {
+        consoleLogSpy.mockRestore();
+      }
+    });
+
   });
 
   // -----------------------------------------------------------------------
@@ -707,6 +955,12 @@ describe("useWorkspace streaming", () => {
               json: async () => ({ agents: DEFAULT_AGENTS }),
             };
           }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
+          }
           if (String(input) === "/api/w/alice/chat/stream") {
             return { ok: false, json: async () => ({ error: "server_error" }) };
           }
@@ -786,10 +1040,15 @@ describe("useWorkspace streaming", () => {
     });
 
     it("selects null when deleting the last session", async () => {
-      opencodeMocks.listSessionsAction.mockResolvedValue({
-        ok: true,
-        sessions: [{ id: "s1", title: "Only", status: "idle", updatedAt: "now" }],
-      });
+      opencodeMocks.listSessionsAction
+        .mockResolvedValueOnce({
+          ok: true,
+          sessions: [{ id: "s1", title: "Only", status: "idle", updatedAt: "now" }],
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          sessions: [],
+        });
       stubFetchWithStream(() => createSSEStream());
 
       const result = await renderConnectedHook();
@@ -802,16 +1061,24 @@ describe("useWorkspace streaming", () => {
     });
 
     it("does not change active session when deleting a non-active session", async () => {
-      opencodeMocks.listSessionsAction.mockResolvedValue({
-        ok: true,
-        sessions: [
-          { id: "s1", title: "First", status: "idle", updatedAt: "now" },
-          { id: "s2", title: "Second", status: "idle", updatedAt: "now" },
-        ],
-      });
       stubFetchWithStream(() => createSSEStream());
 
-      const result = await renderConnectedHook();
+      const { result } = renderHook(() =>
+        useWorkspace({ slug: "alice", pollInterval: 0, initialSessionId: "s1" })
+      );
+
+      await waitFor(() => {
+        expect(result.current.isConnected).toBe(true);
+        expect(result.current.sessions.some((session) => session.id === "s1")).toBe(true);
+      });
+
+      await act(async () => {
+        await result.current.createSession("Second");
+      });
+
+      act(() => {
+        result.current.selectSession("s1");
+      });
 
       await act(async () => {
         await result.current.deleteSession("s2");
@@ -1090,6 +1357,12 @@ describe("useWorkspace streaming", () => {
               json: async () => ({ agents: DEFAULT_AGENTS }),
             };
           }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
+          }
           if (String(input) === "/api/w/alice/chat/stream") {
             streamFetched = true;
             return { ok: true, body: sse };
@@ -1149,6 +1422,12 @@ describe("useWorkspace streaming", () => {
               json: async () => ({ agents: DEFAULT_AGENTS }),
             };
           }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
+          }
           if (String(input) === "/api/w/alice/chat/stream") {
             streamFetched = true;
             return { ok: true, body: createSSEStream() };
@@ -1167,6 +1446,60 @@ describe("useWorkspace streaming", () => {
 
       // Stream should NOT have been fetched
       expect(streamFetched).toBe(false);
+    });
+
+    it("reattaches to an active run when a busy session has no pending assistant yet", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+
+      opencodeMocks.listSessionsAction.mockResolvedValue({
+        ok: true,
+        sessions: [{ id: "s1", title: "Existing", status: "busy", updatedAt: "now" }],
+      });
+      opencodeMocks.listMessagesAction.mockResolvedValue({ ok: true, messages: [] });
+
+      const sse = createSSEStream();
+      let startCalled = false;
+      let streamFetched = false;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL) => {
+          if (String(input) === "/api/u/alice/agents") {
+            return { ok: true, json: async () => ({ agents: DEFAULT_AGENTS }) };
+          }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            startCalled = true;
+            return { ok: true, json: async () => ({ runId: "new-run" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return {
+              ok: true,
+              json: async () => ({
+                activeRun: { runId: "run-active", sessionId: "s1", status: "running" },
+              }),
+            };
+          }
+          if (String(input) === "/api/w/alice/chat/stream") {
+            streamFetched = true;
+            return { ok: true, body: sse };
+          }
+          throw new Error(`Unexpected fetch: ${String(input)}`);
+        })
+      );
+
+      const result = await renderConnectedHook();
+
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+        await Promise.resolve();
+      });
+
+      await waitFor(() => {
+        expect(streamFetched).toBe(true);
+        expect(startCalled).toBe(false);
+        expect(result.current.messages.some((message) => message.id === "temp-assistant-run-active")).toBe(true);
+      });
+
+      act(() => { sse.close(); });
     });
   });
 
@@ -1302,6 +1635,12 @@ describe("useWorkspace streaming", () => {
               json: async () => ({ agents: DEFAULT_AGENTS }),
             };
           }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
+          }
           if (String(input) === "/api/w/alice/chat/stream") {
             // Return a reader that waits indefinitely (will be aborted)
             return {
@@ -1360,6 +1699,12 @@ describe("useWorkspace streaming", () => {
               json: async () => ({ agents: DEFAULT_AGENTS }),
             };
           }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
+          }
           if (String(input) === "/api/w/alice/chat/stream") {
             return {
               ok: false,
@@ -1410,6 +1755,12 @@ describe("useWorkspace streaming", () => {
               ok: true,
               json: async () => ({ agents: DEFAULT_AGENTS }),
             };
+          }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
           }
           if (String(input) === "/api/w/alice/chat/stream") {
             return {
@@ -1556,6 +1907,12 @@ describe("useWorkspace streaming", () => {
           if (String(input) === "/api/u/alice/agents") {
             return { ok: true, json: async () => ({ agents: DEFAULT_AGENTS }) };
           }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
+          }
           if (String(input) === "/api/w/alice/chat/stream") {
             streamFetched = true;
             return { ok: true, body: createSSEStream() };
@@ -1618,6 +1975,12 @@ describe("useWorkspace streaming", () => {
         vi.fn(async (input: RequestInfo | URL) => {
           if (String(input) === "/api/u/alice/agents") {
             return { ok: true, json: async () => ({ agents: DEFAULT_AGENTS }) };
+          }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
           }
           if (String(input) === "/api/w/alice/chat/stream") {
             const stream = createSSEStream();
@@ -1733,6 +2096,12 @@ describe("useWorkspace streaming", () => {
         vi.fn(async (input: RequestInfo | URL) => {
           if (String(input) === "/api/u/alice/agents") {
             return { ok: true, json: async () => ({ agents: DEFAULT_AGENTS }) };
+          }
+          if (String(input) === "/api/w/alice/chat/runs") {
+            return { ok: true, json: async () => ({ runId: "run-1" }) };
+          }
+          if (String(input).startsWith("/api/w/alice/chat/runs?")) {
+            return { ok: true, json: async () => ({ activeRun: null }) };
           }
           if (String(input) === "/api/w/alice/chat/stream") {
             return { ok: true, body: sse };

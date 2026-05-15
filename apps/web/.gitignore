@@ -12,11 +12,17 @@
 
 # testing
 /coverage
+/coverage-out
+/.e2e/
+/playwright-report/
+/test-results/
+/playwright/.auth/
 
 # next.js
 /.next/
 /.next-desktop/
 /.next-desktop*/
+/node-compile-cache/
 /out/
 
 # production
