@@ -7,10 +7,10 @@
     "extends": "../../package.json"
   },
   "scripts": {
-    "postinstall": "pnpm prisma:generate && pnpm prisma:generate:desktop",
-    "predev": "pnpm prisma:generate && pnpm prisma:generate:desktop",
+    "postinstall": "pnpm prisma:generate",
+    "predev": "pnpm prisma:generate:all",
     "dev": "next dev -H 0.0.0.0 -p 3000",
-    "prebuild": "pnpm prisma:generate && pnpm prisma:generate:desktop",
+    "prebuild": "pnpm prisma:generate:all",
     "build": "next build",
     "start": "next start",
     "start:autopilot": "tsx src/autopilot-daemon.ts",
@@ -29,6 +29,7 @@
     "test:e2e:real-runtime": "ARCHE_E2E_PROFILE=real-runtime playwright test",
     "prisma:generate": "prisma generate",
     "prisma:generate:desktop": "prisma generate --config=prisma.config.desktop.ts",
+    "prisma:generate:all": "pnpm prisma:generate && pnpm prisma:generate:desktop",
     "db:migrate": "prisma migrate dev",
     "db:seed": "prisma db seed"
   },
